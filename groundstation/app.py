@@ -376,6 +376,10 @@ class App:
         self.sar = sarmod.LocalSar()
         self.mob_have = None            # the last telemetry position {lat, lon, unc_m, sog, t, fresh}
         self.mob_alarmed = set()        # marker ids whose WARNING this station raised
+        self.adsb_state = None          # PF5: gw_status "adsb" (aircraft on the map, warnings, proposals)
+        self.adsb_said = {}             # (icao, slot) -> the highest level already said / raised here
+        self.adsb_asked = set()         # proposal ids already put to this station
+        self.adsb_notice = None
         self.mob_queue = []             # the offers still to ask (return, uav, search)
         self.mob_marker = None          # the marker the offers are about
         self.mob_auto_until = 0.0       # after a return route is stored: AUTO START (its normal CONFIRM rules)
@@ -746,6 +750,8 @@ class App:
         self.slam_hist.clear()
         self.lamps = alerts.MasterLamps()
         self._uav_local = None
+        self.adsb_state, self.adsb_said, self.adsb_notice = None, {}, None
+        self.adsb_asked = set()
         self.uav_store.clear()                  # U4: the drones on the map belong to that boat
         self.uav_telem_asked = False
         self.uav_fly_stop()                     # U5: the joystick is back on (no) boat
@@ -3506,6 +3512,7 @@ class App:
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.update(d.get("uav"))    # the UAV magazine page (CLAUDE.md V, U2)
                     self.uav_notices(d.get("uav"))
+                    self.adsb_sync(d.get("adsb"))
                     self.mob_sync(d.get("sar"))
                     if self.callouts:
                         self.callouts.gw(d)
@@ -6109,6 +6116,92 @@ class App:
         if txt != getattr(self, "_uav_local", None):
             self._uav_local = txt
             self.lamps.set_local("uav_hatch", txt)
+
+    # --- ADS-B (step PF5, CLAUDE.md X K4): DISPLAY + station-LOCAL notices + a PROPOSAL; nothing automatic -----------
+    def adsb_air(self):
+        return any(d.get("armed") and not d.get("landed") for d in self.uav_store.drones.values())
+
+    def adsb_sync(self, st):
+        """The gateway's ADS-B state: the aircraft on the map, the receiver notice (a UAV in the air and no receiver /
+        no data - never a 'clear sky'), CAUTION / WARNING for aircraft near a UAV (MasterLamps.set_local: station-local,
+        never a boat alarm; a voice once per rise), the proposal for the UAV's pilot / the captain."""
+        st = st if isinstance(st, dict) else {}
+        self.adsb_state = st
+        import adsbmap
+        txt = adsbmap.notice_text(st, self.adsb_air())
+        if txt != self.adsb_notice:
+            self.adsb_notice = txt
+            if txt:
+                self.event(txt)
+        live = set()
+        for e in st.get("warn") or []:
+            key = (e.get("icao"), e.get("slot"))
+            lv = int(e.get("level") or 0)
+            code = "adsb_%s_%s" % key
+            live.add(code)
+            cs = e.get("cs") or e.get("icao")
+            dv = T("adsb.alt_unknown") if e.get("d_v") is None else "%d m" % e["d_v"]
+            text = T("adsb.warning" if lv == 2 else "adsb.caution", cs=cs, n=e.get("slot"), dh=e.get("d_h"), dv=dv)
+            self.lamps.set_local(code, text, alerts.WARNING if lv == 2 else alerts.CAUTION)
+            if lv > self.adsb_said.get(key, 0):
+                self.adsb_said[key] = lv
+                self.event(text)
+                if self.sound and 1 <= int(e.get("slot") or 0) <= 6:
+                    self.sound.say("adsb.%s%d" % ("w" if lv == 2 else "c", int(e["slot"])))
+        for key in [k for k in self.adsb_said if "adsb_%s_%s" % k not in live]:
+            del self.adsb_said[key]
+        for code in [c for c in self.lamps.local if c.startswith("adsb_") and c not in live]:
+            self.lamps.set_local(code, None)
+        for p in st.get("proposals") or []:
+            if p.get("id") not in self.adsb_asked and self.adsb_may_answer(p):
+                self.root.after(300, lambda p=p: self.adsb_offer(p))
+
+    def adsb_may_answer(self, p):
+        """That UAV's pilot, or the captain (or a single operator): the others only see the warning."""
+        if not isinstance(self.link, GatewayLink):
+            return False
+        crew = crewui.crew_of(self)[0]
+        if crew == "captain" or self.single_op:
+            return True
+        gw = self.gw_status or {}
+        pil = ((gw.get("uav") or {}).get("pilots") or {}).get(str(p.get("slot"))) or {}
+        return bool(pil) and pil.get("station") == gw.get("you")
+
+    def adsb_offer(self, p):
+        """ONE vertical YES / NO: HOLD or DESCEND. Asked once per proposal; the answer is a normal UAV command
+        (uav_hold / uav_route: the pilot lock and the captain's YES for a flying route apply as always)."""
+        cur = [q for q in (self.adsb_state or {}).get("proposals") or [] if q.get("id") == p.get("id")]
+        if not cur or p.get("id") in self.adsb_asked:
+            return
+        if self.driver is not None and self.driver.question:
+            self.root.after(2000, lambda: self.adsb_offer(p))
+            return
+        self.adsb_asked.add(p["id"])
+        kind = p.get("kind") or "hold"
+        text = T("adsb.offer_" + kind, cs=p.get("cs") or p.get("icao"), n=p.get("slot"), alt="%d" % round(
+            p.get("alt_safe_m") or 30))
+
+        def yes(pp=p):
+            self.adsb_do(pp)
+        if self.driver is not None:
+            self.driver.ask(text, yes, lambda: None, 30.0, tag=("adsb", p["id"]), head=T("adsb.head"))
+        elif ynbox.ask(self.root, T("adsb.head"), text):
+            yes()
+
+    def adsb_do(self, p):
+        """The captain's / pilot's YES. Only while the proposal still stands (the aircraft may be gone)."""
+        if not [q for q in (self.adsb_state or {}).get("proposals") or [] if q.get("id") == p.get("id")]:
+            return self.event(T("adsb.gone", n=p.get("slot")))
+        n = int(p["slot"])
+        if (p.get("kind") or "hold") == "descend":
+            d = self.uav_store.drones.get(n) or {}
+            if d.get("lat") is None:
+                return self.say(T("uav.not_connected"), RED)
+            self.event(T("adsb.sent_descend", n=n, alt="%d" % round(p.get("alt_safe_m") or 30)))
+            return self.uav_route(n, [(d["lat"], d["lon"])], alt=float(p.get("alt_safe_m") or 30.0))
+        if isinstance(self.link, GatewayLink):
+            self.event(T("adsb.sent_hold", n=n))
+            self.link.send_msg({"t": "uav_hold", "uav": n})
 
     def map_menu(self, x, y, lat, lon):
         """The map's right-click menu (step U3, owner H2): «Πήγαινε εδώ» = the boat (a 2-point route from its

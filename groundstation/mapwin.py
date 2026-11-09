@@ -267,6 +267,9 @@ class MapView:
         if getattr(a, "uav_store", None) is not None:
             import uavmap
             uavmap.draw(c, P, a.uav_store, th, f_small, k=max(1.0, theme.unit(w, h)))
+        if getattr(a, "adsb_state", None) is not None:
+            import adsbmap
+            adsbmap.draw(c, P, a, th, f_small, w, h, k=max(1.0, theme.unit(w, h)))
         if getattr(a, "sar", None) is not None:
             self.draw_sar(c, P, th, f_small)
             self.draw_points(c, P, th, f_small)

@@ -210,6 +210,8 @@ def gateway_config(mtx, charts):
         # view of screen 2 shows UAV 1 in the demo; the others start when a drone flies)
         "uav": {"enabled": True, "sim": True, "hatch_relay": 8,
                 "video": {"enabled": True, "always": [1], "w": 320, "h": 240, "fps": 10, "kbps": 250}},
+        # (PF5: the simulated ADS-B receiver - a helicopter crosses the area where the boat / UAVs are, 400 ft)
+        "adsb": {"enabled": True, "sim": True},
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},

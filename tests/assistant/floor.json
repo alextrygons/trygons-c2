@@ -1,6 +1,6 @@
 {
  "_help": "AM4-r3 LOW-b (W112 / W117): the extract score floor's frozen separation on the TUNING part. `python tools/assistant_index.py floor` fails when the BM25 scores moved so that a 'below' question reaches the floor, an 'above' one falls under it, fewer than above_n - 2 in-manual tuning questions clear it, or the code's floor (answer.EXTRACT_FLOOR = client.DEFAULT_EXTRACT_FLOOR) differs from 'floor'. Then re-tune the floor on the tuning part (tools/assistant_llm_eval.py run --answer extract, docs/assistant_design.md 5e) and run `floor --write`. Never tune on the held-out questions.",
- "floor": 7.2,
+ "floor": 7.25,
  "margin": 0.5,
  "el": {
   "below": [
@@ -83,7 +83,6 @@
    "el106",
    "el107",
    "el110",
-   "el111",
    "el113",
    "el114",
    "el115",

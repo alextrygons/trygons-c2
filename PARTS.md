@@ -103,6 +103,13 @@ registration refuses a drone with any configured output but its 4 motors.
 - [ ] Coax: RG-58 (up to 5 m) or RG-8X / LMR-240 (longer) with the right connectors (BNC / SMA / PL-259), self-amalgamating tape.
 - [ ] Radar reflector (we are NOT visible on AIS): e.g. Echomax EM230 or Tri-Lens, mounted high.
 
+## ADS-B receiver (receive only, step PF5; CLAUDE.md X K4) - manned aircraft near the UAVs; nothing on the AURIX
+
+- [ ] RTL-SDR dongle for 1090 MHz (RTL-SDR Blog V4 or a 1090 MHz ADS-B-specific one with a built-in LNA / filter) on a USB port of the gateway PC - MODEL TBD. Decoder: readsb (Ubuntu package) or dump1090 - tools/get_readsb.py / gateway.json "adsb".
+- [ ] 1090 MHz antenna (a ground-plane / collinear ADS-B whip, 50 ohm, marine-grade) mounted HIGH on the boat (hardtop / mast, away from the VHF / AIS whips and the 5.8 GHz VRX antennas) + coax as short as possible (RG-58 / LMR-240; loss at 1 GHz matters) - MODEL TBD.
+- [ ] 1090 MHz band-pass filter and/or LNA at the antenna (a boat has VHF / 4G / 5.8 GHz sources that overload a bare dongle) - MODEL TBD; powered through the coax (bias-tee) or by the dongle.
+- [ ] Not every aircraft transmits ADS-B: this is an aid, not a collision-avoidance system (MANUAL ch. 24).
+
 ## Shore PC
 
 - [ ] A second monitor for the DRIVER screen (MANUAL chapter 9 part I).

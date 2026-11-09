@@ -775,7 +775,7 @@ def s10_tools(rig):
 
 
 LATIN = re.compile(r"[A-Za-z][A-Za-z\-]{2,}")
-ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", "IMU", "RF", "STARLINK", "CONFIRM",
+ALLOWED = {"STANDBY", "AUTO", "ADS-B", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", "IMU", "RF", "STARLINK", "CONFIRM",
            "SAVE", "ONLINE", "OFFLINE", "SIM", "UBX", "NMEA", "MMSI", "Tailscale", "gateway", "EMODnet", "GEBCO",
            "OpenSeaMap", "OpenStreetMap", "ODbL", "CC", "Bathymetry", "Consortium", "Digital", "DTM", "contributors",
            "Sea", "marks", "Depth", "tcp", "COM", "Trygons", "TRYGONS", "DRONES", "MediaMTX", "ffmpeg", "Piper",

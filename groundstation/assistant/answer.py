@@ -1327,7 +1327,7 @@ def _decide_pick(raw, hits, lang, terms, out, err, variant="default"):
     return out
 
 
-EXTRACT_FLOOR = 7.2       # answer mode "extract": the best passage's BM25 score must reach this before the model may
+EXTRACT_FLOOR = 7.25      # answer mode "extract": the best passage's BM25 score must reach this before the model may
 #                           pick, else «Δεν βρίσκω ...» + the passage shown (0 = no floor). AM4-r2 / W112, measured
 #                           on the tuning part: the 3 off-manual questions extract still answered (el016 7.10, el143
 #                           6.07, en047 6.79) lie INSIDE the in-manual range (correct Greek answers from 5.31 up): 7.2

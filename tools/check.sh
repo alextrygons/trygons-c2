@@ -346,6 +346,14 @@ echo "== Search and rescue on the station (PF3): MOB marker, alarm, SAVE, offers
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sar.py > "$TEMP/sar_tests.txt" 2>&1 ) || { echo "SAR STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SAR STATION TESTS" "$TEMP/sar_tests.txt"
 strays_check "test_sar"
+echo "== ADS-B receive only (PF5): SBS / Beast parsing, aircraft state, filters, CPA geometry, warning levels, proposals, no receiver / no data, the simulated helicopter, receive-only proof"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_adsb.py > "$TEMP/adsb_tests.txt" 2>&1 ) || { echo "ADS-B TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|ADS-B TESTS" "$TEMP/adsb_tests.txt"
+strays_check "test_adsb"
+echo "== ADS-B on the station (PF5): map, notices, voice, the proposal asked once and never automatic"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_adsbui.py > "$TEMP/adsbui_tests.txt" 2>&1 ) || { echo "ADS-B STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|ADS-B STATION TESTS" "$TEMP/adsbui_tests.txt"
+strays_check "test_adsbui"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named

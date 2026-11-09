@@ -31,6 +31,14 @@ def ffmpeg():
                   "/usr/bin/ffmpeg")
 
 
+def readsb():
+    """The ADS-B decoder (readsb or dump1090; RTL-SDR): $READSB_BIN, readsb / dump1090 on the PATH,
+    <repo>/tools/bin/readsb/ (python tools/get_readsb.py), /usr/bin/readsb."""
+    return _first(os.environ.get("READSB_BIN"), shutil.which("readsb"), shutil.which("dump1090"),
+                  shutil.which("dump1090-fa"), os.path.join(REPO, "tools", "bin", "readsb", "readsb" + EXE),
+                  os.path.join(REPO, "tools", "bin", "readsb", "dump1090" + EXE), "/usr/bin/readsb")
+
+
 def vision_python():
     """The Python that runs the obstacle detection worker (needs numpy + onnxruntime):
     $VISION_PYTHON, <repo>/tools/bin/vision-python/ (tools/get_vision_python.py, Windows),
@@ -43,4 +51,5 @@ def vision_python():
 if __name__ == "__main__":
     print("MediaMTX:", mediamtx() or "MISSING (python tools/get_mediamtx.py)")
     print("ffmpeg:  ", ffmpeg() or "MISSING (MSYS2: pacman -S mingw-w64-ucrt-x86_64-ffmpeg)")
+    print("ADS-B decoder:", readsb() or "MISSING (python tools/get_readsb.py)")
     print("vision Python:", vision_python())

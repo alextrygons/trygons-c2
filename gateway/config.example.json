@@ -18,6 +18,15 @@
     "low_free_gb": 20.0,
     "full_free_gb": 2.0
   },
+  "adsb": {
+    "_help": "ADS-B receive only (CLAUDE.md X K4, PF5): a 1090 MHz RTL-SDR + readsb / dump1090. source = its SBS port (30003) or Beast (30005, proto beast); decoder 'auto' = start readsb / dump1090 found by toolpaths.py (python tools/get_readsb.py), '' = it already runs; sim = a simulated helicopter (demo / tests). max_alt_ft / max_km = the display + warning filter",
+    "enabled": false,
+    "source": "tcp:127.0.0.1:30003",
+    "proto": "sbs",
+    "decoder": "",
+    "max_alt_ft": 3000,
+    "max_km": 20
+  },
   "uav": {
     "_help": "UAV magazine (CLAUDE.md V): false = no magazine on this boat. Each slot = the FIXED hub USB port of that slot (usbloc:<port path>, python gateway.py --list-serial), never the drone's own id; slot 1 = the top one",
     "enabled": false,

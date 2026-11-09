@@ -9011,6 +9011,84 @@
 "text": "* UAV there: the next UAV flies over the point at 30 m (normal checks and launch approval). * Search pattern here: the point is the datum of the search pattern panel. * Person in the water / Not a person, Rename, Delete the marker (all stations). The estimate is no guarantee: the thing may have moved since the picture."
 },
 {
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "",
+"id": "en:694",
+"kind": "manual",
+"lines": [
+4328,
+4333
+],
+"term": "",
+"text": "With a 1090 MHz receiver (RTL-SDR dongle) on the gateway PC, the map shows manned aircraft that transmit ADS-B near the boat and the UAVs: a small plane symbol turned with its track, a short track, and a label with the callsign, altitude (ft) and speed (kn). Only aircraft below 3000 ft and within 20 km are shown (gateway.json \"adsb\": max_alt_ft, max_km). The receiver only LISTENS - it sends nothing, to nobody, and it never touches the boat."
+},
+{
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "NOT EVERY AIRCRAFT TRANSMITS ADS-B (military, gliders, some helicopters and light aircraft, drones). A quiet screen does NOT mean a clear sky. Your eyes",
+"id": "en:695",
+"kind": "manual",
+"lines": [
+4337,
+4341
+],
+"term": "",
+"text": "and the procedures of your UAV authorisation always come first. NO RECEIVER / NO DATA. While a UAV is in the air and the receiver is missing, off, not configured or silent, the map says \"ADS-B: no receiver\" or \"ADS-B: no data\" (and the event log says it once). That is never shown as a clear sky."
+},
+{
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "NOT EVERY AIRCRAFT TRANSMITS ADS-B (military, gliders, some helicopters and light aircraft, drones). A quiet screen does NOT mean a clear sky. Your eyes",
+"id": "en:696",
+"kind": "manual",
+"lines": [
+4343,
+4346
+],
+"term": "",
+"text": "WARNINGS. For every UAV that is in the air the gateway works out the closest point of approach with each aircraft, horizontally and vertically: * CAUTION: closer than 1000 m horizontally AND 150 m vertically within 120 s. Voice: \"Aircraft near UAV 3\"."
+},
+{
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "NOT EVERY AIRCRAFT TRANSMITS ADS-B (military, gliders, some helicopters and light aircraft, drones). A quiet screen does NOT mean a clear sky. Your eyes",
+"id": "en:697",
+"kind": "manual",
+"lines": [
+4347,
+4350
+],
+"term": "",
+"text": "* WARNING: closer than 500 m AND 100 m within 60 s (red, voice again). An aircraft without an altitude can only give a CAUTION. The warnings are notices on THIS station only (like the UAV battery notices). They are never a boat alarm, never go to the autopilot and never change a mode or the throttle."
+},
+{
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "NOT EVERY AIRCRAFT TRANSMITS ADS-B (military, gliders, some helicopters and light aircraft, drones). A quiet screen does NOT mean a clear sky. Your eyes",
+"id": "en:698",
+"kind": "manual",
+"lines": [
+4352,
+4358
+],
+"term": "",
+"text": "PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box: HOLD the UAV where it is, or DESCEND it to 30 m over its position (when the aircraft is above it and the UAV is high). NOTHING happens by itself: without your YES nothing is sent. YES sends the normal UAV command (hold, or a route change - a copilot's route change for a flying UAV still waits for the captain's YES, and a UAV flown by someone else is refused as always). A proposal that no longer stands (the aircraft is gone) sends nothing."
+},
+{
+"ch": "24",
+"chapter": "AIRCRAFT NEAR THE UAVs (ADS-B) - receive only (step PF5)",
+"heading": "NOT EVERY AIRCRAFT TRANSMITS ADS-B (military, gliders, some helicopters and light aircraft, drones). A quiet screen does NOT mean a clear sky. Your eyes",
+"id": "en:699",
+"kind": "manual",
+"lines": [
+4358,
+4364
+],
+"term": "",
+"text": "Altitude of the aircraft is barometric, the UAV's is above its launch point: near the sea level the difference is small and the limits carry it. DEMO. The demo shows a simulated helicopter at 400 ft crossing the area. A real receiver needs a decoder (readsb or dump1090) and an antenna: see PARTS.md."
+},
+{
 "ch": "tour",
 "chapter": "Welcome",
 "heading": "The guided tour",
@@ -11001,7 +11079,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "3f444e3ea3b3594aa229b1e4ee1dfbe45bf549ee3119f5a8192636869e43a07e",
+"MANUAL.txt": "4f8ce1ad62c3ca916223c29f807dbc0ec6646f5e1de19f04f51d987758cee141",
 "academy/content/tour.json": "3405a9151d9c13b14bd7a626de84c0a7c7eabc932425b83e5cf69aef4f5a01af",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },

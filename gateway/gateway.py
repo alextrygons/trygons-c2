@@ -29,6 +29,7 @@ import time
 from common import Clock, load_config, log, proto, setup_logging
 import osdep
 from audit import Audit
+from adsbmgr import AdsbManager
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from geofence import Geofence
@@ -166,6 +167,12 @@ class Gateway:
             log.exception("uav: the magazine could not be set up - switched off")
             self.uav = UavManager({"enabled": False}, self)
         self.stations.ext["uav_register"] = self.uav.register_msg
+        # ADS-B (CLAUDE.md X K4, step PF5): receive only, its own process; judged against the flying UAVs
+        try:
+            self.adsb = AdsbManager(cfg.get("adsb"), self)
+        except Exception:                               # the ADS-B part never stops the gateway
+            log.exception("adsb: could not be set up - switched off")
+            self.adsb = AdsbManager({"enabled": False}, self)
         # U3: routes -> missions, the launch sequence (the captain's YES / NO), STOP, the captain's HATCH CLOSE
         for k, fn in (("uav_route", self.uav.route_msg), ("uav_launch_prepare", self.uav.prepare_msg),
                       ("uav_launch_stop", self.uav.stop_msg), ("uav_hatch_close", self.uav.hatch_close_msg),
@@ -741,6 +748,14 @@ class Gateway:
                 log.exception("loudhailer")
             await asyncio.sleep(0.25)
 
+    async def adsb_loop(self):
+        while True:
+            try:
+                self.adsb.tick()
+            except Exception:                               # ADS-B never stops the gateway
+                log.exception("adsb")
+            await asyncio.sleep(1.0)
+
     async def uav_loop(self):
         while True:
             try:
@@ -864,7 +879,8 @@ class Gateway:
                 "relays": self.stations.relay_status(),
                 "vision": self.vision.status(self.net.data_saver()),
                 "hail": self.hail.status(),
-                "uav": self.uav.status(), "sar": self.sar.status()}
+                "uav": self.uav.status(), "sar": self.sar.status(),
+                "adsb": self.adsb.status(self.net.data_saver())}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -886,6 +902,7 @@ class Gateway:
         tasks.append(asyncio.create_task(self.hail_loop()))
         self.uav.start(asyncio.get_running_loop())
         tasks.append(asyncio.create_task(self.uav_loop()))
+        tasks.append(asyncio.create_task(self.adsb_loop()))
         if not rec_loop and ("AUDIO" in self.rec.cams or self.uav.tracks):
             tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio / UAV ring without cameras
         tasks.append(asyncio.create_task(self.sync.run()))
@@ -906,6 +923,7 @@ class Gateway:
             self.vision.stop()
             self.hail.stop()
             self.uav.stop()
+            self.adsb.stop()
             await self.stations.stop()
             await self.web.stop()
             self.sync._close()
