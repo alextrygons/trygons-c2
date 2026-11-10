@@ -62,7 +62,10 @@ BATCH_FACTOR = 0.5
 CACHE_WRITE_FACTOR = 1.25
 CACHE_READ_FACTOR = 0.10
 
-CHARS_PER_TOKEN = 3.5
+# PF4-r2: chars / 3.5 ran LOW for code (a measured review call: ~73.6k real input tokens where 3.5 said 60k =
+# ~2.85 chars per token for diffs; Greek text tokenizes worse still) - 2.6 is the conservative estimate for everything
+CHARS_PER_TOKEN = 2.6
+MEASURED_CHARS_PER_TOKEN = 2.85   # the measured diff ratio (tests: the estimate never runs below it)
 MAX_REVIEW_TOKENS = 60_000      # per call, incl. the cached rules + spec
 MAX_FILE_CHARS = 120_000
 MAX_TOKENS = 16000              # room for thinking + the findings text

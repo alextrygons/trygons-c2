@@ -1057,7 +1057,7 @@ def _project_uav(alt, roll, pitch, heading, pos, true_pt, mount=UCAM):
 
 def _telem(boat, heading, roll, pitch, unc=2.0):
     return {"est_lat": boat[0], "est_lon": boat[1], "pos_source": 1, "unc_m": unc, "heading": heading,
-            "att_roll": roll, "att_pitch": pitch}
+            "att_roll": roll, "att_pitch": pitch, "att_age_ms": 0}
 
 
 def mk1():
@@ -1239,11 +1239,19 @@ def mk11():
     u_inf = sar_mark.locate_uav(dict(dr, rx_age=float("inf")), uvu[0], uvu[1], RES).get("why")
     tilt = [sar_mark.locate_uav(dict(dr, camera=dict(UCAM, tilt_down_deg=x)), uvu[0], uvu[1], RES).get("why")
             for x in (-45.0, 120.0)]
+    # PF4-r2 LOW-1: a MISSING attitude age (boat) / altitude age (UAV) = refused, never taken as fresh
+    t_noage = dict(t)
+    t_noage.pop("att_age_ms")
+    no_boat_age = sar_mark.locate_boat(CAL, t_noage, uv[0], uv[1], RES, 0.3).get("why")
+    d_noage = dict(dr, rx_age=0.3)
+    d_noage.pop("alt_age")
+    no_uav_age = sar_mark.locate_uav(d_noage, uvu[0], uvu[1], RES).get("why")
     ok = (ok_fresh and old_sum == "noatt" and old_sample == "noatt" and u_ok and u_old in ("old", "noatt") and
-          u_inf == "old" and tilt == ["nocal", "nocal"] and sar_mark.STILL_MAX_BYTES == 40 * 1024)
+          u_inf == "old" and tilt == ["nocal", "nocal"] and sar_mark.STILL_MAX_BYTES == 40 * 1024 and
+          no_boat_age == "noatt" and no_uav_age == "old")
     report("MK11 PF4-r: the attitude's real age (sample age + att_age_ms for the boat, att_age + the age at the station "
-           "for a UAV) over 1 s = refused; a UAV mount tilt out of -30..90 deg = refused; the still cap is 40 KB here "
-           "too", ok, "boat fresh %s / sum %s / sample %s; uav %s / %s / inf %s; tilt %s; still %d" % (
+           "for a UAV) over 1 s = refused, a MISSING age = refused (PF4-r2); a UAV mount tilt out of -30..90 deg = "
+           "refused; the still cap is 40 KB here too", ok, "boat fresh %s / sum %s / sample %s; uav %s / %s / inf %s; tilt %s; still %d" % (
                ok_fresh, old_sum, old_sample, u_ok, u_old, u_inf, tilt, sar_mark.STILL_MAX_BYTES))
 
 
@@ -1253,7 +1261,7 @@ def _setup_boat(env, **kw):
     env.position(LAT, LON)                              # a real telemetry sample (the screens render from it)
     t = dict(ap.t)
     t.update({"est_lat": boat[0], "est_lon": boat[1], "pos_source": 1, "unc_m": 2.0, "heading": 40.0,
-              "att_roll": 0.0, "att_pitch": 0.0})
+              "att_roll": 0.0, "att_pitch": 0.0, "att_age_ms": 0})
     t.update(kw)
     ap.t, ap.t_rx = t, time.time()
     ap.gw_status = {"vision": {"camera": dict(CAL)}}

@@ -224,7 +224,8 @@ def av5(env):
     for lang in ("el", "en"):
         d = i18n.load(lang)
         for k in ("adsb.no_rx", "adsb.no_data", "adsb.head", "adsb.caution", "adsb.warning", "adsb.offer_hold",
-                  "adsb.offer_descend", "adsb.sent_hold", "adsb.sent_descend", "adsb.gone", "adsb.alt_unknown") + \
+                  "adsb.offer_descend", "adsb.sent_hold", "adsb.sent_descend", "adsb.gone", "adsb.alt_unknown",
+                  "adsb.uav_pos_unknown") + \
                 tuple("say.adsb.uav%d" % i for i in range(1, 7)):
             if not d.get(k):
                 ok_lang = False
@@ -270,16 +271,26 @@ def av7(env):
     said = [e for e in ap._evlog[-5:] if "UAV 3 unknown altitude" in e] if getattr(ap, "_evlog", None) else []
     ap.adsb_sync(state())
     gone = "adsb_unk_3" not in ap.lamps.local
+    # PF4-r2 LOW-3: a UAV WITHOUT a position (gateway "uav_nopos") gets its own text: no ADS-B judgement for it
+    st = state()
+    st["uav_unknown"], st["uav_nopos"] = [4], [4]
+    ap.adsb_sync(st)
+    nopos_lamp = ap.lamps.local.get("adsb_nopos_4")
+    nopos_ok = bool(nopos_lamp) and "adsb_unk_4" not in ap.lamps.local and "position unknown" in str(nopos_lamp)
+    ap.adsb_sync(state())
+    nopos_ok = nopos_ok and "adsb_nopos_4" not in ap.lamps.local
     n0 = len(dr.asks)
     captain(env, pilots={"3": {"station": 9}})                  # a copilot (station 9) flies UAV 3 by hand
     ap.adsb_sync(state(props=[prop("adsb9", 3)], warn=[warn(1)]))
     env.rig.pump(1.0)
     cap_asked = len(dr.asks) - n0
     txt = T("adsb.offer_descend", cs="X", n=3, alt="30")
-    ok = bool(lamp) and bool(said) and gone and cap_asked == 0 and "REPLACES" in txt
+    ok = bool(lamp) and bool(said) and gone and cap_asked == 0 and "REPLACES" in txt and nopos_ok
     report("AV7 PF5-r: an unknown UAV altitude = a local CAUTION + event (gone with it); a UAV flown by another "
-           "station's pilot is not offered to the captain; DESCEND says it replaces the mission", ok,
-           "lamp %r, said %s, gone %s, captain asked %d, text %r" % (lamp, said, gone, cap_asked, txt[:80]))
+           "station's pilot is not offered to the captain; DESCEND says it replaces the mission; a UAV without a position "
+           "has its own text (PF4-r2)", ok,
+           "lamp %r, said %s, gone %s, captain asked %d, text %r, nopos %s" % (lamp, said, gone, cap_asked, txt[:80],
+                                                                               nopos_ok))
     ap.driver = None
 
 

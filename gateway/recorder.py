@@ -191,6 +191,9 @@ class CamRecorder:
             self.since = now
 
 
+SAR_Q_MAX = 1000             # PF4-r2 LOW-8: marker notes waiting for the recorder worker (oldest dropped, counted)
+
+
 class Recorder:
     def __init__(self, cfg, gw):
         self.cfg = cfg
@@ -299,7 +302,14 @@ class Recorder:
         q = self.__dict__.get("sar_q")
         if q is None:
             import collections
-            q = self.__dict__.setdefault("sar_q", collections.deque(maxlen=1000))
+            q = self.__dict__.setdefault("sar_q", collections.deque(maxlen=SAR_Q_MAX))
+        if q.maxlen is not None and len(q) >= q.maxlen:
+            # PF4-r2 LOW-8 (review of 64521b1): a full queue drops its OLDEST note - never silently: counted + logged
+            # (the first and then every 100th drop)
+            self.sar_dropped = getattr(self, "sar_dropped", 0) + 1
+            if self.sar_dropped == 1 or self.sar_dropped % 100 == 0:
+                log.warning("SAVE sar notes: queue full (%d), the oldest note dropped (%d dropped)", q.maxlen,
+                            self.sar_dropped)
         q.append((dict(entry, utc=self.gw.clock.stamp()), jpg, name))
 
     def _drain_sar(self):

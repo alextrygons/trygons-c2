@@ -2763,8 +2763,9 @@ UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
   the map dashed with "WAITS FOR APPROVAL - UAV n"); a single operator answers
   his own YES / NO first - nothing leaves the station before it. The same for a
   drone of a launch that is asked or running. A newer route, the captain's own
-  route for that UAV, or the copilot leaving closes the older question (the
-  copilot is told) - an old YES can never overwrite a newer mission.
+  route for that UAV, the launch sequence ending or the copilot leaving closes
+  the older question (the copilot is told) - an old YES can never overwrite a
+  newer mission.
   Launch: Tools - UAV magazine - PREPARE LAUNCH (copilot or captain). The
   CAPTAIN answers YES / NO on screen 1 (a single operator answers his own).
   The launch goes WHEN THE COPILOT SAYS SO, at any boat speed or mode (owner
@@ -4370,7 +4371,9 @@ An aircraft without an altitude can only give a CAUTION. The same for a UAV
 whose own height is not known (no fresh height from it, a lost link): the
 notice "ADS-B: UAV n unknown altitude" says so, and aircraft near it give a
 CAUTION (never taken as "far below", never as sea level). An aircraft that was
-reported on the ground is watched again as soon as it reports flying. The
+reported on the ground is watched again as soon as it reports flying. A UAV
+in the air WITHOUT a usable position is not judged at all: the notice
+"ADS-B: UAV n position unknown - no ADS-B judgement for it" says so. The
 warnings are
 notices on THIS station only (like the UAV battery notices). They are never a
 boat alarm, never go to the autopilot and never change a mode or the throttle.

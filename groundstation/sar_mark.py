@@ -136,7 +136,9 @@ def locate_boat(cal, telem, u, v, res, age_s=0.0, cfg=None):
         return {"why": "noatt"}
     # PF4-r MED-3: the attitude's real age = the sample's age here + its own age in the sample
     att_ms = t.get("att_age_ms")
-    att_age = (float(att_ms) / 1000.0) if _fin(att_ms) else 0.0
+    if not _fin(att_ms) or att_ms < 0:           # PF4-r2 LOW-1: a missing / bad attitude age = refused (never "0 s")
+        return {"why": "noatt"}
+    att_age = float(att_ms) / 1000.0
     if not _fin(age_s) or float(age_s) + att_age > c["att_max_age_s"]:
         return {"why": "noatt"}
     cam = {"height_m": cal["height_m"], "tilt_down_deg": cal["tilt_down_deg"], "hfov_deg": cal["hfov_deg"],
@@ -159,7 +161,8 @@ def locate_uav(drone, u, v, res, cfg=None):
     rx = d.get("rx_age", 0.0)                                   # PF4-r MED-3: the record's age at this station
     if not _fin(rx) or rx < 0:
         return {"why": "old"}
-    if d.get("alt_age") is not None and (not _fin(d["alt_age"]) or d["alt_age"] + rx > c["att_max_age_s"]):
+    # PF4-r2 LOW-1: a missing altitude age = refused (never skipped: a lost link would keep the old height)
+    if not _fin(d.get("alt_age")) or d["alt_age"] < 0 or d["alt_age"] + rx > c["att_max_age_s"]:
         return {"why": "old"}
     age = d.get("att_age")
     if d.get("roll") is None or d.get("pitch") is None or d.get("hdg") is None or not _fin(age) or \

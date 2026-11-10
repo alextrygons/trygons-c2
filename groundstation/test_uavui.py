@@ -826,10 +826,19 @@ def uv16(rig):
         ap.link = FL()
         ap.gw_status = {"uav": {"enabled": True, "slots": [{"slot": 1, "flying": True}, {"slot": 2, "flying": False}]}}
         ap.single_op = True
-        ap.captain_confirm = lambda what, on_yes: asked.append((what, on_yes))
+        closes = []
+        ap.captain_confirm = lambda what, on_yes, on_close=None: asked.append((what, on_yes)) or closes.append(on_close)
         routes = lambda: [m for m in ap.link.sent if m.get("t") == "uav_route"]
         ap.uav_route(1, [(37.82, 23.60), (37.83, 23.61)])          # the route box path
         res["held"] = not routes() and len(asked) == 1 and "flying UAV 1" in asked[0][0]
+        # PF4-r2 LOW-6: the single operator's question shows what the captain's shows (points, length, last point,
+        # altitude) and the route is drawn on the map while it is open (gone when it closes)
+        q = asked[0][0]
+        drawn = any(r.get("slot") == 1 and len(r.get("wps") or []) == 2 for r in (ap.ask_routes or {}).values())
+        res["same_text"] = ("2 points" in q and " km" in q and "last point 37.83000 23.61000" in q and " m)" in q and
+                            drawn and callable(closes[0]))
+        closes[0]()
+        res["undrawn"] = not any(r.get("slot") == 1 for r in (ap.ask_routes or {}).values())
         asked[0][1]()                                              # his YES
         res["after_yes"] = len(routes()) == 1 and routes()[0].get("confirm") == "self"
         ap.link.sent.clear()
@@ -849,7 +858,7 @@ def uv16(rig):
         asked.clear()
         ap.gw_status["uav"]["launch"] = {"state": "RUN", "slots": [1, 2]}
         ap.uav_route(2, [(37.84, 23.62)])                          # a magazine drone of a RUNNING launch: asks too
-        res["in_launch"] = not routes() and len(asked) == 1
+        res["in_launch"] = not routes() and len(asked) == 1 and "in the launch sequence" in asked[0][0]
         ap.gw_status["uav"].pop("launch")
         asked.clear()
         ap.single_op = False
@@ -861,7 +870,8 @@ def uv16(rig):
         ap.link, ap.single_op, ap.gw_status, ap.captain_confirm = old
     report("UV16 PF4-r MED-1: a single operator's route for a FLYING UAV leaves the station only after his OWN YES "
            "(then confirm self), NO = nothing; a magazine drone's route goes without confirm; a caller's own YES "
-           "counts; an unknown slot asks; a captain never adds confirm", all(res.values()), str(res))
+           "counts; an unknown slot asks; a captain never adds confirm; PF4-r2: the question shows the captain's route text "
+           "+ the route on the map", all(res.values()), str(res))
 
 
 def main():

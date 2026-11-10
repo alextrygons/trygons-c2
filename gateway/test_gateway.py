@@ -3989,6 +3989,82 @@ def section_gf():
 
 # ------------------------------------------------------------------ section SA --
 
+def sa8_sar_queue_drops_counted():
+    """SA8 (PF4-r2 LOW-8): Recorder.note_sar's bounded queue never drops a note silently: the oldest goes, counted +
+    logged; the newest are kept."""
+    import recorder as R
+    fr = type("FR", (), {})()
+    fr.gw = type("GW", (), {"clock": type("C", (), {"stamp": lambda _s: "2026-11-10T10:30:00Z"})()})()
+    for i in range(R.SAR_Q_MAX + 5):
+        R.Recorder.note_sar(fr, {"op": "add", "id": "p%d" % i})
+    q = fr.sar_q
+    report("SA8 PF4-r2 LOW-8: a full SAVE marker-note queue drops its oldest note COUNTED + logged (never silently), "
+           "the newest kept", getattr(fr, "sar_dropped", 0) == 5 and len(q) == R.SAR_Q_MAX and
+           q[0][0]["id"] == "p5" and q[-1][0]["id"] == "p%d" % (R.SAR_Q_MAX + 4),
+           "dropped %s, queued %d, oldest %s" % (getattr(fr, "sar_dropped", 0), len(q), q[0][0]["id"]))
+
+
+def sa7_still_worker_bounded():
+    """SA7 (PF4-r2 LOW-9, review of 64521b1): sar_still uses ONE helper thread with a bounded queue (never a thread per
+    message): with the writer blocked, SAR_STILL_QUEUE stills wait, the next ones are REFUSED with an ack + counted;
+    the files are written one after another through a temp file + rename."""
+    import base64
+    import gateway as G
+    tmp = tempfile.mkdtemp(prefix="gwtest_sa7_")
+    gate = threading.Event()
+    mid = "pt_20261110-103000_9_ab12cd"
+
+    class St:
+        id, user, role, name = 7, "bob", "HELM", "bob"
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, o):
+            self.sent.append(o)
+
+    class Store:
+        usable = True
+
+        def folder(self, n):
+            gate.wait(5.0)
+            return tmp
+
+    class Fake:
+        storage = Store()
+        sar = type("M", (), {"list": lambda _s: [{"id": mid}], "set_still": lambda _s, i, n: None})()
+        recorder = type("Rc", (), {"note_sar": lambda _s, *a: None})()
+        stations = type("X", (), {"stations": {}})()
+
+        def audit(self, *a, **kw):
+            pass
+
+        def _sar_list_msg(self):
+            return {"t": "sar_markers", "list": []}
+    fk, st = Fake(), St()
+    jpg = b"\xff\xd8\xff\xe0" + b"y" * 300 + b"\xff\xd9"
+    before = sum(1 for t in threading.enumerate() if t.name == "sar-still")
+    n_send = G.SAR_STILL_QUEUE + 4
+    for _ in range(n_send):
+        G.Gateway._sar_still(fk, st, {"id": mid, "jpg_b64": base64.b64encode(jpg).decode()})
+        time.sleep(0.01)
+    threads = sum(1 for t in threading.enumerate() if t.name == "sar-still") - before
+    refused = [x for x in st.sent if not x.get("ok") and "busy" in x.get("text", "")]
+    gate.set()
+    t0 = time.time()
+    while len(st.sent) < n_send and time.time() - t0 < 5.0:
+        time.sleep(0.02)
+    stored = [x for x in st.sent if x.get("ok")]
+    files = sorted(os.listdir(tmp))
+    report("SA7 PF4-r2 LOW-9: sar_still = ONE helper thread + a bounded queue (%d): a flood of stills starts no thread "
+           "per message, the ones over the limit are refused with an ack + counted, the rest are written (temp + "
+           "rename, no .tmp left)" % G.SAR_STILL_QUEUE,
+           threads == 1 and 1 <= len(refused) <= 4 and getattr(fk, "sar_still_dropped", 0) == len(refused) and
+           len(stored) == n_send - len(refused) and files == [mid + ".jpg"],
+           "threads %d, refused %d (counted %s), stored %d, files %s" % (
+               threads, len(refused), getattr(fk, "sar_still_dropped", 0), len(stored), files))
+
+
 def sa5_no_file_work_on_loop():
     """SA5 (PF4-r MED-5, the 13n4b rule): the gateway's sar_still writes its file in a HELPER THREAD (never on the
     calling = asyncio loop thread) and Recorder.note_sar only QUEUES (returns at once even while Recorder.lock is held
@@ -4003,7 +4079,7 @@ def sa5_no_file_work_on_loop():
     lock = threading.Lock()
 
     def spy(path, *a, **kw):
-        if str(path).endswith(".jpg"):
+        if str(path).endswith((".jpg", ".jpg.tmp")):        # PF4-r2: the still goes through a temp file
             seen.append((threading.current_thread().name, lock.locked()))
         return real_open(path, *a, **kw)
     try:
@@ -4242,6 +4318,8 @@ def section_sa():
                    v_st and v_st["code"], bad_st and bad_st["text"], unk_st and unk_st["text"],
                    big_st and big_st["text"]))
         sa5_no_file_work_on_loop()
+        sa7_still_worker_bounded()
+        sa8_sar_queue_drops_counted()
         beat.on = False
     finally:
         for c_ in clients:

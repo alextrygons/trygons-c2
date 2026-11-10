@@ -218,6 +218,15 @@ def main():
         check("%s: stop_reason + cost printed" % label,
               any("stop_reason=" in x for x in lines) and any("cost $" in x for x in lines), str(lines))
     check("max_tokens raised", ar.MAX_TOKENS >= 16000)
+    # PF4-r2: the token estimate is conservative for code - the measured call (~210k diff characters = ~73.6k real
+    # tokens, where chars / 3.5 said 60k) is estimated at or ABOVE its real size; a chunk under the 60k budget is at
+    # most 60k real tokens at the measured ratio
+    real = 73600
+    chars = int(real * ar.MEASURED_CHARS_PER_TOKEN)
+    check("token estimate >= the measured real size for code", ar.est_tokens("x" * chars) >= real,
+          "%d < %d" % (ar.est_tokens("x" * chars), real))
+    check("chars per token <= 2.6 (conservative for code)", ar.CHARS_PER_TOKEN <= 2.6)
+    check("a 60k-estimate chunk is <= 60k real tokens", 60000 * ar.CHARS_PER_TOKEN / ar.MEASURED_CHARS_PER_TOKEN <= 60000)
 
     # (b) exclusion + split + merge
     fake_git_on({"app/a.c": big(100), "gateway/g.py": big(100), "groundstation/lang/el.txt": big(900000),

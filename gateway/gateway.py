@@ -54,6 +54,9 @@ from users import Users
 from web import WebServer
 
 
+SAR_STILL_QUEUE = 8          # PF4-r2 LOW-9: stills waiting for the one sar-still helper thread
+
+
 class Gateway:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -533,16 +536,40 @@ class Gateway:
             try:
                 folder = self.storage.folder("sar") if self.storage is not None and self.storage.usable else None
                 if folder:
-                    with open(os.path.join(folder, name), "wb") as f:
+                    path = os.path.join(folder, name)
+                    tmp = path + ".tmp"
+                    with open(tmp, "wb") as f:              # PF4-r2 LOW-9: a temp file + rename (never half a file)
                         f.write(jpg)
+                    os.replace(tmp, path)
             except OSError as e:
                 err = str(e) or "OSError"
             if loop is not None:
                 loop.call_soon_threadsafe(done, err)
             else:
                 done(err)
+        # PF4-r2 LOW-9 (review of 64521b1): ONE helper thread with a bounded queue (never a thread per message; the
+        # stills are written one after another = never two writers of one file); a full queue = refused + counted
+        q = self.__dict__.get("sar_still_q")
+        if q is None:
+            import queue as _queue
+            q = self.__dict__.setdefault("sar_still_q", _queue.Queue(maxsize=SAR_STILL_QUEUE))
+
+            def worker():
+                while True:
+                    job = q.get()
+                    try:
+                        job()
+                    except Exception as e:                  # a bookkeeping error never stops the worker
+                        log.warning("sar_still: %s", e)
+            threading.Thread(target=worker, name="sar-still", daemon=True).start()
+        try:
+            q.put_nowait(write)
+        except Exception:                                   # queue.Full
+            self.sar_still_dropped = getattr(self, "sar_still_dropped", 0) + 1
+            log.warning("sar_still %s refused: %d stills waiting (dropped %d)", mid, SAR_STILL_QUEUE,
+                        self.sar_still_dropped)
+            return st.send(dict(res, ok=False, code=108, text="still not stored: busy (too many stills waiting)"))
         self.sar_still_writes = getattr(self, "sar_still_writes", 0) + 1
-        threading.Thread(target=write, name="sar-still", daemon=True).start()
 
     def _academy_msg(self, st, m):
         """Academy levels from a station (CLAUDE.md S, step 16): the file is signed by the shore PC's academy

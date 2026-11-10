@@ -12,6 +12,7 @@
   AB8  no receiver / no data states (the real worker process): NO_RX, NO_DATA, RX; never "clear sky"
   AB9  the simulated helicopter end to end (worker + sim): a CAUTION then a WARNING for the UAV, a proposal
   AB10 receive-only proof: no ADS-B module imports / names a UAV command, MAVLink, the AURIX or the allow-list
+  AB13 PF4-r2: a UAV record without an altitude age = unknown altitude; a UAV without a position listed apart (uav_nopos)
 """
 import json
 import os
@@ -62,7 +63,7 @@ def ac(dx, dy, alt_ft, gs_kn, trk, age=0.0, vs=0.0, icao="ABC123"):
 
 def uav(alt=50.0, gs=0.0, cog=0.0, climb=0.0, armed=True):
     return {"slot": 1, "lat": LAT0, "lon": LON0, "alt": alt, "gs": gs, "cog": cog, "climb": climb, "armed": armed,
-            "landed": False, "in_slot": False}
+            "landed": False, "in_slot": False, "alt_age": 0.2}
 
 
 def beast_frame(msg, typ=0x33):
@@ -487,8 +488,30 @@ def ab12():
            "capped at %d" % adsb.MAX_AIRCRAFT, all(res.values()), str(res))
 
 
+def ab13():
+    """PF4-r2 LOW-2 / LOW-3 (review of 64521b1): a UAV record WITHOUT an altitude age (the key missing) is judged with
+    an UNKNOWN altitude (never "known" after a lost link); a UAV in the air with NO usable position is listed apart
+    (gw_status adsb "uav_nopos" = the stations' «position unknown – no ADS-B judgement») and not judged."""
+    a = ac(2000, 0, 330 + 700, 80, 270)
+    d = uav(alt=100.0)
+    d.pop("alt_age")
+    unk, nop = [], []
+    ev, fl = adsb.evaluate([a], {"1": d}, CFG, unknown_out=unk, nopos_out=nop)
+    res = {"no_age": bool(ev) and ev[0]["level"] == adsb.LEVEL_CAUTION and ev[0]["uav_alt_m"] is None and unk == [1]
+           and nop == []}
+    unk, nop = [], []
+    ev, fl = adsb.evaluate([a], {"1": dict(uav(), lat=None), "2": dict(uav(), slot=2, alt=None)}, CFG,
+                           unknown_out=unk, nopos_out=nop)
+    res["nopos"] = nop == [1] and sorted(unk) == [1, 2] and all(e["slot"] != 1 for e in ev)
+    m = mgr()
+    m.judge(10.0, aircraft=[a], drones={"3": dict(uav(), lat=float("nan"))}, state="RX")
+    res["status"] = m.uav_nopos == [3]
+    report("AB13 PF4-r2: a UAV record without an altitude age = unknown altitude (CAUTION at most, listed unknown); a "
+           "UAV without a usable position is listed apart (uav_nopos: not judged)", all(res.values()), str(res))
+
+
 def main():
-    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10, ab11, ab12):
+    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10, ab11, ab12, ab13):
         try:
             f()
         except Exception as e:                              # a crash is a failure, with its reason

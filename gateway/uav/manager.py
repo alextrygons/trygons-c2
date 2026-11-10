@@ -1199,7 +1199,7 @@ class UavManager:
                 def go(result, w):
                     ok2 = result == 0
                     if ok2:
-                        self.routes[slot] = wps
+                        self._set_route(slot, wps, loaded=None)     # in flight: the mission flag unchanged
                         f["phase"] = "mission"
                     self._ack(st, "route", ok2, uavcheck.ERR_ROUTE, "UAV %d: new mission %s" % (
                         slot, "started" if ok2 else "loaded but not started (%s)" % w), slot=slot)
@@ -1235,16 +1235,27 @@ class UavManager:
                                                      self.seq.phase not in ("CHECK", "")):
                 return self._ack(st, "route", False, ERR_LAUNCH, "UAV %d is being launched now - the route was "
                                  "dropped" % slot, slot=slot)
-            self.routes[slot], self.loaded[slot] = wps, False
+            self._set_route(slot, wps)
             self._ack(st, "route", True, 0, "UAV %d: route of %d points stored (uploaded + read back at the launch)" % (
                 slot, len(wps)), slot=slot)
         # PF4-r MED-2d: a drone of an asked / running launch sequence (ANY slot of seq.slots, the ASK phase too) is
         # not re-routed by a copilot / single operator without the captain's YES - the pending rule as in flight
         if self.seq.busy() and slot in (self.seq.slots or []) and not (st.crew == "captain" and not st.single_op):
             return self._route_pending(st, m, slot, None, wps, store)
-        if st.crew == "captain" and not st.single_op:
-            self._pend_cancel(slot, "replaced by the captain's own route")
+        # PF4-r2 MED-1 (review of 64521b1): EVERY direct store - whoever sends it - first closes the slot's pending
+        # route + its question (its station told), so an older captain's YES can never put the old route back
+        self._pend_cancel(slot, "replaced by the captain's own route" if st.crew == "captain" and not st.single_op
+                          else "replaced by a newer route")
         store()
+
+    def _set_route(self, slot, wps, loaded=False):
+        """The ONLY writer of a slot's stored route (PF4-r2 MED-1): every change counts the slot's route generation,
+        so a pending route's YES applies only while the route it was asked against is still the stored one."""
+        self.routes[slot] = wps
+        if loaded is not None:
+            self.loaded[slot] = loaded
+        rg = self.__dict__.setdefault("route_gen", {})
+        rg[slot] = rg.get(slot, 0) + 1
 
     def _route_pending(self, st, m, slot, f, wps, apply_now):
         """PF2-u: a route for a FLYING drone (or, PF4-r MED-2d, a drone of a launch sequence that is asked / running)
@@ -1254,14 +1265,24 @@ class UavManager:
         altitudes + the points themselves for screen 1 / the map: PF4-r MED-2c)."""
         pend = self.__dict__.setdefault("pend_routes", {})
         self._pend_cancel(slot, "replaced by a newer route")          # PF4-r MED-2b: its question closes, its station told
+        self.pend_n = getattr(self, "pend_n", 0) + 1
+        rgen = (self.__dict__.get("route_gen") or {}).get(slot, 0)
         gen = pend[slot] = {"station": st.id, "user": st.user, "wps": wps, "f": f, "t": time.time(), "ask": None,
-                            "st": st}
+                            "st": st, "n": self.pend_n, "rgen": rgen}
         what = route_question(slot, wps, f is not None)
+        my_n = gen["n"]
 
         def answer(ok, code):
-            if pend.get(slot) is not gen:              # a newer route replaced this question: it approves nothing
+            # PF4-r2 MED-1: the YES applies only to the EXACT pending route that was asked (its number) and only while
+            # the slot's stored route is still the one it was asked against (no other store meanwhile)
+            cur = pend.get(slot)
+            if cur is not gen or cur.get("n") != my_n:   # a newer route replaced this question: it approves nothing
                 return
             pend.pop(slot, None)
+            if ok and (self.__dict__.get("route_gen") or {}).get(slot, 0) != rgen:
+                self.gw.audit("uav_route_pending_stale", slot=slot, station=st.id, n=my_n)
+                return self._ack(st, "route", False, ERR_UAV, "UAV %d: a newer route was stored meanwhile - this "
+                                 "older route was not applied" % slot, slot=slot)
             if not ok:
                 return self._ack(st, "route", False, code or ERR_UAV, "UAV %d: the new mission was not approved (%s) "
                                  "- the old one goes on" % (slot, code), slot=slot)
@@ -1302,13 +1323,21 @@ class UavManager:
         for slot, g in list((pend or {}).items()):
             sts = self.gw.stations.stations or {}
             gone = g.get("st") is not None and sts.get(g["station"]) is not g["st"]
-            if self.flying.get(slot) is not g["f"] or self.pilot_locked(slot) or gone:
+            # PF4-r2 MED-1: a pending route of a launch sequence (f None) goes when that sequence is no longer asked /
+            # running or the slot is not in it any more (a later YES would store a route nobody asked for now)
+            seq_over = g["f"] is None and (not self.seq.busy() or slot not in (self.seq.slots or []))
+            if self.flying.get(slot) is not g["f"] or self.pilot_locked(slot) or gone or seq_over:
                 pend.pop(slot, None)
-                self.gw.audit("uav_route_pending_dropped", slot=slot, station=g["station"],
-                              why="station gone" if gone else "not flying its mission / flown by hand")
+                why = ("station gone" if gone else "the launch sequence ended" if seq_over else
+                       "not flying its mission / flown by hand")
+                self.gw.audit("uav_route_pending_dropped", slot=slot, station=g["station"], why=why)
                 cancel = getattr(self.gw.stations, "cancel_ask", None)
                 if g.get("ask") is not None and cancel is not None:
                     cancel(g["ask"])
+                st = g.get("st")
+                if not gone and st is not None:          # PF4-r2 LOW-5: never a silent drop - the station is told
+                    self._ack(st, "route", False, ERR_UAV, "UAV %d: your pending route was dropped (%s) - it will "
+                              "not be applied" % (slot, why), slot=slot, dropped=True)
 
     def launch_conditions(self, slots):
         """[] = a launch of these slots may start now, else the reasons (125 / 122)."""
@@ -1385,8 +1414,11 @@ class UavManager:
         if why:
             return self._ack(st, "unregister", False, ERR_UAV, "UAV refused: %s" % why, slot=slot)
         self.reg.unregister(slot)
+        self._pend_cancel(slot, "dropped: the slot was unregistered")
         self.routes.pop(slot, None)
         self.loaded.pop(slot, None)
+        rg = self.__dict__.setdefault("route_gen", {})
+        rg[slot] = rg.get(slot, 0) + 1
         self.to_worker(self._config())
         self._ack(st, "unregister", True, 0, "slot %d unregistered" % slot, slot=slot)
 

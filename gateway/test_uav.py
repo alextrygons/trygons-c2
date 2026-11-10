@@ -2812,10 +2812,64 @@ def ua39_pf4r_pending_races():
     sts.stations = {}
     mm.pend_expire_tick()
     res["gone"] = not mm.pend_routes and a3 in sts.cancelled
-    report("UA39 PF4-r MED-2: the captain's own route clears a pending copilot route + closes its question (a late YES "
-           "approves nothing), a replaced question closes + its copilot is told, the question SHOWS the route, a "
-           "copilot's route for ANY drone of an asked / running launch sequence is pending the captain's YES, the "
-           "requesting station gone = dropped", all(res.values()), str(res))
+    # PF4-r2 MED-1 (review of 64521b1) (e): launch ASK + a pending copilot route A, the launch is cancelled, the copilot
+    # stores a NEWER route B directly, the captain answers YES on the OLD question -> B stays, A's question closed
+    w_c = [{"lat": 37.8240, "lon": 23.6030, "alt": 50}]
+    mm, sts, calls = build(flying=False)
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.seq.state, mm.seq.slots, mm.seq.cur, mm.seq.phase = launch.ASK, [1, 2], None, ""
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    ae = max(sts.asks)
+    old_e = sts.asks[ae][3]
+    mm.seq.state = launch.IDLE                                # the launch was cancelled (the tick has not run yet)
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_b})
+    stored_b = mm.routes.get(1) == uavcheck_clean(w_b)
+    old_e(True, 0)                                            # the captain's late YES on the old question
+    res["e_old_yes"] = (stored_b and mm.routes.get(1) == uavcheck_clean(w_b) and ae in sts.cancelled and
+                        not mm.pend_routes and any(x.get("replaced") for x in cop.sent))
+    # (f) the sequence ends -> the tick drops its pending route, closes the question, tells the copilot; a late YES = 0
+    mm, sts, calls = build(flying=False)
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_c})          # not in a sequence: stored
+    mm.seq.state, mm.seq.slots, mm.seq.cur, mm.seq.phase = launch.RUN, [1, 2], 2, "CLIMB"
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    af = max(sts.asks)
+    old_f = sts.asks[af][3]
+    mm.pend_expire_tick()
+    still = bool(mm.pend_routes)                              # still running: kept
+    mm.seq.state = launch.STOPPED
+    mm.pend_expire_tick()
+    old_f(True, 0)
+    res["f_seq_over"] = (still and not mm.pend_routes and af in sts.cancelled and mm.routes.get(1) == uavcheck_clean(w_c)
+                         and any(x.get("dropped") and not x["ok"] for x in cop.sent))
+    # (g) the YES applies only while the stored route is still the one it was asked against (route generation)
+    mm, sts, calls = build(flying=False)
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.seq.state, mm.seq.slots, mm.seq.cur, mm.seq.phase = launch.ASK, [1], None, ""
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    ag = max(sts.asks)
+    mm._set_route(1, uavcheck_clean(w_b))                     # any other store meanwhile
+    sts.asks[ag][3](True, 0)
+    res["g_gen"] = mm.routes.get(1) == uavcheck_clean(w_b) and "newer route was stored" in cop.sent[-1]["text"] and \
+        not cop.sent[-1]["ok"]
+    # (h) LOW-5: a pending FLYING route dropped because the drone landed -> the copilot gets an ack (never silent)
+    mm, sts, calls = build()
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    mm.flying.pop(1, None)
+    mm.pend_expire_tick()
+    res["h_ack"] = not mm.pend_routes and bool(cop.sent) and cop.sent[-1].get("dropped") and not cop.sent[-1]["ok"]
+    report("UA39 PF4-r MED-2 + PF4-r2 MED-1: the captain's own route clears a pending copilot route + closes its "
+           "question (a late YES approves nothing), a replaced question closes + its copilot is told, the question "
+           "SHOWS the route, a copilot's route for ANY drone of an asked / running launch sequence is pending the "
+           "captain's YES, the requesting station gone = dropped; EVERY direct store closes the pending route (an old "
+           "YES after a cancelled launch never overwrites the newer route), a pending route goes when its launch "
+           "sequence ends, the YES applies only to the exact route asked (route generation), a drop is acked",
+           all(res.values()), str(res))
 
 
 def uavcheck_clean(wps):

@@ -52,6 +52,24 @@ def route_msg(target, pts, alt=DEFAULT_ALT_M):
     return {"t": "uav_route", "target": target, "wps": wps}
 
 
+def route_question(slot, wps, flying=True):
+    """PF4-r2 LOW-6: the SAME route text as the gateway's question to the captain (gateway/uav/manager.route_question:
+    points, length, last point, altitudes; English, translated with from_en) for the single operator's own YES."""
+    import math
+    km = 0.0
+    for a, b in zip(wps, wps[1:]):
+        dy = (b["lat"] - a["lat"]) * 111320.0
+        dx = (b["lon"] - a["lon"]) * 111320.0 * math.cos(math.radians(a["lat"]))
+        km += math.hypot(dx, dy) / 1000.0
+    alts = [float(w.get("alt") or 0.0) for w in wps]
+    last = wps[-1]
+    alt = "%d" % round(alts[0]) if min(alts) == max(alts) else "%d-%d" % (round(min(alts)), round(max(alts)))
+    tpl = ("UAV ROUTE: change the mission of the flying UAV %s (%d points, %.1f km, last point %.5f %.5f, %s m)" if
+           flying else "UAV ROUTE: change the route of UAV %s in the launch sequence (%d points, %.1f km, last point "
+           "%.5f %.5f, %s m)")
+    return tpl % (slot, len(wps), km, last["lat"], last["lon"], alt)
+
+
 def menu_items(uav, boat_pos):
     """[(action, target, text, kind)] for the right-click menu at a point."""
     out = []

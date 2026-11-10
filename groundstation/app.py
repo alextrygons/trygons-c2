@@ -3122,10 +3122,16 @@ class App:
         if self.driver:
             self.driver.cancel(d.get("id"))
 
-    def captain_confirm(self, what, on_yes):
-        """Single-operator mode: the captain confirms their own driving action."""
+    def captain_confirm(self, what, on_yes, on_close=None):
+        """Single-operator mode: the captain confirms their own driving action. on_close (PF4-r2): called once when
+        the question ends (YES / NO / timeout / replaced by a newer question)."""
         if self.cconf is not None:
             self.cconf.destroy()
+            prev = getattr(self, "cconf_close", None)
+            self.cconf_close = None
+            if prev is not None:
+                prev()
+        self.cconf_close = on_close
         w = tk.Toplevel(self.root, bg=C["head"])
         w.title(i18n.W("cap.cc_title"))
         w.transient(self.root)
@@ -3142,6 +3148,9 @@ class App:
         def done(yes):
             if self.cconf is w:
                 self.cconf = None
+                cb, self.cconf_close = self.cconf_close, None
+                if cb is not None:
+                    cb()
             w.destroy()
             if yes:
                 on_yes()
@@ -6209,8 +6218,24 @@ class App:
             if yes:
                 msg["confirm"] = "self"
                 return send()
-            what = "UAV ROUTE: change the mission of the flying UAV %s (%d points)" % (target, len(pts))
-            return self.captain_confirm(what, lambda m=msg: (m.__setitem__("confirm", "self"), send(m)))
+            # PF4-r2 LOW-6: the single operator's own question shows what the captain's shows - points, length, last
+            # point, altitudes (the same text) + the route drawn on the map while the question is open
+            in_air = any(str(s_.get("slot")) == str(target) and s_.get("flying")
+                         for s_ in ((self.gw_status or {}).get("uav") or {}).get("slots") or [])
+            launch_seq = not in_air and (((self.gw_status or {}).get("uav") or {}).get("launch") or {}).get("state")                 in ("ASK", "RUN", "CLOSING")
+            what = uavroute.route_question(target, msg["wps"], not launch_seq)
+            key = ("self", target)
+            self.ask_routes = getattr(self, "ask_routes", None) or {}
+            self.ask_routes[key] = {"slot": target, "wps": [[w["lat"], w["lon"], w.get("alt")] for w in msg["wps"]]}
+            if getattr(self, "mapwin", None) is not None:
+                self.mapwin.redraw()
+
+            def closed():
+                (getattr(self, "ask_routes", None) or {}).pop(key, None)
+                if getattr(self, "mapwin", None) is not None:
+                    self.mapwin.redraw()
+            return self.captain_confirm(what, lambda m=msg: (m.__setitem__("confirm", "self"), send(m)),
+                                        on_close=closed)
         send()
 
     def uav_notices(self, uav):
@@ -6274,12 +6299,14 @@ class App:
                 self.event(text)
                 if self.sound and 1 <= int(e.get("slot") or 0) <= 6:
                     self.sound.say("adsb.%s%d" % ("w" if lv == 2 else "c", int(e["slot"])))
-        for slot in st.get("uav_unknown") or []:
-            # PF5-r MED-2: a UAV in the air without a known (fresh) altitude / position: judged CAUTION at most - said
-            code = "adsb_unk_%s" % slot
+        nopos = set(st.get("uav_nopos") or [])
+        for slot in sorted(set(st.get("uav_unknown") or []) | nopos):
+            # PF5-r MED-2: a UAV in the air without a known (fresh) altitude: judged CAUTION at most - said;
+            # PF4-r2 LOW-3: WITHOUT a position it is not judged at all - its own text says so
+            code = "adsb_unk_%s" % slot if slot not in nopos else "adsb_nopos_%s" % slot
             live.add(code)
             if code not in self.lamps.local:
-                text = T("adsb.uav_alt_unknown", n=slot)
+                text = T("adsb.uav_alt_unknown" if slot not in nopos else "adsb.uav_pos_unknown", n=slot)
                 self.lamps.set_local(code, text, alerts.CAUTION)
                 self.event(text)
         for key in [k for k in self.adsb_said if "adsb_%s_%s" % k not in live]:

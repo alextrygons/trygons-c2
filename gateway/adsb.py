@@ -451,7 +451,7 @@ def proposal_kind(c, cfg):
     return "hold"
 
 
-def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None):
+def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None, nopos_out=None):
     """aircraft = snapshot list, drones = {slot: record of the UAV manager's drone_view} (only drones IN THE AIR are
     judged: armed, not landed, a position, not in the slot, a fresh position) -> (list of events worst first,
     list of the flying slots). An event: {icao, cs, slot, level, t, d_h, d_v, ac_alt_m, uav_alt_m, kind}."""
@@ -468,10 +468,13 @@ def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None):
             continue
         if not _fin(d.get("lat")) or not _fin(d.get("lon")):
             unknown.append(n)                          # PF5-r MED-2 / LOW: in the air, no usable position
+            if nopos_out is not None:                  # PF4-r2 LOW-3: NOT judged at all - its own notice
+                nopos_out.append(n)
             continue
         d = dict(d)
         age = d.get("alt_age")
-        if not _fin(d.get("alt")) or (age is not None and (not _fin(age) or age > cfg["uav_max_age_s"])):
+        # PF4-r2 LOW-2: a record WITHOUT an altitude age (key missing) = an unknown altitude, never "known"
+        if not _fin(d.get("alt")) or "alt_age" not in d or                 (age is not None and (not _fin(age) or age > cfg["uav_max_age_s"])):
             # PF5-r MED-2: altitude missing / non-finite / stale (a lost link keeps the old record): judged with an
             # UNKNOWN altitude (CAUTION at most) and, stale, standing at its last place - never a silent 0 m
             d["alt"] = None
