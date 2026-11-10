@@ -333,6 +333,15 @@ class Run(object):
              "sog": round(state.get("est_sog", 0.0), 2), "thr": round(state.get("throttle", 0.0), 1),
              "alm": int(state.get("alarm_bits", 0)) | self.shown_bits(), "in_x": round(state.get("in_x", 0.0), 2),
              "in_y": round(state.get("in_y", 0.0), 2), "status": self.status}
+        for key, src in (("rot", "yaw_rate"), ("slam", "slam_peak"), ("pm", "slam_rate")):     # TR4: for the trend graphs
+            v = state.get(src)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+                s[key] = round(float(v), 2)
+        for key, src in (("al", "acc_lon"), ("at", "acc_lat"), ("av", "acc_vert")):
+            for suffix in ("", "_pk"):
+                v = state.get(src + suffix)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+                    s[key + suffix] = round(float(v), 3)
         if self.origin is not None:
             n, e = local(state, self.origin)
             s["n"], s["e"] = round(n, 1), round(e, 1)

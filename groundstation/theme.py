@@ -217,10 +217,13 @@ TREND_GRID = "#14202a"
 TREND_TEXT = "#c8d4dc"
 TREND = {"sog": "#00e0c0", "thr": "#d0b0ff", "hdg": "#ff80c0", "rot": "#e8e8a0", "xte": "#8090ff",
          "roll": "#00a0ff", "pitch": "#a0ff40", "slam_g": "#f4f4f4", "slam_pm": "#a0a0a0", "depth": "#4060ff",
-         "bank_v": "#80ffff", "link_ms": "#ffc0e0", "link_loss": "#90c060"}
+         "bank_v": "#80ffff", "link_ms": "#ffc0e0", "link_loss": "#90c060",
+         # TR4: the three acceleration axes (BNO085 linear acceleration; display only), distinct from every other
+         "acc_lon": "#c060ff", "acc_lat": "#b0ff90", "acc_vert": "#6080c0"}
 # Tk dash tuples (on, off, ...) in px; () = solid
 TREND_DASH = {"sog": (), "thr": (6, 3), "hdg": (), "rot": (2, 3), "xte": (), "roll": (6, 3), "pitch": (),
-              "slam_g": (), "slam_pm": (2, 3), "depth": (), "bank_v": (), "link_ms": (), "link_loss": (6, 3, 2, 3)}
+              "slam_g": (), "slam_pm": (2, 3), "depth": (), "bank_v": (), "link_ms": (), "link_loss": (6, 3, 2, 3),
+              "acc_lon": (), "acc_lat": (6, 3), "acc_vert": (2, 3)}
 
 
 def mix(c1, c2, f):

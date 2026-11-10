@@ -20,6 +20,8 @@ import os
 
 import i18n
 import theme
+import trendgraph
+import trends as _tr
 from alerts import override_texts
 from i18n import T
 
@@ -53,6 +55,9 @@ DEFAULT_LAYOUT = {
     "bottom": (0.008, 0.953, 0.984, 0.040),
     # the boat file's relays with "show_hud" (CLAUDE.md O): left, beside the throttle, above "drive"
     "relays": (0.095, 0.640, 0.150, 0.190),
+    # step TR4 (trend panel «ΤΑΣΕΙΣ», CLAUDE.md Y): the optional strip at the LEFT EDGE between the throttle bar and the
+    # picture's free centre (x1 = 0.245 < 0.25); drawn only while the setting trends_hud is on; hidden in MINIMAL
+    "trends": (0.095, 0.235, 0.150, 0.395),
 }
 OVERLAYS = list(DEFAULT_LAYOUT)
 # the logo (theme.py): fixed in the free corner above the bottom bar, right of the mini map, below the
@@ -67,9 +72,10 @@ ALWAYS = {"bottom", "drive"}       # never hidden by declutter: the bar (the way
 UAV_KEEP = {"status", "master", "alarms", "notices", "bottom"}
 # hud_layout.json carries "layout_version": a saved file without it (or older) takes the NEW defaults for the
 # boxes that moved in that version; every other box keeps the user's values; the file is saved back.
-HUD_LAYOUT_VERSION = 3
+HUD_LAYOUT_VERSION = 4
 LAYOUT_MIGRATE = {2: ("alarms", "notices", "speed", "depth", "waypoint", "traffic", "rot", "gmeter"),
-                  3: ("bottom", "tape", "drive", "steer", "cdi")}       # 13n1: the one bottom bar
+                  3: ("bottom", "tape", "drive", "steer", "cdi"),       # 13n1: the one bottom bar
+                  4: ()}                                                 # TR4: adds only "trends"
 
 
 def rows_that_fit(n, box_h, lh, pad=4):
@@ -315,6 +321,7 @@ class Hud:
         self.W = self.H = 1
         self.pal = palette()
         self.edit = False
+        self._strip_ops = None                  # TR4: the last strip's ops (see trends())
         self.measure = lambda s, size, bold=False: len(s) * size * 0.58      # the window sets the real one
 
     # primitive ops
@@ -381,7 +388,7 @@ class Hud:
                          ("traffic", self.traffic), ("rot", self.rot), ("gmeter", self.gmeter),
                          ("steer", self.steer), ("cdi", self.cdi), ("minimap", self.minimap),
                          ("bottom", self.bottom), ("tape", self.tape), ("drive", self.drive),
-                         ("relays", self.relays),
+                         ("relays", self.relays), ("trends", self.trends),
                          ("status", self.status),
                          ("master", self.master), ("notices", self.notices), ("alarms", self.alarms)):
             if not self.shown(name, s):
@@ -938,6 +945,64 @@ class Hud:
                 self.button(rr, r["name"], "relay:%d" % r["n"] if r.get("click") else None, "relay_%d" % r["n"],
                             on=r["state"] == "on", colour=self.pal["grey"] if unknown else None)
             y += lh + gap
+
+    def trends(self, name, s):
+        """TR4: the optional strip of trend graphs (s.trend_strip = [{"g": n, "lines": trendgraph.lines(...)}], at most
+        3, set by driver.py only while trends_hud is on). DISPLAY ONLY: no click, no zoom, no highlight (the «ΤΑΣΗ»
+        highlight stays inside screen 2's panel). Each value keeps its OWN colour AND line pattern (the one exception
+        from the all-green video HUD, owner L2); NIGHT = the dim red + the pattern."""
+        strip = s.trend_strip
+        if not strip:
+            return
+        x0, y0, x1, y1 = self.R(name)
+        # the ops of the strip change only when the lines do (driver.trend_strip hands over the SAME list for half a
+        # second): reuse them between frames (the box, the palette and the font are part of the key)
+        key = (id(strip), (x0, y0, x1, y1), self.pal["main"], self.f_small, i18n.lang())
+        hit = self._strip_ops
+        if hit is not None and hit[0] == key and hit[1] is strip:
+            self.ops.extend(hit[2])
+            return
+        mark = len(self.ops)
+        self.rect((x0, y0, x1, y1), name, fill=theme.TREND_BG, w=0, alpha=self.pal["alpha"])
+        n = len(strip)
+        ch = (y1 - y0) / n
+        fs = self.f_small
+        lh = fs * 1.25
+        for k, gr in enumerate(strip):
+            cy0 = y0 + k * ch
+            cy1 = cy0 + ch
+            lines = gr["lines"]
+            top = cy0 + 2 + lh * len(lines)
+            if k:
+                self.line((x0 + 2, cy0, x1 - 2, cy0), name, fill=theme.TREND_GRID, w=1)
+            px0, px1, py0, py1 = x0 + 3, x1 - 3, top + 1, cy1 - 3
+            if py1 - py0 < 6:
+                py0 = cy0 + ch * 0.5
+            for i, ln in enumerate(lines):
+                vid = ln["id"]
+                v = ln["last"]
+                if _tr.finite(v):
+                    txt = "%s %.*f %s" % (T("trend." + vid), _tr.INFO[vid]["dec"], v % 360.0 if vid == "hdg" else v,
+                                          T("trend.u_min") if _tr.INFO[vid]["unit"] == "/min" else _tr.INFO[vid]["unit"])
+                else:
+                    txt = "%s %s" % (T("trend." + vid), T("trend.no_data"))
+                self.text((x0 + 4, cy0 + 2 + i * lh), txt, name + "_cap", size=fs, fill=ln["colour"],
+                          max_w=x1 - x0 - 8, box=(x0, y0, x1, y1))
+            for ln in lines:
+                if ln["peak_runs"]:
+                    pk_col = ln["colour"]
+                    for run in ln["peak_runs"]:
+                        self._strip_run(run, px0, px1, py0, py1, pk_col, ln["dash"], 1, 110, name)
+                for run in ln["runs"]:
+                    self._strip_run(run, px0, px1, py0, py1, ln["colour"], ln["dash"], 2, 255, name)
+        self._strip_ops = (key, strip, self.ops[mark:])
+
+    def _strip_run(self, run, px0, px1, py0, py1, col, dash, w, alpha, tag):
+        pts = [(px0 + x * (px1 - px0), py1 - y * (py1 - py0)) for x, y in run]
+        if len(pts) == 1:
+            pts = [(pts[0][0] - 1.0, pts[0][1]), (pts[0][0] + 1.0, pts[0][1])]
+        for piece in trendgraph.dash_runs(pts, dash):
+            self.line([q for pt in piece for q in pt], tag, fill=col, w=w, alpha=alpha)
 
     def minimap(self, name, s):
         r = self.R(name)

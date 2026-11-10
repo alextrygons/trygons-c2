@@ -37,6 +37,7 @@ CONTENTS
   23. Man overboard (MOB) - search and rescue tools
   24. Aircraft near the UAVs (ADS-B) - receive only
   25. The SAR demo - a scripted search-and-rescue show (DEMO_SAR.bat)
+  26. Trends - the boat's values as graphs over time (screen 2 panel, screen 1 strip)
 
 
 -------------------------------------------------------------------------------
@@ -4445,4 +4446,84 @@ NOT FOR REAL USE: positions marked this way are estimates and not for
 navigation; the simulated person, helicopter and UAVs exist only in the demo.
 The academy has the lesson "Man overboard and search" and the scenario "Man
 overboard (MOB)" (simulator only).
+===============================================================================
+
+-------------------------------------------------------------------------------
+26. TRENDS - the boat's values as graphs over time (steps TR2-TR4)
+-------------------------------------------------------------------------------
+What it is: a panel on screen 2 with graphs of the values you already know:
+speed and throttle, heading and rate of turn, cross-track error (only in AUTO),
+roll and pitch, impacts, depth from the chart, battery, the link (round trip and
+lost frames) and the boat's acceleration. It only SHOWS. It sends nothing to the
+boat, the gateway or another station, changes no mode, no setting of the boat,
+and plays no sound.
+
+THE PANEL (screen 2). The corner panel TRENDS starts CLOSED (only its title):
+click the title to open it, drag the title to move it. The buttons 2, 10, 30 and
+60 are the time span in minutes (the last 10 minutes by default). The GRAPHS
+button chooses which graphs are shown, up to 6 at once. When the window is too
+small for six, the panel shows fewer, then only its title. A click on a graph
+shows the time (UTC and local), the mode and every value at that moment; a
+second click or Esc closes it. Where there is no data, the line STOPS: it is
+never drawn across a hole and never invented.
+  Every value has its OWN colour and its OWN line pattern (solid, dashed,
+dotted), so two lines in one graph are told apart even by someone who cannot
+tell the colours apart. At night (NIGHT) all lines are the dim red and only the
+pattern and the label at the right end tell them apart. The newest value and its
+unit are written at the right end of each line. Red and amber are never used for
+a normal line: they mean alarms.
+  The graphs: 1 speed and throttle; 2 heading and rate of turn; 3 cross-track
+error; 4 roll and pitch; 5 impacts (the peak in g and the number per minute);
+6 depth; 7 battery; 8 link; 9 acceleration.
+
+ACCELERATION (graph 9). Three lines, one per axis: LONGITUDINAL (+ forward),
+LATERAL (+ starboard) and VERTICAL (+ up), in g, with gravity taken out. Each
+axis has its own colour and its own pattern. The solid-looking line is the
+AVERAGE over half a second; the thinner, fainter line of the same colour and
+pattern is the PEAK in the same half second (the largest value, with its sign).
+The right end of each line shows "average/peak". The three axes share one scale
+that includes zero (the dashed zero line), so you can compare them.
+  Where it comes from: the BNO085 motion sensor of the boat, which also measures
+the slamming impacts. It is for the eye and the record only: nothing in the
+control of the boat reads it, and it does not change any limit. Impacts per
+minute are in graph 5.
+  Honest limits: this is NOT engine vibration. The sign and the axes depend on
+how the sensor is mounted; they are checked on the boat at the first bench test
+(FIRST_TEST.md) and are only as good as that check. The values are averages
+over short windows, so a very short bump can be smaller in the average than in
+the peak line. Without a sensor value the lines are simply missing.
+
+THE SILENT RED «TREND» (not an alarm). When one value moves away from its own
+normal of the last ten minutes, its line and the label at its right end turn
+RED and a framed label «TREND: SPEED ↑» (or ↓, or a wave sign for a change in
+how much it swings) appears inside its graph. It needs two minutes of history,
+the change must last ten seconds, and the same value is not marked again for
+five minutes. Changes YOU commanded (a new mode, waypoint, throttle step, speed
+limit, gear, stopping) do not count: the panel starts again from the new state
+instead. The red label is NOT an alarm: no sound, no MASTER lamp, nothing in the
+alarm list, nothing to acknowledge. Real alarms are unchanged and always win. It
+is written, as text, to a log on THIS PC only (never sent anywhere).
+  Honest limits: it is simple statistics. It can miss a slow drift and it can
+mark a natural change, for example when the sea gets rougher. It is a hint to
+look, not a safety function.
+
+THE STRIP ON SCREEN 1 (optional, off by default). In the TRENDS panel on screen
+2 the button ON SCREEN 1 (inside the GRAPHS choice) switches on a thin strip of
+small graphs at the LEFT edge of screen 1 (speed with throttle, roll with pitch,
+impacts). It never covers the centre of the picture, has no click and no zoom
+(it follows the time span of the panel), has no red label, and is hidden at the
+minimal declutter level. On the camera video it keeps the colour and pattern of
+each value (the one exception from "all information green").
+
+LOOKING BACK. The same graphs are in (1) the log viewer (logview.py): a pane
+under the plots with the whole recording (the last 60 minutes of a longer one),
+the cursor in step with the plots; the boat's log holds speed, throttle, heading,
+rate of turn, cross-track (AUTO), impacts, battery and, once per second, the
+acceleration; roll, pitch, depth and the link are NOT in the log and are left
+empty; (2) the replay of an academy scenario, and (3) the video lessons of the
+academy. They read files only and send nothing.
+
+REMEMBER. The graphs keep the last 60 minutes in the PC's memory. A new
+connection or a restart of the boat starts them empty. Nothing is written to a
+file for the graphs themselves.
 ===============================================================================

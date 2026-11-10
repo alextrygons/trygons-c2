@@ -63,6 +63,8 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      joystick through the station's own 20 Hz loop): trigger only after 0.5 s + a fresh press, stick Y
      selects, thumb = REJECT, the answering trigger never in the packet to the boat; mouse + the single
      operator's own confirmation
+  I26 trend strip on screen 1 (step TR4, CLAUDE.md Y): the 'trends' box at the left edge, over no other box, off by
+     default, hidden in MINIMAL, own colour per value, NIGHT, layout version 4 migration
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -1032,6 +1034,66 @@ def main():
                "MINIMAL hidden %s; no boat nothing %s" % (over21, centre21, levels21, sorted(boxes), hit_acts, lit21,
                                                          pair21, inside21, sent21, minimal21, none21))
 
+
+        # I26 the optional trend strip on screen 1 (step TR4, CLAUDE.md Y; docs/trends_design.md 4, TJ1): the "trends" box at
+        # the LEFT edge - over no other box, the logo, the picture's free centre or the bottom bar, inside x < 0.25; OFF by
+        # default, hidden in MINIMAL, drawn only from the model; each value its own colour; NIGHT = the dim red
+        import trends as trmod
+        tb = rect("trends")
+        others26 = dict({k: rect(k) for k in L if k != "trends"}, LOGO_BOX=others["LOGO_BOX"])
+        over26 = [k for k, r_ in others26.items() if overlay.overlaps(tb, r_)]
+        centre26 = overlay.overlaps(tb, (0.25, 0.22, 0.75, 0.75))
+        left26 = tb[2] < 0.25 and tb[0] > 0
+        levels26 = [hud.declutter_visible("trends", lv) for lv in hud.DECLUTTER]
+        tags26 = lambda: [o for o in dv.ops if o.get("tag") in ("trends", "trends_cap")]            # noqa: E731
+        pump(0.6)
+        off26 = not tags26()                                    # trends_hud is off by default
+        for k in range(120):                                    # 60 s of 2 Hz data in the station's own model
+            tnow = time.time() - 60 + k * 0.5
+            app.trends.feed(tnow, dict(app.t, est_sog=5.0 + 0.02 * k, throttle=40.0, att_roll=1.0 + 0.01 * k,
+                                       att_pitch=2.0, slam_peak=0.3, slam_rate=2, acc_lon=0.1, acc_lat=-0.05,
+                                       acc_vert=0.2, acc_lon_pk=0.5, acc_lat_pk=-0.2, acc_vert_pk=0.9, compass_ok=True))
+        app.trends.tick(time.time() + 1)
+        A.settings.put("trends_hud", True)
+        pump(0.8)
+        ops26 = [o for o in dv.ops if o.get("tag") == "trends" and o["k"] == "line"]
+        box26 = dv.layout.px("trends", dv.cv.winfo_width(), dv.cv.winfo_height())
+        inside26 = bool(ops26) and all(box26[0] - 1 <= o["pts"][j] <= box26[2] + 1 and box26[1] - 1 <= o["pts"][j + 1]
+                                       <= box26[3] + 1 for o in ops26 for j in range(0, len(o["pts"]), 2))
+        cols26 = {o["fill"] for o in ops26} - {A.theme.TREND_GRID}
+        own26 = {A.theme.TREND["sog"], A.theme.TREND["thr"], A.theme.TREND["roll"], A.theme.TREND["pitch"],
+                 A.theme.TREND["slam_g"], A.theme.TREND["slam_pm"]} <= cols26
+        caps26 = [o["s"] for o in dv.ops if o.get("tag") == "trends_cap"]
+        A.settings.put("night", True)
+        pump(0.8)
+        night26 = {o["fill"] for o in dv.ops if o.get("tag") == "trends" and o["k"] == "line"} - {A.theme.TREND_GRID}
+        night_ok = bool(night26) and night26 <= {A.theme.NIGHT["main"], A.theme.NIGHT["dim"]}
+        A.settings.put("night", False)
+        A.settings.put("declutter", "MINIMAL")
+        pump(0.6)
+        minimal26 = not tags26()
+        A.settings.put("declutter", "FULL")
+        A.settings.put("trends_hud", False)
+        pump(0.6)
+        back26 = not tags26()
+        # layout migration: a version 3 file without the box takes the default for it, keeps the user's other boxes
+        import json as _json
+        import tempfile as _tf
+        lf = os.path.join(_tf.mkdtemp(prefix="trygons_lay_"), "l.json")
+        with open(lf, "w") as f_:
+            _json.dump({"layout_version": 3, "rects": {"speed": [0.1, 0.1, 0.1, 0.1]}, "hidden": []}, f_)
+        lay26 = hud.Layout(lf)
+        saved26 = _json.load(open(lf))
+        migr26 = lay26.rects["trends"] == hud.DEFAULT_LAYOUT["trends"] and lay26.rects["speed"] == (0.1, 0.1, 0.1, 0.1)             and saved26.get("layout_version") == hud.HUD_LAYOUT_VERSION == 4
+        report("I26 trend strip on screen 1: the 'trends' box at the left edge (x < 0.25) over no other box / the logo / "
+               "the free centre, off by default, hidden in MINIMAL, lines inside the box, each value its OWN colour, NIGHT "
+               "= the dim red, switched off again = gone, layout version 4 migration",
+               not over26 and not centre26 and left26 and levels26 == [True, True, False] and off26 and inside26 and own26
+               and bool(caps26) and night_ok and minimal26 and back26 and migr26 and not errors,
+               "overlaps %s; centre %s; left %s; levels %s; off by default %s; %d line ops inside %s; own colours %s; "
+               "captions %s; night %s; MINIMAL hidden %s; off again %s; migration %s"
+               % (over26, centre26, left26, levels26, off26, len(ops26), inside26, own26, caps26[:3], night_ok, minimal26,
+                  back26, migr26))
 
         # I22 DP on screen 1 (CLAUDE.md P, step 11): the DP box in the CDI place - the spot vector + the thrust bars
         dp_t = dict(mode=A.proto.MODE_DP, mode_name="DP", dp_sub=A.proto.DP_SPOT, dp_err_fwd=6.0, dp_err_stbd=-3.0,

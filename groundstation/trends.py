@@ -37,10 +37,19 @@ VALUES = (
     ("bank_v", 7, "V", 1, 1.0, False),
     ("link_ms", 8, "ms", 0, 100.0, False),
     ("link_loss", 8, "%", 0, 5.0, False),
+    # TR4 (FW-TR): the BNO085 linear acceleration, the average per 0.5 s slot (the peak is in PK, drawn with it)
+    ("acc_lon", 9, "g", 2, 0.2, False),
+    ("acc_lat", 9, "g", 2, 0.2, False),
+    ("acc_vert", 9, "g", 2, 0.2, False),
 )
+ACC_GRAPH = 9
+ACC_IDS = ("acc_lon", "acc_lat", "acc_vert")
+PK_IDS = tuple(i + "_pk" for i in ACC_IDS)        # the signed largest-magnitude peak of the same axis (per slot)
+PK_OF = dict(zip(ACC_IDS, PK_IDS))
 IDS = tuple(v[0] for v in VALUES)
 INFO = {v[0]: {"graph": v[1], "unit": v[2], "dec": v[3], "span": v[4], "unwrap": v[5]} for v in VALUES}
-GRAPHS = {g: tuple(v[0] for v in VALUES if v[1] == g) for g in range(1, 9)}
+INFO.update({PK_OF[i]: dict(INFO[i]) for i in ACC_IDS})
+GRAPHS = {g: tuple(v[0] for v in VALUES if v[1] == g) for g in range(1, 10)}
 DEFAULT_SHOW = (1, 2, 4, 5, 7, 8)       # G1 G2 G4 G5 G7 G8 (design 4)
 MAX_SHOWN = 6
 
@@ -59,7 +68,7 @@ class Trends:
     """Sampler + the rings. RAM only, never on disk (the debrief uses the logs)."""
 
     def __init__(self):
-        self.vals = {i: array("f", [NAN]) * N for i in IDS}
+        self.vals = {i: array("f", [NAN]) * N for i in IDS + PK_IDS}
         self.times = array("d", [0.0]) * N
         self.modes = [""] * N
         self.N = N
@@ -71,11 +80,13 @@ class Trends:
         self.last_t_ms = None
         self.last_frame_t = None
         self._lin_gen = -1
-        self._lin_times, self._lin_vals, self._bounds = None, {}, {}
+        self._lin_times, self._lin_vals, self._bounds, self._clean = None, {}, {}, {}
+        self._colc = {}                     # complete pixel columns on the absolute time grid (see segments)
 
     # --- clearing ---------------------------------------------------------------------------------------
     def _clear_slot(self):
         self.slot_t0 = None
+        self.acc_n = {}
         self.cur = {}
         self.cur_mode = ""
 
@@ -87,6 +98,7 @@ class Trends:
         self.n = 0
         self.epoch += 1
         self.gen += 1
+        self._colc = {}
         self.frames = []
         self.last_t_ms = None
         self.last_frame_t = None
@@ -128,6 +140,19 @@ class Trends:
         c["bank_v"] = num(d, "bank_v")
         c["link_ms"] = float(rtt_ms) if finite(rtt_ms) else NAN
         c["link_loss"] = self.loss_pct()
+        for ax in ACC_IDS:                  # TR4: the mean of the frames' averages, the largest peak of a slot
+            a, pk = num(d, ax), num(d, ax + "_pk")
+            if finite(a):
+                n = self.acc_n.get(ax, 0)
+                old = c.get(ax)
+                c[ax] = a if not n or not finite(old) else (old * n + a) / (n + 1)
+                self.acc_n[ax] = n + 1
+                if finite(pk):
+                    o = c.get(PK_OF[ax])
+                    c[PK_OF[ax]] = pk if o is None or not finite(o) or abs(pk) > abs(o) else o
+            elif ax not in c:
+                c[ax] = NAN
+                c[PK_OF[ax]] = NAN
         self.cur_mode = d.get("mode_name") or ""
         self.last_frame_t = now
 
@@ -149,7 +174,7 @@ class Trends:
         if self.n and self.times[(self.n - 1) % N] >= lf:
             return
         i = self.n % N
-        for k in IDS:
+        for k in IDS + PK_IDS:
             self.vals[k][i] = cur.get(k, NAN)
         self.times[i] = lf
         self.modes[i] = mode
@@ -233,7 +258,7 @@ class Trends:
         start = (self.n - cnt) % N
         i = (start + best) % N
         out = {"t": float(self.times[i]), "mode": self.modes[i]}
-        for k in IDS:
+        for k in IDS + PK_IDS:
             out[k] = float(self.vals[k][i])
         return out
 
@@ -243,6 +268,7 @@ class Trends:
             self._lin_gen = self.gen
             self._lin_times = self._linear(self.times, self.count())
             self._lin_vals = {}
+            self._clean = {}
             self._bounds = {}
         return self._lin_times
 
@@ -280,12 +306,97 @@ class Trends:
         t0 = now - window_s
         unwrap = INFO[vid]["unwrap"]
         run, last_t, prev_raw, off = [], None, None, 0.0
+        clean = self._clean.get(vid)                    # no NaN anywhere in the ring (the usual case): one sum per sample set
+        if clean is None:
+            tot = sum(vs)
+            clean = self._clean[vid] = tot == tot
+        # columns on the absolute time grid (now = a multiple of the column width, as the panel asks): a COMPLETE column
+        # (every sample of it is in, none of it fell off the ring) never changes - cached, so a refresh only works on the
+        # newest column(s) (design 9: the redraw cost stays flat as the ring fills)
+        w = window_s / float(cols)
+        phase = now / w
+        cacheable = abs(phase - round(phase)) < 1e-6 and w >= SLOT * 0.999
+        colc = self._colc
+        wk, base = round(w, 6), int(round(t0 / w))
+        t_newest, t_oldest = ts[-1], ts[0]
+        for c in range(cols):
+            a, b = bounds[c], bounds[c + 1]
+            if a >= b:
+                continue
+            ent = None
+            key = None
+            if cacheable:
+                key = (vid, wk, base + c)
+                ent = colc.get(key)
+            if ent is None:
+                ent = self._col(ts, vs, a, b, clean, unwrap) or False
+                if key is not None and t0 + c * w >= t_oldest and t0 + (c + 1) * w <= t_newest:
+                    if len(colc) > 60000:
+                        colc.clear()
+                    colc[key] = ent
+            if not ent:
+                continue
+            t_first, t_last, first_raw, last_raw, pts, mn, mx = ent
+            if last_t is not None and t_first - last_t > BREAK_S:
+                runs.append(run)
+                run = []
+            if unwrap and prev_raw is not None:
+                if first_raw - prev_raw > 180.0:
+                    off -= 360.0
+                elif prev_raw - first_raw > 180.0:
+                    off += 360.0
+            prev_raw, last_t = last_raw, t_last
+            for t, x in pts:
+                run.append(((t - t0) / window_s, x + off))
+            lo, hi = min(lo, mn + off), max(hi, mx + off)
+        if run:
+            runs.append(run)
+        return runs, lo, hi
+
+    @staticmethod
+    def _col(ts, vs, a, b, clean, unwrap):
+        """One pixel column [a, b) of the time-ordered samples -> (t_first, t_last, first_raw, last_raw, [(t, x) ...], mn, mx)
+        with the MIN and the MAX of the column in the order they happened, or None (no finite value in it)."""
+        seg = vs[a:b]
+        if clean and not unwrap:
+            s = 0.0
+        else:
+            s = sum(seg)
+        if s == s and not (unwrap and max(seg) - min(seg) > 180.0):      # no NaN (the usual case): C-speed
+            mn, mx = min(seg), max(seg)
+            imn, imx = a + seg.index(mn), a + seg.index(mx)
+            first_raw, last_raw = seg[0], seg[-1]
+            t_first, t_last = ts[a], ts[b - 1]
+        else:                                                            # NaNs / a wrap inside the column
+            fin = [(i, x) for i, x in zip(range(a, b), seg) if x == x]
+            if not fin:
+                return None
+            first_raw, last_raw = fin[0][1], fin[-1][1]
+            t_first, t_last = ts[fin[0][0]], ts[fin[-1][0]]
+            if unwrap and max(x for _i, x in fin) - min(x for _i, x in fin) > 180.0:
+                fin = [(i, x + 360.0 if x < 180.0 else x) for i, x in fin]
+            imn, mn = min(fin, key=lambda p: p[1])
+            imx, mx = max(fin, key=lambda p: p[1])
+        pts = [(imn, mn)] if imn == imx else sorted(((imn, mn), (imx, mx)))
+        return (t_first, t_last, first_raw, last_raw, [(ts[i], x) for i, x in pts], mn, mx)
+        ts, vs = self._lin_t(), self._lin_v(vid)
+        bounds = self._columns(window_s, now, cols)
+        t0 = now - window_s
+        unwrap = INFO[vid]["unwrap"]
+        run, last_t, prev_raw, off = [], None, None, 0.0
+        clean = self._clean.get(vid)                    # no NaN anywhere in the ring (the usual case): one sum per sample set
+        if clean is None:
+            tot = sum(vs)
+            clean = self._clean[vid] = tot == tot
         for c in range(cols):
             a, b = bounds[c], bounds[c + 1]
             if a >= b:
                 continue
             seg = vs[a:b]
-            s = sum(seg)
+            if clean and not unwrap:
+                s = 0.0
+            else:
+                s = sum(seg)
             if s == s and not (unwrap and max(seg) - min(seg) > 180.0):      # no NaN (the usual case): C-speed
                 mn, mx = min(seg), max(seg)
                 imn, imx = a + seg.index(mn), a + seg.index(mx)

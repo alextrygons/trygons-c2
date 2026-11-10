@@ -123,6 +123,24 @@ panel (theme ALPHA hud_panel) = the one exception from "on the video all informa
 own colour per value). Test TJ1 (test_driver I26, I19 style): no overlap with any DEFAULT_LAYOUT box,
 LOGO_BOX, the free centre 0.25..0.75 x 0.22..0.75 or the bottom bar; inside the left 0.25.
 
+### 4b. TR4 as built (2026-11-10)
+
+- Graph G9 ACCELERATION: three values acc_lon / acc_lat / acc_vert (the mean of the FW-TR frames' per-period averages in a
+  0.5 s slot, in g) + their peaks (rings acc_*_pk = the signed largest-magnitude peak of the slot). Shared symmetric scale with
+  a zero line; the average = the normal line, the peak = a thinner fainter line of the same colour + pattern. Palette
+  theme.TREND acc_lon #c060ff solid, acc_lat #b0ff90 (6,3), acc_vert #6080c0 (2,3); TG4's pair / meaning-colour rules cover
+  them. Not judged by the detector. Impacts per minute = the existing slam_pm in G5 (nothing else derivable).
+- Screen-1 strip: the settings are `trends_hud` (on / off) and `trends_hud_show` (default [1, 4, 5]) - named trends_* (not
+  hud_trends) so the panel's TrendView may write them; the switch is the button ON SCREEN 1 in the panel's GRAPHS row. The box
+  is always in the layout but drawn only while the setting is on (driver.trend_strip, cached per 0.5 s); HUD_LAYOUT_VERSION 4
+  migrates nothing (a v3 file takes the default for the new box). No highlight on the strip (the red label stays inside screen 2's
+  panel). Dashes are cut into pieces by trendgraph.dash_runs (the Pillow renderer has none).
+- Replays: trendreplay.py (pure) builds the same model from a .TLG (20 Hz -> 2 Hz; ACCEL events = 1 s windows; roll / pitch /
+  depth / link are not logged = gaps; only the last 60 min of a longer log), from academy scenario replays (scenario.py records
+  rot / slam / pm / al / at / av beside hdg / sog / thr) and from video-lesson hud.jsonl; logview.py has a pane, the
+  academy replay window and the video-lesson player a canvas. Tests TJ1-TJ5 (test_trends), I26 (test_driver).
+
+
 ## 5. Detection (TR3) - own recent normal vs the last 30 s
 
 Per detected value, on every 2 Hz sample:

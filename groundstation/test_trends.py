@@ -14,6 +14,11 @@
        sound unchanged, only trends_* settings written by the panel
   TG9  narrow view: the panel holds no App (gc walk), TrendView refuses other settings keys
   TG10 CPU bounds (tools/trend_load.py, 3x looser than the design's limits)
+  TJ1  screen-1 strip, the model side (placement / MINIMAL / layout v4 = test_driver I26)
+  TJ2  debrief: a recorded black box -> the same rings; the logview.py pane
+  TJ3  academy replays (scenario replay samples, video-lesson hud.jsonl), files only
+  TJ4  docs: manuals, lang keys, tour stops, screenshots
+  TJ5  acceleration graph: sampler, shared scale, own colour + pattern per axis, peak line, readout
 
 Run:  python test_trends.py        (exit code 0 = all passed)
 """
@@ -41,7 +46,7 @@ import alerts as alerts_mod  # noqa: E402
 
 results = []
 NAN = float("nan")
-TREND_FILES = ("trends.py", "trendpanel.py", "trenddetect.py", "trendlog.py")
+TREND_FILES = ("trends.py", "trendpanel.py", "trenddetect.py", "trendlog.py", "trendgraph.py", "trendreplay.py")
 
 
 def report(name, ok, detail):
@@ -306,8 +311,12 @@ def tg3():
     px0, px1 = plots[1]["trend"]["plot"]
     x = px0 + 0.5 * (px1 - px0)
     ov.click(x, (r[1] + r[3]) / 2.0)
-    want_t = now - 600.0 + 0.5 * 600.0
-    t_ok = tp.readout_t is not None and abs(tp.readout_t - want_t) < 1.0
+    # TR4: the graph is drawn as of the start of the current pixel-column step (qnow, at most one column = 2 px behind
+    # the clock): the click maps through the SAME time axis, and the lag is bounded by one column
+    qnow = tp._plot[1][2]
+    cols_ = max(1, int((px1 - px0 - 2.0) / 2.0))
+    want_t = qnow - 600.0 + 0.5 * 600.0
+    t_ok = tp.readout_t is not None and abs(tp.readout_t - want_t) < 1.0 and 0.0 <= now - qnow <= 600.0 / cols_ * 1.5 + 0.5
     txt = tp.readout_text()
     smp = m.at(tp.readout_t)
     hhmmss = time.strftime("%H:%M:%S", time.gmtime(smp["t"])) if smp else "?"
@@ -654,7 +663,7 @@ def tg9():
 # --- TG10 -------------------------------------------------------------------------------------------------
 def tg10():
     import trend_load
-    res = trend_load.measure_all(sizes=("small", "large"), windows=((1920, 1080), (1366, 768)))
+    res = trend_load.measure_all(sizes=("small", "large"), windows=((1920, 1080), (1366, 768)), passes=1)
     lim_s, lim_r = trend_load.LIMITS["sampler_us"] * 3, trend_load.LIMITS["redraw_ms"] * 3
     report("TG10 CPU: the sampler <= %.0f us per frame and the whole panel (6 graphs, a full 60-minute ring, every "
            "zoom, 2 windows, 2 text sizes) <= %.0f ms per redraw (3 x the design limits 50 us / 10 ms; "
@@ -1221,10 +1230,293 @@ def th9():
         shutil.rmtree(d, ignore_errors=True)
 
 
+
+# --- TR4: acceleration, the strip, the debrief, the replays ---------------------------------------------------------
+def acc_frame(t_ms, lon, lat, vert, pk=None):
+    pk = pk or (lon * 3, lat * 3, vert * 3)
+    d = frame(t_ms=t_ms, est_sog=5.0)
+    d.update({"acc_lon": lon, "acc_lat": lat, "acc_vert": vert, "acc_lon_pk": pk[0], "acc_lat_pk": pk[1],
+              "acc_vert_pk": pk[2], "acc_n": 5})
+    return d
+
+
+def tj5():
+    now = 9000.0
+    m = tr.Trends()
+    # two frames per slot: the mean of the averages, the largest MAGNITUDE (with its sign) of the peaks
+    m.feed(now, acc_frame(0, 0.10, -0.20, 0.30, pk=(0.5, -0.8, 1.0)))
+    m.feed(now + 0.1, acc_frame(100, 0.30, -0.40, 0.50, pk=(-0.9, -0.3, 0.7)))
+    m.tick(now + 1.0)
+    i = (m.n - 1) % tr.N
+    got = (float(m.vals["acc_lon"][i]), float(m.vals["acc_lat"][i]), float(m.vals["acc_vert"][i]),
+           float(m.vals["acc_lon_pk"][i]), float(m.vals["acc_lat_pk"][i]), float(m.vals["acc_vert_pk"][i]))
+    want = (0.20, -0.30, 0.40, -0.9, -0.8, 1.0)
+    sampler_ok = all(abs(a - b) < 1e-5 for a, b in zip(got, want))
+    # no ACCEL (None) = a gap; the other values stay
+    g = tr.Trends()
+    d = frame(t_ms=0, est_sog=5.0)
+    d.update({"acc_lon": None, "acc_lat": None, "acc_vert": None})
+    g.feed(now, d)
+    g.tick(now + 1)
+    gap_ok = all(math.isnan(float(g.vals[k][(g.n - 1) % tr.N])) for k in tr.ACC_IDS + tr.PK_IDS) and \
+        g.last("sog") == 5.0
+    # the palette: three distinct colours, three distinct patterns (TG4 holds the pair / meaning-colour rules for them)
+    cols = [theme.TREND[k] for k in tr.ACC_IDS]
+    pats = [theme.TREND_DASH[k] for k in tr.ACC_IDS]
+    pal_ok = len(set(cols)) == 3 and len(set(pats)) == 3
+    # the drawing: 3 lines + 3 faint peak lines, ONE shared scale that contains zero, a zero line
+    big = tr.Trends()
+    for k in range(240):
+        big.feed(now - 120 + k * 0.5, acc_frame(k * 500, 0.1 * math.sin(k / 8.0), -0.05, 0.2,
+                                                pk=(0.4, -0.3, 1.5 if k == 100 else 0.6)))
+    big.tick(now + 1.0)
+    store = {"trends_show": [9, 1], "trends_zoom": 2}
+    tp, ov, p, plots = draw(big, store, now=now)
+    rec = plots.get(9, {}).get("trend", {})
+    lines = rec.get("lines", [])
+    shared = bool(lines) and len({(round(ln["lo"], 6), round(ln["hi"], 6)) for ln in lines}) == 1
+    zero_inside = shared and lines[0]["lo"] < 0 < lines[0]["hi"]
+    peaks = rec.get("peaks", [])
+    peak_ok = len(peaks) >= 3 and {pk["id"] for pk in peaks} == set(tr.ACC_IDS)
+    spike_ok = bool(lines) and lines[0]["hi"] >= 1.5          # the 1.5 g spike is inside the shared scale
+    label_ok = bool(lines) and all("/" in ln["label"] for ln in lines)
+    own = [ln["colour"] for ln in lines] == cols and [ln["dash"] for ln in lines] == pats
+    nright = draw(big, store, night=True, now=now)[3].get(9, {}).get("trend", {}).get("lines", [])
+    night_ok = bool(nright) and {ln["colour"] for ln in nright} <= {theme.NIGHT["main"], theme.NIGHT["dim"]} and \
+        len({ln["dash"] for ln in nright}) == 3
+    tp.readout_t = now - 60
+    txt = tp.readout_text()
+    read_ok = "LATERAL" in txt and i18n.T("trend.peak") in txt
+    report("TJ5 acceleration graph (G9): the slot mean of the averages and the signed largest peak, no ACCEL = a gap, "
+           "three colours and three patterns, 3 lines + 3 faint peak lines on ONE scale containing zero (the spike "
+           "stays), average/peak in the labels, NIGHT = the dim red + the patterns, the click readout names the peak",
+           sampler_ok and gap_ok and pal_ok and shared and bool(zero_inside) and peak_ok and spike_ok and label_ok
+           and own and night_ok and read_ok,
+           "slot %s; gap %s; palette %s; shared scale %s (zero inside %s); peak lines %d; spike %s; labels %s; own %s; "
+           "night %s; readout %s" % ([round(x, 3) for x in got], gap_ok, pal_ok, shared, bool(zero_inside),
+                                     len(peaks), spike_ok, [ln.get("label") for ln in lines], own, night_ok, read_ok))
+
+
+def tj1():
+    import hud
+    import trendgraph
+    now = 9000.0
+    m = tr.Trends()
+    for k in range(240):
+        m.feed(now - 120 + k * 0.5, acc_frame(k * 500, 0.1, -0.05, 0.2))
+    m.tick(now + 1)
+    ls = trendgraph.lines(m, 1, 120.0, now, 100, False)
+    runs_ok = all(0.0 <= y <= 1.0 and 0.0 <= x <= 1.0 for ls_ in ls for run in ls_["runs"] for x, y in run)
+    # dash pieces of a straight line: on/off = 6/3 px over 60 px -> 7 pieces, each at most 6 px long, all on the line
+    pieces = trendgraph.dash_runs([(0.0, 0.0), (60.0, 0.0)], (6, 3))
+    dash_ok = len(pieces) == 7 and all(abs(pc[-1][0] - pc[0][0]) <= 6.0 + 1e-6 for pc in pieces) and \
+        trendgraph.dash_runs([(0, 0), (9, 0)], ()) == [[(0, 0), (9, 0)]]
+    h = hud.Hud()
+    h.W, h.H = 1920, 1080
+    h.pal = hud.palette("green", False)
+    fs = theme.hud_sizes(1080)
+    h.f_small = fs["small"]
+    h.ops, h.hits = [], []
+    strip = [{"g": g, "lines": trendgraph.lines(m, g, 120.0, now, 140, False)} for g in (1, 4, 9)]
+    h.trends("trends", hud.Snapshot(trend_strip=strip))
+    box = h.R("trends")
+    lines_ = [o for o in h.ops if o["k"] == "line" and o["tag"] == "trends" and o["fill"] != theme.TREND_GRID]
+    inside = bool(lines_) and all(box[0] - 1 <= o["pts"][j] <= box[2] + 1 and box[1] - 1 <= o["pts"][j + 1] <= box[3] + 1
+                                  for o in lines_ for j in range(0, len(o["pts"]), 2))
+    colours = {o["fill"] for o in lines_}
+    own = {theme.TREND["sog"], theme.TREND["thr"], theme.TREND["roll"], theme.TREND["acc_lon"],
+           theme.TREND["acc_lat"], theme.TREND["acc_vert"]} <= colours
+    caps = [o["s"] for o in h.ops if o["k"] == "text"]
+    cap_ok = any("LONGITUDINAL" in c for c in caps) and any("SPEED" in c for c in caps)
+    h.ops = []
+    h.trends("trends", hud.Snapshot(trend_strip=None))
+    off_ok = not h.ops                                   # nothing without a strip (off by default)
+    h.ops = []
+    h.pal = hud.palette("green", True)
+    h.trends("trends", hud.Snapshot(trend_strip=[{"g": g, "lines": trendgraph.lines(m, g, 120.0, now, 140, True)}
+                                                 for g in (1, 9)]))
+    night = {o["fill"] for o in h.ops if o["k"] == "line" and o["fill"] != theme.TREND_GRID}
+    night_ok = bool(night) and night <= {theme.NIGHT["main"], theme.NIGHT["dim"]}
+    report("TJ1 screen-1 strip (model side): lines normalised 0..1 per run, dash pieces for the Pillow renderer, all "
+           "lines inside the box, each value its own colour, captions with the newest value, nothing without a strip, "
+           "NIGHT = the dim red; placement / MINIMAL / layout v4 = test_driver I26",
+           runs_ok and dash_ok and inside and own and cap_ok and off_ok and night_ok,
+           "runs %s; dash %s (%d pieces); inside %s; own colours %s; captions %s; off %s; night %s"
+           % (runs_ok, dash_ok, len(pieces), inside, own, caps[:3], off_ok, night_ok))
+
+
+class FakeLog:
+    """A recorded black box in the shape tlg.read returns: 20 Hz samples + ACCEL events (one per second)."""
+
+    def mode_name(self, m):
+        return proto.MODES[m] if 0 <= m < len(proto.MODES) else "?"
+
+    def alarm_text(self, bits):
+        return ""
+
+    def __init__(self, seconds=90, with_accel=True):
+        self.samples, self.events, self.events_def = [], [], {31: ("ACCEL", [])}
+        self.pc_commands, self.crc_errors = [], 0
+        for k in range(seconds * 20):
+            t = k * 50
+            self.samples.append({"t_ms": t, "mode": 3, "est_sog": 6.0 + (3.0 if 40000 <= t < 50000 else 0.0),
+                                 "thr_out": 45.0, "heading": 90.0, "yaw_rate": 0.5, "slam_peak": 0.3,
+                                 "slam_rate": 2, "bank_v": 12.5, "xte": 4.0})
+        if with_accel:
+            for sec in range(1, seconds):
+                avg = (int(0.1 * 1000) & 0xFFFF) | ((int(0.6 * 1000) & 0xFFFF) << 16)
+                lat = (int(-0.05 * 1000) & 0xFFFF) | ((int(-0.2 * 1000) & 0xFFFF) << 16)
+                vert = (int(0.2 * 1000) & 0xFFFF) | ((int(1.2 * 1000) & 0xFFFF) << 16)
+                self.events.append((sec * 1000, "ACCEL", 31, [avg, lat, vert, 20]))
+
+
+def tj2():
+    import trendreplay
+    import tlg
+    log = FakeLog()
+    rows = tlg.accel_rows(log)
+    model, end = trendreplay.from_log(log, rows, proto.MODES)
+    i = (model.n - 1) % tr.N
+    v = {k: float(model.vals[k][i]) for k in tr.IDS + tr.PK_IDS}
+    for k in tr.ACC_IDS + tr.PK_IDS:                 # the last ACCEL event is a second before the last sample: take the newest value
+        fin_ = [x for x in model.series(k, 1e9, end + 5)[1] if x == x]
+        v[k] = fin_[-1] if fin_ else float("nan")
+    ser_t, ser_v = model.series("sog", 1e9, end + 5)
+    fin = [x for x in ser_v if x == x]
+    step_ok = max(fin) > 8.5 and min(fin) < 6.5          # the +3 kn step is there
+    fields_ok = abs(v["thr"] - 45.0) < 0.1 and abs(v["rot"] - 0.5) < 0.01 and abs(v["bank_v"] - 12.5) < 0.01 and \
+        abs(v["slam_g"] - 0.3) < 0.01
+    acc_ok = abs(v["acc_lon"] - 0.1) < 1e-3 and abs(v["acc_lon_pk"] - 0.6) < 1e-3 and abs(v["acc_vert_pk"] - 1.2) < 1e-3 \
+        and abs(v["acc_lat"] + 0.05) < 1e-3
+    gaps = all(math.isnan(v[k]) for k in ("roll", "pitch", "depth", "link_ms", "link_loss"))
+    xte_ok = abs(v["xte"] - 4.0) < 0.01                  # AUTO only
+    thin_ok = model.count() <= 2 * 90 + 2                # the 20 Hz log is thinned to the same 2 Hz rings
+    m2, _e = trendreplay.from_log(FakeLog(with_accel=False), [], proto.MODES)
+    no_acc = math.isnan(float(m2.vals["acc_lon"][(m2.n - 1) % tr.N])) and m2.last("sog") == 6.0
+    avail = trendreplay.available(model, (1, 2, 5, 9, 6))
+    avail_ok = avail == [1, 2, 5, 9]                      # depth (G6) has nothing: not drawn
+    # the logview pane draws it (a real Viewer on a Tk root, tlg.read replaced by the recording)
+    import tkinter as tk
+    import logview
+    root = tk._default_root or tk.Tk()
+    top = tk.Toplevel(root)
+    top.geometry("1200x800+0+0")
+    orig_read = tlg.read
+    tlg.read = lambda path: log
+    pane_ok = click_ok = False
+    try:
+        vw = logview.Viewer(top)
+        top.update()
+        vw.load("fake.TLG")
+        top.update()
+        vw.cursor = 700
+        vw.draw_trends()
+        top.update()
+        rec = vw.trec
+        pane_ok = rec is not None and [g["g"] for g in rec["graphs"]] == [1, 2, 5, 9] and \
+            len(vw.trend.find_all()) > 20
+        x0, x1 = rec["plot"] if rec else (0, 1)
+
+        class E:        # a click at the middle of the plot moves the cursor to the middle of the recording
+            x = (x0 + x1) / 2
+        vw.trend_click(E)
+        click_ok = abs(vw.t[vw.cursor] - (vw.t[0] + vw.t[-1]) / 2) < 3.0
+    finally:
+        tlg.read = orig_read
+        top.destroy()
+    report("TJ2 debrief: a recorded black box (20 Hz samples + ACCEL events) gives the same 2 Hz rings (speed step, "
+           "throttle, rate of turn, impacts, battery, cross-track in AUTO, the three acceleration axes with their "
+           "peaks); roll / pitch / depth / link are gaps; no ACCEL events = no acceleration; logview.py draws the pane "
+           "(graphs 1 2 5 9) and a click moves the cursor",
+           step_ok and fields_ok and acc_ok and gaps and xte_ok and thin_ok and no_acc and avail_ok and pane_ok and click_ok,
+           "step %s; fields %s; acc %s; gaps %s; xte %s; thinned %s (%d); no accel %s; available %s; pane %s; click %s"
+           % (step_ok, fields_ok, acc_ok, gaps, xte_ok, thin_ok, model.count(), no_acc, avail, pane_ok, click_ok))
+
+
+def tj3():
+    import trendreplay
+    # (a) a scenario replay: 5 Hz samples with the keys scenario.py writes
+    samples = []
+    for k in range(300):
+        s_ = {"t": k * 0.2, "mode": "AUTO", "hdg": 90.0, "sog": 5.0 + (2.0 if k > 150 else 0.0), "thr": 40.0,
+              "rot": 0.3, "slam": 0.4, "pm": 3, "alm": 0}
+        if k % 5 == 0:
+            s_.update({"al": 0.1, "al_pk": 0.4, "at": -0.02, "at_pk": -0.1, "av": 0.2, "av_pk": 0.9})
+        samples.append(s_)
+    m, end = trendreplay.from_samples(samples)
+    i = (m.n - 1) % tr.N
+    a_ok = abs(float(m.vals["sog"][i]) - 7.0) < 0.01 and abs(float(m.vals["thr"][i]) - 40.0) < 0.01 and \
+        abs(float(m.vals["slam_g"][i]) - 0.4) < 0.01
+    acc_present = trendreplay.available(m, (9,)) == [9]
+    # an OLD replay (only hdg / sog / thr) still works: the rest is a gap
+    old = [{"t": k * 0.2, "mode": "AUTO", "hdg": 90.0, "sog": 5.0, "thr": 40.0, "alm": 0} for k in range(100)]
+    mo, _e = trendreplay.from_samples(old)
+    old_ok = mo.last("sog") == 5.0 and math.isnan(mo.last("slam_g")) and trendreplay.available(mo, (1, 5, 9)) == [1]
+    # (b) a video lesson's hud.jsonl rows
+    rows = [{"t": k * 0.2, "d": {"est_sog": 4.0, "throttle": 30.0, "heading": 10.0, "yaw_rate": 0.1, "bank_v": 12.4}}
+            for k in range(200)]
+    mh, _e = trendreplay.from_hud(rows)
+    hud_ok = mh.last("sog") == 4.0 and abs(mh.last("bank_v") - 12.4) < 1e-6 and math.isnan(mh.last("slam_g"))
+    # (c) the academy records the new keys into its replay (a real timeline sample) + the drawing needs no boat link
+    sys.path.insert(0, os.path.join(HERE, "..", "academy"))
+    import scenario
+    run = scenario.Run.__new__(scenario.Run)
+    run.timeline, run.t_sample, run.t0, run.origin, run.hazard, run.status = [], None, 0.0, None, None, "react"
+    run.shown_bits = lambda: 0
+    run._sample({"mode_name": "AUTO", "heading": 90.0, "est_sog": 5.0, "throttle": 40.0, "yaw_rate": 0.3,
+                 "slam_peak": 0.4, "slam_rate": 3, "acc_lon": 0.1, "acc_lon_pk": 0.4, "acc_lat": -0.02,
+                 "acc_vert": 0.2, "acc_vert_pk": 0.9}, 1.0)
+    smp = run.timeline[0] if run.timeline else {}
+    write_ok = smp.get("rot") == 0.3 and smp.get("slam") == 0.4 and smp.get("pm") == 3 and smp.get("al") == 0.1 and \
+        smp.get("av_pk") == 0.9 and smp.get("at") == -0.02
+    cv = canvas()
+    cv.delete("all")
+    rec = trendreplay.draw(cv, m, trendreplay.available(m, (1, 2, 5, 9)), end, 360, 200, cursor_t=end / 2,
+                           name=lambda v: i18n.T("trend." + v))
+    draw_ok = [g["g"] for g in rec["graphs"]] == [1, 2, 5, 9] and len(cv.find_all()) > 30
+    report("TJ3 academy replays: a scenario replay (new keys: rate of turn, impacts, acceleration) and an old one "
+           "(speed / throttle / heading only = gaps elsewhere) and a video lesson's hud.jsonl go through the same model; "
+           "scenario.py records the new keys; the Tk drawing needs no boat link",
+           a_ok and acc_present and old_ok and hud_ok and write_ok and draw_ok,
+           "replay %s (accel %s); old replay %s; hud.jsonl %s; scenario writes the keys %s %s; drawing %s"
+           % (a_ok, acc_present, old_ok, hud_ok, write_ok, smp, draw_ok))
+
+
+def tj4():
+    root_ = os.path.join(HERE, "..")
+    en = open(os.path.join(root_, "MANUAL.txt"), encoding="utf-8").read()
+    el = open(os.path.join(root_, "MANUAL_EL.txt"), encoding="utf-8").read()
+    en_ok = "26. TRENDS" in en and "THE SILENT RED" in en and "ACCELERATION (graph 9)" in en and "NOT an alarm" in en \
+        and "NOT engine vibration" in en and "ON SCREEN 1" in en and "not a safety function" in en
+    el_ok = "21. ΤΑΣΕΙΣ" in el and "ΣΙΩΠΗΛΗ ΚΟΚΚΙΝΗ" in el and "ΕΠΙΤΑΧΥΝΣΗ (γράφημα 9)" in el and "δεν είναι συναγερμός" in el \
+        and "ΔΕΝ είναι κραδασμοί" in el and "ΣΤΗΝ ΟΘΟΝΗ 1" in el and "όχι λειτουργία ασφάλειας" in el
+    keys = ["trend.acc_lon", "trend.acc_lat", "trend.acc_vert", "trend.g9", "trend.peak", "trend.hud_toggle",
+            "trend.dbg_none", "trend.dbg_note", "hud.ov_trends"]
+    lang_ok = all(i18n.has(k, "el") and i18n.has(k, "en") for k in keys)
+    greek_ok = not any(c.isascii() and c.isalpha() for c in i18n.TL("el", "trend.acc_lon")) and \
+        i18n.TL("el", "trend.g9") != i18n.TL("en", "trend.g9")
+    import json
+    tour = json.load(open(os.path.join(root_, "academy", "content", "tour.json"), encoding="utf-8"))
+    stops = {st["id"]: st for ch in tour["chapters"] for st in ch["stops"]}
+    tour_ok = all(stops.get(i, {}).get("voice_pending") for i in ("s2.trends", "s1.trends")) and \
+        stops["s1.trends"]["covers"] == ["hud:trends"] and "επιτάχυνση" in stops["s2.trends"]["text_el"] and \
+        "acceleration" in stops["s2.trends"]["text_en"]
+    shots = os.path.join(root_, "docs", "screens", "trends")
+    names = ("screen2_trends_el.png", "screen2_trends_en.png", "screen1_strip_el.png", "screen1_strip_en.png")
+    shots_ok = all(os.path.isfile(os.path.join(shots, n_)) and os.path.getsize(os.path.join(shots, n_)) > 5000
+                   for n_ in names)
+    report("TJ4 docs: MANUAL.txt ch. 26 + MANUAL_EL.txt ch. 21 (what the graphs show, the acceleration axes, the silent red "
+           "label is not an alarm, honest limits, the strip, looking back), the lang keys el + en, the tour stops "
+           "s2.trends (acceleration) + s1.trends (voice_pending), the screenshots in docs/screens/trends/",
+           en_ok and el_ok and lang_ok and greek_ok and tour_ok and shots_ok,
+           "manual en %s; manual el %s; lang keys %s; greek %s; tour %s; screenshots %s" % (
+               en_ok, el_ok, lang_ok, greek_ok, tour_ok, shots_ok))
+
+
 def main():
     settings.put("ui_lang", "en")
     i18n.set_lang("en", save=False)
-    for fn in (tg1, tg2, tg3, tg4, tg5, tg6, tg7, tg8, tg9, tg10, th1, th2, th3, th4, th5, th6, th7, th8, th9,
+    for fn in (tg1, tg2, tg3, tg4, tg5, tg6, tg7, tg8, tg9, tg10, tj5, tj1, tj2, tj3, tj4, th1, th2, th3, th4, th5, th6, th7, th8, th9,
                th10, th11):
         try:
             fn()

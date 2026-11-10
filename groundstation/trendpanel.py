@@ -7,15 +7,18 @@ sender and sends nothing (test_trends TG6 - TG9).
     panel.fill(ov, p, now, fold)        # the items of the overlay panel p (an overlay.Panel)
     panel.escape()                       # Esc: close the readout
 """
+import math
 import time
 
 import i18n
 import theme
+import trendgraph
 import trends as tr
 
 T = i18n.T
 KEY_PREFIX = "trends_"
 SHOW_KEY, ZOOM_KEY = "trends_show", "trends_zoom"
+HUD_KEY = "trends_hud"            # TR4: the optional strip at screen 1's left edge (driver.py reads it; off by default)
 LINE_W = 1.25
 GLOW_W = 3.0
 NIGHT_W = 1.25
@@ -103,6 +106,9 @@ class TrendPanel:
             s.sort()
         self.view.put(SHOW_KEY, s)
 
+    def toggle_hud(self):
+        self.view.put(HUD_KEY, not bool(self.view.get(HUD_KEY, False)))
+
     def toggle_choose(self):
         self.choose_open = not self.choose_open
 
@@ -165,6 +171,8 @@ class TrendPanel:
                          tag="trend_g%d" % g)
                 if g % 4 == 0:
                     p.br()
+            p.button(T("trend.hud_toggle"), self.toggle_hud, "normal", on=bool(self.view.get(HUD_KEY, False)),
+                     level="small", tag="trend_hud")
             p.br()
         gw, gh = self.geometry(ov)
         self.last = {}
@@ -190,6 +198,9 @@ class TrendPanel:
         for vid in ids:
             val = self.model.last(vid)
             vtxt = "%s %s" % (self.fmt(vid, val), self.unit(vid)) if tr.finite(val) else T("trend.no_data")
+            if vid in tr.PK_OF and tr.finite(val):      # TR4: average / peak of the acceleration axis
+                pkv = self.model.last(tr.PK_OF[vid])
+                vtxt = "%s/%s %s" % (self.fmt(vid, val), self.fmt(vid, pkv), self.unit(vid))
             full = "%s %s" % (vtxt, T("trend." + vid))
             labels.append((vid, vtxt, full))
             lw = max(lw, font.measure(full))
@@ -197,7 +208,13 @@ class TrendPanel:
         lw = min(lw + pad, (x1 - x0) * 0.5)
         px0, px1 = x0 + pad, x1 - lw - pad
         plot_w = max(8.0, px1 - px0)
-        self._plot[g] = (px0, px1, now, window)
+        # the lines are drawn as of the start of the current pixel-column step (a column = window / columns seconds, at least
+        # one sample): a redraw inside the same step reuses the decimated lines (design 9: the panel never costs more than it
+        # must); the plot lags the clock by at most one column (2 px) and the newest value is always in the label
+        cols = max(1, int(plot_w / 2.0))        # a min + a max per 2 px column: a spike is kept, half the points
+        qstep = max(tr.SLOT, window / cols)
+        qnow = math.floor(now / qstep) * qstep
+        self._plot[g] = (px0, px1, qnow, window)
         # grid: 3 horizontal lines, a vertical line per quarter of the window
         for k in (1, 2, 3):
             yy = y0 + (y1 - y0) * k / 4.0
@@ -207,9 +224,12 @@ class TrendPanel:
             c.create_line(xx, y0 + 1, xx, y1 - 1, fill=theme.TREND_GRID, tags="ov")
         rec = {"graph": g, "rect": r, "plot": (px0, px1), "lines": [], "cursor": None}
         night = self.view.night()
-        cols = max(1, int(plot_w / 2.0))        # a min + a max per 2 px column: a spike is kept, half the points
         hls = dict(self.det.active()) if self.det is not None else {}
         tag_x = px0 + 3
+        shared = self.acc_scale(window, qnow, cols) if g == tr.ACC_GRAPH else None
+        if shared is not None:                      # the zero line of the acceleration (it is signed)
+            yz = y1 - 3 - (0.0 - shared[0]) / (shared[1] - shared[0]) * ((y1 - 3) - (y0 + 3))
+            c.create_line(px0, yz, px1, yz, fill=theme.TREND_GRID, dash=(2, 2), tags="ov")
         for rank, (vid, vtxt, full) in enumerate(labels):
             col = self.colour(vid, rank)
             hl = hls.get(vid)
@@ -217,14 +237,26 @@ class TrendPanel:
                 col = theme.NIGHT["warn"] if night else theme.WARN
             dash = theme.TREND_DASH[vid]
             width = (HL_NIGHT_W if night else HL_W) if hl else (NIGHT_W if night else LINE_W)
-            runs, lo, hi = self.runs(vid, window, now, cols)
+            runs, lo, hi = self.runs(vid, window, qnow, cols)
             span = tr.INFO[vid]["span"]
-            if lo <= hi:
+            if shared is not None:
+                lo, hi = shared
+            elif lo <= hi:
                 mid = (lo + hi) / 2.0
                 half = max((hi - lo) / 2.0, span / 2.0)
                 lo, hi = mid - half, mid + half
             drawn = []
             top, bot = y0 + 3, y1 - 3
+            if shared is not None:      # the peak of the axis: the same colour + pattern, thinner and fainter
+                pcol = col if night else theme.mix(col, theme.TREND_BG, 0.45)
+                for run in self.runs(tr.PK_OF[vid], window, qnow, cols)[0]:
+                    pp = [(px0 + xf * plot_w, bot - (v - lo) / (hi - lo) * (bot - top)) for xf, v in run]
+                    if len(pp) == 1:
+                        pp = [(pp[0][0] - 1.0, pp[0][1]), (pp[0][0] + 1.0, pp[0][1])]
+                    if len(pp) >= 2:
+                        c.create_line(*[q for pt in pp for q in pt], fill=pcol, width=1, tags="ov",
+                                      **({"dash": dash} if dash else {}))
+                        rec.setdefault("peaks", []).append({"id": vid, "colour": pcol, "pts": pp})
             for run in runs:
                 pts = []
                 for xf, v in run:
@@ -258,17 +290,27 @@ class TrendPanel:
                     tag_x += tw + 3 * pad
             rec["lines"].append({"id": vid, "colour": col, "dash": dash, "width": width, "runs": drawn,
                                  "label": txt, "lo": lo, "hi": hi, "hl": bool(hl), "tag": tag})
-        if self.readout_t is not None and now - window <= self.readout_t <= now:
-            cx = px0 + (self.readout_t - (now - window)) / window * plot_w
+        if self.readout_t is not None and qnow - window <= self.readout_t <= qnow:
+            cx = px0 + (self.readout_t - (qnow - window)) / window * plot_w
             c.create_line(cx, y0 + 1, cx, y1 - 1, fill=theme.TREND_TEXT, tags="ov")
             rec["cursor"] = cx
         op["trend"] = rec
         self.last[g] = rec
 
+    def acc_scale(self, window, now, cols):
+        """trendgraph.acc_scale from the cached decimated lines (same numbers, no second pass over the ring)."""
+        m = 0.0
+        for vid in tr.ACC_IDS + tr.PK_IDS:
+            _r, lo, hi = self.runs(vid, window, now, cols)
+            if lo <= hi:
+                m = max(m, abs(lo), abs(hi))
+        m = max(m, tr.INFO["acc_lon"]["span"] / 2.0)
+        return -m, m
+
     def runs(self, vid, window, now, cols):
         """Decimated runs, cached per (value, samples, window, columns, half-second): the drawing redraws at most 2 Hz
         of new data (design 9)."""
-        key = (vid, self.model.gen, window, cols, int(now * 2))
+        key = (vid, self.model.epoch, window, cols, now)        # now = the column step's start (draw_graph): stable
         hit = self._cache.get(key)
         if hit is None:
             if len(self._cache) > 64:
@@ -295,6 +337,10 @@ class TrendPanel:
         head = T("trend.readout", utc=time.strftime("%H:%M:%S", time.gmtime(s["t"])),
                  local=time.strftime("%H:%M:%S", time.localtime(s["t"])),
                  mode=T("mode." + s["mode"]) if s["mode"] else "—")
-        parts = [("%s %s %s" % (T("trend." + v), self.fmt(v, s[v]), self.unit(v) if tr.finite(s[v]) else "")).rstrip()
-                 for v in tr.IDS]
+        parts = []
+        for v in tr.IDS:
+            txt = ("%s %s %s" % (T("trend." + v), self.fmt(v, s[v]), self.unit(v) if tr.finite(s[v]) else "")).rstrip()
+            if v in tr.PK_OF and tr.finite(s[v]):
+                txt = "%s (%s %s)" % (txt, T("trend.peak"), self.fmt(v, s[tr.PK_OF[v]]))
+            parts.append(txt)
         return head + "\n" + " · ".join(parts)

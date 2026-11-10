@@ -2464,7 +2464,7 @@ def as21():
     out["extract floor: a score at the floor picks"] = r["src"] == "extract"
     r = A.Answerer(A.StubLlm("1"), terms, mode="extract", extract_floor=0).answer("πού κλείνω την καταπακτή;", "el", low)
     out["extract floor 0 = no floor"] = r["src"] == "extract"
-    out["the default floor is the measured one (client + answer agree)"] = A.EXTRACT_FLOOR == 7.25 and \
+    out["the default floor is the measured one (client + answer agree)"] = A.EXTRACT_FLOOR == 7.3 and \
         __import__("assistant.client", fromlist=["x"]).DEFAULT_EXTRACT_FLOOR == A.EXTRACT_FLOOR
     r = A.Answerer(A.StubLlm("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."), terms, extract_floor=7.2).answer(
         "πού κλείνω την καταπακτή;", "el", low)

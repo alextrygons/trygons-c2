@@ -507,6 +507,45 @@ def force_assistant(se):
     return undo
 
 
+def force_trends(se):
+    """The trend panel + the screen-1 strip in the TOUR picture (step TR4): the panel OPEN with the acceleration graph
+    and the strip ON (display only: both start closed / off on the boat; settings of THIS process's temp file only).
+    Returns the undo."""
+    import settings
+    ap = se.ap
+    old = {k: settings.get(k) for k in ("trends_hud", "trends_show", "trends_hud_show", "trends_zoom")}
+    was_collapsed = "trends" in ap.ov.collapsed
+    settings.put("trends_hud", True)
+    settings.put("trends_show", [1, 2, 4, 5, 9, 8])
+    settings.put("trends_hud_show", [1, 4, 9])
+    settings.put("trends_zoom", 2)
+    ap.ov.collapsed.discard("trends")
+
+    def undo():
+        for k, v in old.items():
+            settings.put(k, v)
+        if was_collapsed:
+            ap.ov.collapsed.add("trends")
+    return undo
+
+
+def trend_shots(se):
+    """docs/screens/trends/: screen 2's open panel (acceleration graph) and screen 1's edge strip, el + en (PrintWindow
+    pictures of the station's own windows). Called inside tour_shots (the panel is forced open there)."""
+    out = os.path.join(REPO, "docs", "screens", "trends")
+    os.makedirs(out, exist_ok=True)
+    for lang in ("el", "en"):
+        se.i18n.set_lang(lang)
+        se.pump(1.5)
+        se.ap.render(force=True)
+        se.dv.draw()
+        se.pump(1.5)
+        se.grab(se.ap.root, os.path.join(out, "screen2_trends_%s.png" % lang))
+        se.grab(se.dv.w, os.path.join(out, "screen1_strip_%s.png" % lang))
+        say("  saved trends pictures (%s)" % lang)
+    se.i18n.set_lang("el")
+
+
 def tour_s2(se, lang, man):
     ap = se.ap
     if getattr(se, "asst_demo", None):
@@ -590,7 +629,9 @@ def tour_shots(se):
            "'signature' = the layout these pictures belong to (stale = make them again).",
            "made": time.strftime("%Y-%m-%d %H:%M"), "signature": tourshots.signature(tour), "shots": {}}
     undo_hud, undo_ban, undo_asst = force_hud(se), force_banner(se), force_assistant(se)
+    undo_trends = force_trends(se)
     try:
+        trend_shots(se)
         for lang in ("el", "en"):
             se.i18n.set_lang(lang)
             se.pump(1.5)
@@ -601,6 +642,7 @@ def tour_shots(se):
         undo_hud()
         undo_ban()
         undo_asst()
+        undo_trends()
         se.i18n.set_lang("el")
     with open(os.path.join(TOUR_OUT, "shots.json"), "w", encoding="utf-8") as f:
         json.dump(man, f, indent=1, ensure_ascii=False)

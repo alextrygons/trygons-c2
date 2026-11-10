@@ -27,7 +27,9 @@ from tkinter import filedialog, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import i18n  # noqa: E402
 import tlg  # noqa: E402
+import trendreplay  # noqa: E402  (TR4: the trend graphs of the recording; read-only)
 import videolog  # noqa: E402
 
 BG = "#ffffff"
@@ -58,6 +60,7 @@ class Viewer:
         self.root = root
         self.log = None
         self.cursor = 0
+        self.t, self.col, self.events = [], {}, []        # (empty until a log is loaded: a Configure draws earlier)
         root.title("Trygons C2 – log viewer")
         root.geometry("1400x880")
         root.configure(bg=BG)
@@ -98,12 +101,17 @@ class Viewer:
         body.add(right)
         self.plot = tk.Canvas(right, bg=BG, highlightthickness=0)
         right.add(self.plot, height=520)
+        self.trend = tk.Canvas(right, bg="#05080a", highlightthickness=0)       # TR4: «ΤΑΣΕΙΣ» of the recording
+        right.add(self.trend, height=230)
+        self.tmodel, self.tend, self.trec = None, 0.0, None
         self.map = tk.Canvas(right, bg="#d8ecff", highlightthickness=0)
         right.add(self.map)
         self.plot.bind("<Button-1>", self.plot_click)
         self.plot.bind("<B1-Motion>", self.plot_click)
         self.plot.bind("<Configure>", lambda e: self.draw())
         self.map.bind("<Configure>", lambda e: self.draw())
+        self.trend.bind("<Configure>", lambda e: self.draw_trends())
+        self.trend.bind("<Button-1>", self.trend_click)
         self.info = tk.Label(root, text="", font=("Consolas", 11), bg="#202020", fg="#ffffff", anchor="w",
                              justify="left")
         self.info.pack(fill="x")
@@ -137,6 +145,10 @@ class Viewer:
             self.ev.insert("end", "%8.1f  %s" % (t / 1000.0, text))
         self.cursor = 0
         self.utc = videolog.log_utc(self.log)
+        try:
+            self.tmodel, self.tend = trendreplay.from_log(self.log, tlg.accel_rows(self.log), tlg.proto.MODES)         # the same model as the live panel
+        except Exception:                                                   # (a display feature never stops the viewer)
+            self.tmodel, self.tend = None, 0.0
         self.draw()
 
     # --- video (section F) ----------------------------------------------------------
@@ -252,9 +264,38 @@ class Viewer:
     # --- drawing ------------------------------------------------------------------
     def draw(self):
         self.draw_plots()
+        self.draw_trends()
         self.draw_map()
         self.draw_info()
         self.show_video()
+
+    def trend_click(self, e):
+        """A click on the trend graphs moves the cursor like a click in the plots (same time axis)."""
+        if not self.t or not self.trec:
+            return
+        x0, x1 = self.trec["plot"]
+        t = self.t[0] + (e.x - x0) / max(1, x1 - x0) * (self.t[-1] - self.t[0])
+        self.cursor = min(max(bisect.bisect_left(self.t, t), 0), len(self.t) - 1)
+        self.draw()
+
+    def draw_trends(self):
+        """TR4: the trend graphs of the log (speed + throttle, heading + turn, impacts, acceleration; what the log does
+        not hold is a gap), the whole recording (the last 60 minutes of a longer one), the cursor in step."""
+        c = self.trend
+        c.delete("all")
+        self.trec = None
+        w, h = c.winfo_width(), c.winfo_height()
+        if not self.log or not self.t or self.tmodel is None or w < 50 or h < 50:
+            return
+        graphs = trendreplay.available(self.tmodel, trendreplay.DEFAULT_GRAPHS)
+        if not graphs:
+            c.create_text(10, 10, anchor="nw", fill="#c8d4dc", font=F_TXT, text=i18n.T("trend.dbg_none"))
+            return
+        window = min(3600.0, max(10.0, self.tend - self.t[0] + 1.0))
+        self.trec = trendreplay.draw(c, self.tmodel, graphs, self.tend, w, h, window_s=window,
+                                     cursor_t=self.t[self.cursor], name=lambda v: i18n.T("trend." + v),
+                                     font=("Consolas", 9))
+        c.create_text(w - 4, h - 2, anchor="se", fill="#8090a0", font=("Consolas", 8), text=i18n.T("trend.dbg_note"))
 
     def draw_plots(self):
         c = self.plot

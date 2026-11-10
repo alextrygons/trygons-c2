@@ -52,7 +52,8 @@ HUD_ALIASES = {
     "throttle_demand": ["throttle_demand", "thr_mode"], "gear": ["gear"], "power_fwd": ["power_fwd"],
     "power_rev": ["power_rev"], "est_sog": ["est_sog", "gps_sog"], "est_cog": ["est_cog", "gps_cog"],
     "gps_sog": ["gps_sog"], "est_lat": ["est_lat", "gps_lat"], "est_lon": ["est_lon", "gps_lon"],
-    "alarm_bits": ["alarm_bits"], "alarm_bits2": ["alarm_bits2"], "compass_ok": ["compass_ok"],
+    "alarm_bits": ["alarm_bits"], "alarm_bits2": ["alarm_bits2"], "slam_peak": ["slam_peak"], "slam_rate": ["slam_rate"],
+    "compass_ok": ["compass_ok"],
     "flags": ["flags"], "speed_set_kn": ["speed_set_kn"], "pos_source": ["pos_source"], "gps_fix": ["gps_fix"],
     "unc_m": ["unc_m", "unc"], "auto_state": ["auto_state"], "auto_wp": ["auto_wp"], "bank_v": ["bank_v"],
 }

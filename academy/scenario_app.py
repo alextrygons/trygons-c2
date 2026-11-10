@@ -32,6 +32,8 @@ from text import T                                                      # noqa: 
 import alerts                                                           # noqa: E402
 import i18n                                                             # noqa: E402
 import proto                                                            # noqa: E402
+import theme                                                            # noqa: E402
+import trendreplay                                                      # noqa: E402  (TR4: pure; files / dicts only)
 
 MAP_W, MAP_H = 300, 230                     # the map (north up, boat-centred at the event point)
 CAM_W, CAM_H = 300, 90                      # the forward camera strip (a drawing)
@@ -349,6 +351,13 @@ class ReplayWindow(object):
                  font=(FAMILY, 10)).pack(side="top", fill="x", pady=4)
         tk.Label(right, text=self.result_text(), bg=COL["bg"], fg=COL["fg"], anchor="nw", justify="left",
                  wraplength=340, font=(FAMILY, 10)).pack(side="top", fill="x")
+        # TR4: the trend graphs of the recorded run (the same model as the station's panel; files only)
+        self.tmodel, self.tend = trendreplay.from_samples(self.samples)
+        self.tgraphs = trendreplay.available(self.tmodel, (1, 2, 5, 9))
+        self.tcv = tk.Canvas(right, width=360, height=200, bg=theme.TREND_BG, highlightthickness=0)
+        if self.tgraphs:
+            self.tcv.pack(side="top", fill="x", pady=4)
+        self.trec = None
         n = max(0, len(self.samples) - 1)
         self.pos = tk.Scale(top, from_=0, to=n, orient="horizontal", showvalue=False, command=self._moved,
                             bg=COL["bg"], fg=COL["fg"], highlightthickness=0)
@@ -410,6 +419,11 @@ class ReplayWindow(object):
                 else:
                     c.create_oval(hx - 4, hy - 4, hx + 4, hy + 4, fill=WARN, outline="#000000", tags="hazard")
         L = self.lang
+        if self.tgraphs:
+            self.tcv.delete("all")
+            self.trec = trendreplay.draw(self.tcv, self.tmodel, self.tgraphs, self.tend, 360, 200,
+                                         window_s=max(10.0, self.tend + 1.0), cursor_t=cur.get("t"),
+                                         name=lambda v: i18n.TL(L, "trend." + v), font=("Consolas", 8))
         al = ", ".join(i18n.TL(L, "alarm." + cc) for _b, cc, _l in alerts.active(cur.get("alm", 0))) or "-"
         self.l_now.configure(text=T("scen.replay_now", L, t="%.1f" % cur.get("t", 0),
                                     mode=i18n.TL(L, "mode." + (cur.get("mode") or "STANDBY")),

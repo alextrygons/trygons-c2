@@ -47,6 +47,8 @@ import monitors
 import proto
 import settings
 import theme
+import trendgraph
+import trends as trendsmod
 import video
 from i18n import T
 from alerts import can_roles  # noqa: E402  (DroneCAN, 11d)
@@ -372,6 +374,7 @@ class DriverScreen:
         self.answers = []                       # (text, result) for tests
         self.layout = hud.Layout()
         self.hud = hud.Hud(self.layout)
+        self._strip_key = self._strip_val = None
         self.cv = tk.Canvas(self.w, bg=BG, highlightthickness=0)
         self.cv.pack(fill="both", expand=True)
         self.status = self.front = self.cv      # old names (tests / gateway tests look for tags here)
@@ -743,6 +746,30 @@ class DriverScreen:
         except (OSError, ValueError):
             return None
 
+    def trend_strip(self, now):
+        """TR4: the lines of the screen-1 trend strip, or None (setting trends_hud off / nothing to draw / MINIMAL).
+        Read-only: trendgraph.lines over a.trends; cached per half second + the layout size."""
+        if not settings.get("trends_hud") or (settings.get("declutter") or "FULL") == "MINIMAL":
+            return None
+        tm = getattr(self.app, "trends", None)
+        if tm is None:
+            return None
+        try:
+            show = settings.get("trends_hud_show")
+            show = [g for g in (show if isinstance(show, list) else [1, 4, 5]) if g in trendsmod.GRAPHS][:3] or [1, 4, 5]
+            zoom = settings.get("trends_zoom")
+            zoom = zoom if zoom in trendsmod.ZOOMS else trendsmod.DEFAULT_ZOOM
+            night = bool(settings.get("night"))
+            cols = max(8, int((self.hud.W or 800) * hud.DEFAULT_LAYOUT["trends"][2] / 3.0))       # a column per 3 px
+            key = (tm.gen, int(now * 2), tuple(show), zoom, night, cols)
+            if self._strip_key == key:
+                return self._strip_val
+            val = [{"g": g, "lines": trendgraph.lines(tm, g, zoom * 60.0, now, cols, night)} for g in show]
+            self._strip_key, self._strip_val = key, val
+            return val
+        except Exception:                                      # (a display feature never stops the HUD)
+            return None
+
     def snapshot(self):
         """Every value the HUD shows, worked out here (hud.py only draws)."""
         a, now = self.app, time.time()
@@ -774,6 +801,7 @@ class DriverScreen:
         hud_rows = [dict(r, click=active and r["group"] != "engine" and (r["state"] != "unknown" or nrb))
                     for r in rows if r.get("show_hud")]
         s["relay_lines"] = [ln for _g, ln in a.relay_lines(hud_rows)]
+        s["trend_strip"] = self.trend_strip(now)               # TR4: the optional trend strip (display only)
         thr = getattr(a.boat, "thrusters", None) if a.boat is not None and not a.boat.error else None
         try:                                                    # DP box: the square's edge = DP OFF SPOT distance
             s["dp_scale_m"] = float((thr or {}).get("spot_alarm_m", 15.0))

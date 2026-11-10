@@ -31,6 +31,8 @@ from text import T                                                      # noqa: 
 
 import alerts                                                           # noqa: E402
 import hud                                                              # noqa: E402
+import i18n                                                             # noqa: E402
+import trendreplay                                                      # noqa: E402  (TR4: pure; files only)
 
 try:
     import theme                                                        # noqa: E402
@@ -193,6 +195,8 @@ class VideoLessonWindow(object):
         self.canvas = tk.Canvas(right, width=VW, height=VH, bg="#000000", highlightthickness=0)
         self.canvas.pack(side="top", anchor="w")
         self.canvas.bind("<Button-1>", self.on_click)
+        self.tcv = tk.Canvas(right, width=VW, height=120, bg="#05080a", highlightthickness=0)    # TR4 trends
+        self.tmodel, self.tend, self.tgraphs = None, 0.0, []
         bar = tk.Frame(right, bg=COL["bg"])
         bar.pack(side="top", fill="x", pady=2)
         self.cam_bar = tk.Frame(bar, bg=COL["bg"])
@@ -283,6 +287,11 @@ class VideoLessonWindow(object):
         self.doc, self.dir = doc, folder
         self.run = vl.Run(doc, self.lang)
         self.timeline = vl.read_timeline(doc, folder)
+        self.tmodel, self.tend = trendreplay.from_hud(self.timeline)       # TR4: the lesson's own HUD values, files only
+        self.tgraphs = trendreplay.available(self.tmodel, (1, 5))
+        self.tcv.pack_forget()
+        if self.tgraphs:
+            self.tcv.pack(side="top", anchor="w", before=self.cam_bar.master)
         self.cam = doc["main_camera"]
         self.logged = False
         for w in self.cam_bar.winfo_children():
@@ -351,6 +360,10 @@ class VideoLessonWindow(object):
         except simguard.Refused as e:
             self.l_result.configure(text=T("refuse.recording", self.lang, why=str(e)), fg=WARN)
         self.paint_overlay()
+        if self.tgraphs:
+            self.tcv.delete("all")
+            trendreplay.draw(self.tcv, self.tmodel, self.tgraphs, self.tend, VW, 120, window_s=max(10.0, self.tend + 1.0),
+                             cursor_t=r.t, name=lambda v: i18n.TL(self.lang, "trend." + v), font=("Consolas", 8))
 
     def _shown(self, want, data):
         if data:
