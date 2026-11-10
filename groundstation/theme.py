@@ -210,6 +210,27 @@ CONNECTED = ("#ffffff", "#000000")  # the "connected" lamp: fill, its text
 # the "AI" badge (13n1): a small framed white "AI" ONLY where a neural network works (vision eWaSR, the Piper
 # voice) - never on collision avoidance / the autopilot / the shallow-water checks
 AI_BADGE = {"fill": "#ffffff", "fg": "#000000", "text": "AI"}
+# the trend panel «ΤΑΣΕΙΣ» (step TR2, docs/trends_design.md 3): a dark "matrix" panel in BOTH themes, every value its
+# OWN colour + line pattern (never red / amber - those are the meaning colours; NIGHT: NIGHT main / dim + the pattern)
+TREND_BG = "#05080a"
+TREND_GRID = "#14202a"
+TREND_TEXT = "#c8d4dc"
+TREND = {"sog": "#00e0c0", "thr": "#d0b0ff", "hdg": "#ff80c0", "rot": "#e8e8a0", "xte": "#8090ff",
+         "roll": "#00a0ff", "pitch": "#a0ff40", "slam_g": "#f4f4f4", "slam_pm": "#a0a0a0", "depth": "#4060ff",
+         "bank_v": "#80ffff", "link_ms": "#ffc0e0", "link_loss": "#90c060"}
+# Tk dash tuples (on, off, ...) in px; () = solid
+TREND_DASH = {"sog": (), "thr": (6, 3), "hdg": (), "rot": (2, 3), "xte": (), "roll": (6, 3), "pitch": (),
+              "slam_g": (), "slam_pm": (2, 3), "depth": (), "bank_v": (), "link_ms": (), "link_loss": (6, 3, 2, 3)}
+
+
+def mix(c1, c2, f):
+    """The colour f of the way from c1 to c2 ('#rrggbb'): a Tk canvas has no alpha, the glow of a trend line is the
+    line colour mixed 25 % into the panel colour."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(round(x + (y - x) * f)) for x, y in zip(a, b))
+
+
 # BATTLE SHORT (13n1, display only): the grey bold button with black / yellow hazard stripes
 HAZARD = {"grey": "#8a8a8a", "black": "#000000", "yellow": "#ffd000", "red": "#d00000", "bg": "#120000"}
 PANEL = {"radius": 8, "border": 1, "pad": 0.55, "gap": 0.35}                # pad / gap x the label font size

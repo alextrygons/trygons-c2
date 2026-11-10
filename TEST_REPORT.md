@@ -887,3 +887,25 @@ groundstation/app.py 70.
 5. **Gateway:** T1 (STARLINK selection), T5, R20, R21; T4 (START_DEMO on a fresh clone).
 6. **Then:** T3 (GPS re-trust time), R7, R12 tests, the LOW points, the coverage gaps.
 After each fix: `sh tools/check.sh`, then `tests\acceptance\RUN_ACCEPTANCE.bat`.
+
+## TR2 - trend panel «ΤΑΣΕΙΣ» (data + graphs), 2026-11-10
+Station only (groundstation/trends.py, trendpanel.py, tools/trend_load.py); tests groundstation/test_trends.py TG1-TG4 +
+TG6-TG10 (10 / 10 pass) + test_screen2 S29 (= TG5, S1 matrix with the panel open at 6 graphs, 48 layouts: the panel adds
+no problem; 6 layouts of the filled 1366x658 window with the bars docked at the top do not fit even without it - not the
+panel's). CPU (tools/trend_load.py, a full 60-minute ring, 6 graphs open, 2 windows x 3 text sizes x every zoom):
+```
+sampler: 3.0 us per frame (limit 50)
+1920x1080 small     2 min: draw 5.1 ms (data 2.0)  10 min: draw 5.6 ms (data 3.0)  30 min: draw 6.6 ms (data 4.1)  60 min: draw 7.9 ms (data 5.5)
+1920x1080 normal    2 min: draw 5.0 ms (data 2.0)  10 min: draw 5.5 ms (data 3.2)  30 min: draw 6.2 ms (data 4.5)  60 min: draw 7.3 ms (data 5.5)
+1920x1080 large     2 min: draw 4.3 ms (data 2.0)  10 min: draw 5.0 ms (data 3.0)  30 min: draw 6.1 ms (data 4.5)  60 min: draw 7.4 ms (data 5.8)
+1366x768 small      2 min: draw 4.1 ms (data 2.0)  10 min: draw 4.6 ms (data 3.3)  30 min: draw 5.7 ms (data 4.4)  60 min: draw 7.1 ms (data 5.8)
+1366x768 normal     2 min: draw 4.1 ms (data 2.0)  10 min: draw 4.6 ms (data 3.0)  30 min: draw 5.7 ms (data 4.5)  60 min: draw 7.0 ms (data 5.9)
+1366x768 large      2 min: draw 4.4 ms (data 2.1)  10 min: draw 4.7 ms (data 3.2)  30 min: draw 5.4 ms (data 4.2)  60 min: draw 6.4 ms (data 5.9)
+worst redraw 7.9 ms (limit 10), worst data part 5.9 ms
+TREND LOAD: OK
+```
+Limits (design 9): sampler <= 50 us per frame, panel redraw <= 10 ms (the cold-cache worst case = a redraw with new data,
+at most 2 Hz); the unit test uses 3x looser bounds. The panel adds no work to screen 1. Assistant index: rebuilt because
+tour.json gained the stop s2.trends (voice_pending); the extract-floor gate is unchanged (7 / 86 and 4 / 33 frozen).
+Side fix found by the gate: driver.answer() called a callback without an argument when the ADS-B / mob / mark questions
+passed a function with none (TypeError in the tour-picture demo run) - now tolerant.

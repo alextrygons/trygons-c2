@@ -22,6 +22,8 @@ DEFAULTS = {
     "text_size": "normal",      # "Aa" in every window: small / normal / large (theme.text_scale, 13n1)
     "s2_panel_pos": {},         # screen 2 panels dragged by the user: key -> [x, y] fractions (13n1, RESET TO DEFAULT)
     "s2_bars": {"hidden": [], "dock": "bottom"},   # screen 2 bottom bars: hidden ones, dock top / bottom (13n1)
+    "trends_zoom": 10,          # trend panel «ΤΑΣΕΙΣ» (TR2): the time axis in minutes: 2 / 10 / 30 / 60
+    "trends_show": [1, 2, 4, 5, 7, 8],   # its graphs shown (G1..G8, at most 6); the panel starts collapsed (trends_init)
     "night": False,             # night mode (dim red / dark)
     "declutter": "FULL",        # FULL / NORMAL / MINIMAL
     "video_scale": "fill",      # fill (cover, crop evenly) / fit (whole picture, black bars)

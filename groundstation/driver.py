@@ -32,6 +32,7 @@ canvas items (stippled panels).
 """
 import collections
 import io
+import inspect
 import math
 import os
 import sys
@@ -706,7 +707,12 @@ class DriverScreen:
         self.question = None
         self.qbox.place_forget()
         self.answers.append((text, "accepted" if yes else (why or "rejected")))
-        (on_yes if yes else on_no)(why or ("accepted" if yes else "rejected by the driver"))
+        fn, arg = (on_yes if yes else on_no), (why or ("accepted" if yes else "rejected by the driver"))
+        try:
+            takes_arg = bool(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            takes_arg = True
+        fn(arg) if takes_arg else fn()      # (the mob / ADS-B / mark callers pass a function with no argument)
 
     # --- the picture ----------------------------------------------------------------------------------
     def tick(self):

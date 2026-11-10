@@ -306,6 +306,10 @@ echo "== talking manual (AM2 + AM3 + AM4): read-only proof AS1-AS3, real models 
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
 strays_check "test_assistant"
+echo "== trend panel TASEIS (TR2): ring buffer, sampler from real frames, graphs + click, palette + night, read-only proof TG6-TG9 (static, import graph, trapped senders, narrow view), CPU bounds; layout = test_screen2 S29"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_trends.py > "$TEMP/trend_tests.txt" 2>&1 ) || { echo "TREND TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|TREND TESTS" "$TEMP/trend_tests.txt"
+strays_check "test_trends"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"

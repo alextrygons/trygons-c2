@@ -9910,6 +9910,19 @@
 {
 "ch": "tour",
 "chapter": "Screen 2: navigation and control",
+"heading": "Trends: graphs",
+"id": "tour:en:s2.trends",
+"kind": "tour",
+"lines": [
+0,
+0
+],
+"term": "",
+"text": "The TRENDS panel shows speed and throttle, heading and rate of turn, cross-track error, roll and pitch, impacts, depth, battery and link as graphs over time. Every value has its own colour and its own line pattern. It starts closed: open it by clicking its title. The buttons 2, 10, 30 and 60 change the time span, the GRAPHS button chooses which are shown, and a click on a graph shows the time and every value at that moment. Where data is missing the line stops. It sends nothing to the boat."
+},
+{
+"ch": "tour",
+"chapter": "Screen 2: navigation and control",
 "heading": "Banners",
 "id": "tour:en:s2.banners",
 "kind": "tour",
@@ -11210,7 +11223,7 @@
 ],
 "sources": {
 "MANUAL.txt": "3bd15f50e25735db06fdf24f680de87018d1075e11103c30b8ecabd8054a23d0",
-"academy/content/tour.json": "3405a9151d9c13b14bd7a626de84c0a7c7eabc932425b83e5cf69aef4f5a01af",
+"academy/content/tour.json": "e9636dcbca3b02e2949f7377ce8cf3f252f5dadcbdb27a5cabb3c3f33d1cadc9",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },
 "version": 3

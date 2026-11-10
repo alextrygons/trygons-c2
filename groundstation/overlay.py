@@ -91,6 +91,7 @@ class Panel:
         self.line_opts = [{}]
         self.r = None                    # placed rectangle
         self.collapsed = key in ov.collapsed if collapsible else False
+        self.bg = None                   # (fill, alpha, head text colour) of a panel with its own look (the trends, TR2)
 
     # --- content (one call per thing, br() = a new line) ----------------------------------------------
     def _add(self, it):
@@ -123,6 +124,11 @@ class Panel:
     def space(self, em=1.0):
         return self._add(Item("space", em=em, level="label"))
 
+    def custom(self, w, h, draw, tag=None, click=None):
+        """A drawn area of w x h px (the trend panel's graphs, step TR2): draw(canvas, rect, op) paints it (op = the
+        ops record the tests read, draw may add keys); click(x, y) gets the pixel of a press inside it."""
+        return self._add(Item("custom", level="label", draw=draw, tag=tag, click=click, cw_=float(w), ch_=float(h)))
+
     def table(self, heads, rows, aligns=None, tag=None, row_actions=None, level="small"):
         """heads: [str] or None (no heading line); rows: [([str], colour)]; aligns: "l" / "r" per column;
         row_actions: [fn or None]."""
@@ -141,6 +147,7 @@ class Overlay:
         self.on_move = None              # fn(pos dict) after a drag (the app saves it per PC)
         self.ops = []                    # the last layout: {"k", "r", "panel", "s", "tag"}
         self.hits = []                   # [(rect, fn)]
+        self.hits_xy = []                # [(rect, fn(x, y))] clicks inside a custom area (TR2)
         self.holds = []                  # [(rect, release fn)] press-and-hold buttons
         self.held = None                 # the release fn of the button held now
         self.collapsed = set(collapsed)
@@ -191,6 +198,8 @@ class Overlay:
         lv = it.level
         if it.kind == "space":
             it.w, it.h = self.size("label") * it.em, 1.0
+        elif it.kind == "custom":
+            it.w, it.h = it.cw_, it.ch_
         elif it.kind == "text":
             if it.wrap:
                 b = theme.BOLD.get(lv, False) if it.bold is None else it.bold
@@ -367,21 +376,23 @@ class Overlay:
     def draw_panel(self, p):
         c, C = self.cv, theme.C
         x0, y0, x1, y1 = p.r
-        img = self._bg(x1 - x0, y1 - y0, C["panel"], theme.panel_alpha(), C["line"], theme.PANEL["radius"])
+        fill, alpha = (p.bg[0], p.bg[1]) if p.bg else (C["panel"], theme.panel_alpha())
+        head_fg = p.bg[2] if p.bg else C["dim"]
+        img = self._bg(x1 - x0, y1 - y0, fill, alpha, C["line"], theme.PANEL["radius"])
         if img is not None:
             c.create_image(x0, y0, image=img, anchor="nw", tags="ov")
         else:
-            c.create_rectangle(x0, y0, x1, y1, fill=C["panel"], outline=C["line"], stipple="gray75", tags="ov")
+            c.create_rectangle(x0, y0, x1, y1, fill=fill, outline=C["line"], stipple="gray75", tags="ov")
         self.ops.append({"k": "panel", "r": p.r, "panel": p.key, "s": p.title, "tag": p.key})
         fs = self.size("label")
         hy = y0 + p.head_h / 2
-        c.create_text(x0 + p.pad, hy, text=p.title, anchor="w", fill=C["dim"],
+        c.create_text(x0 + p.pad, hy, text=p.title, anchor="w", fill=head_fg,
                       font=self.font(fs, True), tags="ov")
         tw = self.measure(p.title, "label", True)[0]
         self.ops.append({"k": "text", "r": (x0 + p.pad, y0, x0 + p.pad + tw, y0 + p.head_h), "panel": p.key,
                          "s": p.title, "tag": p.key + "_head"})
         if p.collapsible:
-            c.create_text(x1 - p.pad, hy, text="▸" if p.collapsed else "▾", anchor="e", fill=C["dim"],
+            c.create_text(x1 - p.pad, hy, text="▸" if p.collapsed else "▾", anchor="e", fill=head_fg,
                           font=self.font(fs * 1.2, True), tags="ov")
         # the header: a click = collapse / open, a drag = move the panel (13n1; the alarms panel moves too)
         self.heads.append(((x0, y0, x1, y0 + p.head_h), p.key, p.collapsible))
@@ -443,6 +454,10 @@ class Overlay:
                 self.hits.append((r, it.action))
                 if it.release:
                     self.holds.append((r, it.release))
+        elif it.kind == "custom":
+            it.draw(c, r, op)
+            if it.click:
+                self.hits_xy.append((r, it.click))
         elif it.kind == "table":
             yy = r[1]
             cols = len(it.cw)
@@ -466,11 +481,19 @@ class Overlay:
         if it.kind != "space":
             self.ops.append(op)
 
+    def try_layout(self, W, H, keepout, extras_fn):
+        """The problems of ONE layout at the full text size (no shrinking, nothing drawn): the trend panel folds
+        (fewer graphs, then its header only) before the text of every panel shrinks (TR2)."""
+        self.W, self.H = W, H
+        self.k = self.dpi
+        return self.layout(W, H, keepout, extras_fn())[1]
+
     def render(self, W, H, keepout, extras_fn, draw_extras):
         """Lay out (largest fitting text size), then draw. extras_fn(k) -> sizes of STANDBY / logo / bar at
         fit factor k; draw_extras(rects) draws them (the app: STANDBY, logo, banners, bar)."""
         self.W, self.H = W, H
         self.ops, self.hits, self.holds, self.heads = [], [], [], []
+        self.hits_xy = []
         k = self.dpi
         rects, probs = None, None
         while True:
@@ -493,6 +516,10 @@ class Overlay:
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
                 p = next((q for q in self.panels if q.key == key), None)
                 self.drag = {"key": key, "x": x, "y": y, "r": p.r if p else r, "moved": False, "coll": coll}
+                return True
+        for r, fn in reversed(self.hits_xy):
+            if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                fn(x, y)
                 return True
         for r, fn in reversed(self.hits):
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:

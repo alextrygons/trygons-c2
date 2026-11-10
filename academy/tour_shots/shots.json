@@ -1,8 +1,8 @@
 {
  "kind": "tour_shots",
  "_help": "Made by python tools/demo_screens.py --tour from the running demo (step 13t): the picture of every tour stop (s1 / s1q / s2 / tools_<page>, el + en) and the REAL place of every screen item in it, as fractions [x, y, w, h] of the picture. academy/tourshots.py reads it; 'signature' = the layout these pictures belong to (stale = make them again).",
- "made": "2026-11-09 11:53",
- "signature": "839ff87fe1f0556c",
+ "made": "2026-11-10 05:26",
+ "signature": "5496493ced9b57d5",
  "shots": {
   "s1_el": {
    "file": "s1_el.jpg",
@@ -600,9 +600,9 @@
      0.2228
     ],
     "s2:traffic": [
-     0.71821,
+     0.72071,
      0.62935,
-     0.27763,
+     0.27513,
      0.3028
     ],
     "s2:relays": [
@@ -616,6 +616,12 @@
      0.42893,
      0.24825,
      0.33413
+    ],
+    "s2:trends": [
+     0.93921,
+     0.59794,
+     0.05662,
+     0.024
     ],
     "s2:modebar": [
      0.24389,
@@ -3393,27 +3399,27 @@
      0.10013
     ],
     "s2:alarms": [
-     0.86271,
+     0.75958,
      0.04565,
-     0.13312,
-     0.06213
+     0.23625,
+     0.0868
     ],
     "s2:helm": [
      0.73333,
-     0.11519,
+     0.13986,
      0.2625,
      0.1048
     ],
     "s2:link": [
      0.81571,
-     0.2274,
+     0.25206,
      0.18013,
      0.2228
     ],
     "s2:traffic": [
-     0.71196,
+     0.72133,
      0.64601,
-     0.28388,
+     0.2745,
      0.28613
     ],
     "s2:relays": [
@@ -3427,6 +3433,12 @@
      0.47893,
      0.24762,
      0.28413
+    ],
+    "s2:trends": [
+     0.93483,
+     0.61461,
+     0.061,
+     0.024
     ],
     "s2:modebar": [
      0.28514,
@@ -3485,7 +3497,7 @@
     "s2:banners": [
      0.25596,
      0.04565,
-     0.45183,
+     0.46121,
      0.03056
     ],
     "s2:boat": [

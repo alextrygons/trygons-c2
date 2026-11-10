@@ -58,10 +58,14 @@
       export + import, a bad file refused), the screen 1 mini map, nothing sent to the boat
   S28 centre the joystick to confirm (W79, owner 2026-11-05): a pending CONFIRM + the counted stick off centre = the
       hint on screen 2's message line + screen 1's notices; none otherwise; nothing sent to the boat
+  S29 trend panel «ΤΑΣΕΙΣ» (step TR2 = trends design TG5): the S1 matrix with the panel OPEN at 6 graphs (docked bars
+      top and bottom, text sizes, el + en): nothing clipped, no overlap, the boat free; fewer graphs / its header only
+      when it does not fit; the camera view hides it; the layout is per PC
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
 """
+import math
 import os
 import queue
 import re
@@ -374,7 +378,7 @@ def s1_matrix(rig):
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel; «ΕΡΩΤΗΣΗ» >= 2 bar heights "
            "from «ΟΜΙΛΙΑ» (AM2-r2 MED-a; AM2-r3: also with the bars docked at the top)",
-           not bad and not far and all(c[2] == 8 for c in cases) and not rig.errors,
+           not bad and not far and all(c[2] == 9 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; ask / ptt apart: %d of %d (e.g. %s), "
            "too close %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
@@ -1311,7 +1315,7 @@ def s15_dp(rig):
                     if lang == "el" and W == 1920 and dpi == 1.0:
                         for o in ops() + [o for o in ap.ov.ops if o.get("panel") == "status"]:
                             greek_en += english_words(o.get("s", ""))
-    bad = [c for c in cases if c[2] or c[1] != 8]          # (+ bar 1's ROUTE sub-panel, 13n1)
+    bad = [c for c in cases if c[2] or c[1] != 9]          # (+ the trend panel header, TR2; + bar 1's ROUTE sub-panel, 13n1)
     i18n.set_lang("el", save=False)
     rig.size(1366, 768, 1.25)
     no_relay_boat(rig)
@@ -2492,6 +2496,71 @@ def s28_confirm_centre(rig):
                                                                                 rig.errors[:2]))
 
 
+def s29_trends(rig):
+    """TG5 (trends design 10): the S1 matrix with the trend panel OPEN at 6 graphs and a full ring."""
+    ap = rig.ap
+    fill_everything(rig)
+    tr = ap.trends
+    tr.clear()
+    now = time.time()
+    d = dict(ap.t)
+    t0 = now - 700.0
+    for k in range(1400):
+        tt = t0 + 0.5 * k
+        dd = dict(d, t_ms=int(tt * 1000) % 2000000000, est_sog=8.0 + math.sin(k / 30.0), throttle=40.0,
+                  heading=(90.0 + k * 0.05) % 360.0, yaw_rate=math.sin(k / 9.0), att_roll=2.0 * math.sin(k / 12.0),
+                  att_pitch=3.0, slam_peak=0.2 + (1.5 if k % 200 == 0 else 0.0), slam_rate=2, bank_v=12.6)
+        tr.feed(tt, dd, rtt_ms=40.0)
+    tr.tick(now + 1.0)
+    ap.ov.collapsed.discard("trends")
+    cases, folds, pre = [], [], []
+    try:
+        for lang in ("el", "en"):
+            i18n.set_lang(lang, save=False)
+            for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
+                for dpi in (1.0, 1.25, 1.5):
+                    for dock in ("bottom", "top"):
+                        settings.put("s2_bars", {"hidden": [], "dock": dock})
+                        rig.size(W, H, dpi)
+                        p = layout_problems(ap)
+                        tp = [q for q in ap.ov.panels if q.key == "trends"]
+                        n = len([o for o in ap.ov.ops if str(o.get("tag", "")).endswith("_plot")])
+                        # the same layout with the panel collapsed: a problem that is there without it (the filled
+                        # 1366x658 window with the bars docked at the top does not fit even then) is not the panel's
+                        ap.ov.collapsed.add("trends")
+                        ap.render(force=True)
+                        base = layout_problems(ap)
+                        ap.ov.collapsed.discard("trends")
+                        ap.render(force=True)
+                        new = [x for x in p if x not in base]
+                        cases.append(((lang, W, H, dpi, dock), ap.ov.k, new, n, bool(tp)))
+                        folds.append(n)
+                        if base:
+                            pre.append((lang, W, H, dpi, dock))
+    finally:
+        settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
+        ap.ov.collapsed.add("trends")
+        rig.pump(0.3)
+    bad = [c for c in cases if c[2] or not c[4]]
+    # the camera view: the other panels give way (no trend panel there)
+    rig.size(1366, 768, 1.0)
+    ap.ov.collapsed.discard("trends")
+    ap.camview = "FRONT-1"
+    ap.render(force=True)
+    in_cam = any(q.key == "trends" for q in ap.ov.panels)
+    ap.camview = None
+    ap.ov.collapsed.add("trends")
+    ap.render(force=True)
+    report("S29 trend panel «ΤΑΣΕΙΣ» open at 6 graphs: the S1 matrix (docked top / bottom, el + en, 100-150 %) - nothing "
+           "clipped, no overlap, the boat free; it folds (fewer graphs, then its header) instead of shrinking the "
+           "other panels; hidden in the camera view; collapsed again afterwards",
+           not bad and not in_cam and not rig.errors and max(folds) >= 2 and min(folds) >= 0,
+           "%d layouts; problems the panel adds %s (%d layouts do not fit even without it); graphs shown min %d max %d "
+           "(6 chosen); in the camera view %s; errors %s" % (
+               len(cases), [(c[0], c[2][:2]) for c in bad][:3], len(pre), min(folds), max(folds), in_cam,
+               rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -2501,7 +2570,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s27_screenrec, s28_confirm_centre, s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s27_screenrec, s28_confirm_centre, s29_trends, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

@@ -72,6 +72,7 @@ import hailer
 import mob
 import sar as sarmod
 import sar_geo
+import hud
 import hudar
 import sar_mark
 import sarpanel
@@ -85,6 +86,8 @@ import uavhud
 import uavmap
 import uavpanel
 import uavroute
+import trends as trendsmod                   # TR2: the trend panel «ΤΑΣΕΙΣ» - data (pure) + panel; read-only
+import trendpanel
 import uavpics
 import ynbox
 import json
@@ -467,6 +470,19 @@ class App:
         self.mapwin = mapwin.MapView(self, self.cv)
         self.ov = overlay.Overlay(self.cv, settings.get("s2_collapsed") or [], settings.get("s2_panel_pos") or {})
         self.ov.on_collapse = self.collapse_changed
+        # TR2: the trend panel «ΤΑΣΕΙΣ» (CLAUDE.md Y): the ring buffers + the panel; the panel gets a NARROW view (the
+        # trends_* settings + the night flag), never this App; collapsed until the user opens it (first start)
+        self.trends = trendsmod.Trends()
+        self.trendpanel = trendpanel.TrendPanel(self.trends, trendpanel.TrendView(
+            settings.get, settings.put, lambda: settings.get("night")))
+        self.trend_fold = 0                 # the layout's fold of the open panel (fewer graphs, then the header only)
+        self._trend_key = None
+        self._trend_dep = (0.0, None)       # the chart depth, 1 Hz (as screen 1)
+        if not settings.get("trends_init"):
+            settings.put("trends_init", True)
+            if "trends" not in self.ov.collapsed:
+                self.ov.collapsed.add("trends")
+                settings.put("s2_collapsed", sorted(self.ov.collapsed))
         self.ov.on_move = self.positions_changed       # a dragged panel stays where it was left (13n1)
         self.sub_open = None                           # the bar-1 sub-panel open now (ROUTE / MAX SPEED / GEOFENCE)
         theme.on_text_size(self.text_size_changed)     # "Aa" (13n1)
@@ -509,7 +525,7 @@ class App:
             root.bind_all("<KeyRelease-%s>" % k, self.asst_key_up, add="+")
         if not os.environ.get("TRYGONS_TEST"):
             root.after(1500, self.asst.start)       # the worker loads its models in the background
-        root.bind("<Escape>", lambda e: self.camview and self.camview_close())       # the camera view: back (13n2)
+        root.bind("<Escape>", lambda e: self.camview and self.camview_close() or self.trendpanel.escape() and self.render(force=True))       # the camera view: back (13n2)
         root.bind("<Configure>", lambda e: self.layout_changed())
         monitors.bind_keys(root, self)
         if self.layout.get("driver_open") or open_driver:
@@ -669,6 +685,49 @@ class App:
     def asst_passage_shown(self):
         return self.asst_passage_open and not self.asst_auto_fold
 
+    # --- the trend panel «ΤΑΣΕΙΣ» (TR2, CLAUDE.md Y): DISPLAY ONLY, read-only --------------------------------------
+    def trend_feed(self, d):
+        """The sampler gets the decoded frame + three station-side values (the cross-track from the leg this station
+        sees, the chart depth at 1 Hz, this station's round trip). Never raises into the telemetry path."""
+        try:
+            now = time.time()
+            xte = depth = rtt = None
+            mode = d.get("mode")
+            auto = mode == proto.MODE_AUTO
+            trip = mode == proto.MODE_DP and d.get("dp_sub") == proto.DP_TRIP
+            dv = getattr(self, "driver", None)
+            if (auto or trip) and d.get("wp_set") and d.get("pos_source") and dv is not None:
+                if auto:
+                    xte = dv.waypoint_info(d, now)[1]
+                else:
+                    key = (round(d["wp_lat"], 6), round(d["wp_lon"], 6))
+                    a_ = dv.leg.setdefault(key, (d["est_lat"], d["est_lon"]))
+                    xte = hud.xte(d["est_lat"], d["est_lon"], a_[0], a_[1], d["wp_lat"], d["wp_lon"])
+            if d.get("pos_source") and self.charts:
+                if now - self._trend_dep[0] > 1.0:
+                    self._trend_dep = (now, self.charts.depth(d["est_lat"], d["est_lon"]))
+                depth = self._trend_dep[1]
+            gw = self.gw_status or {}
+            me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
+            rtt = me[0].get("rtt_ms") if me else None
+            self.trends.feed(now, d, xte, depth, rtt)
+        except Exception as e:                      # (a display feature never stops the screens)
+            if not getattr(self, "_trend_err", False):
+                self._trend_err = True
+                self.event(T("trend.error", e=repr(e)))
+
+    def panel_trends(self):
+        """Screen 2's slim panel «ΤΑΣΕΙΣ» (the 13n1 look: draggable by the header, collapsible, 3 text sizes; collapsed
+        until opened): scrolling graphs of the existing telemetry. Placed by the fit test; when the chosen graphs do
+        not fit it shows fewer (down to 2), then only its header. DISPLAY ONLY."""
+        p = self.ov.panel("trends", T("ov.trends"), ("sw", "se", "nw", "ne"))
+        if self.trend_fold >= trendpanel.fold_limit(len(self.trendpanel.shown())):
+            p.collapsed = True                      # the layout's last resort: the header only
+        self.trendpanel.fill(self.ov, p, time.time(), self.trend_fold)
+
+    def trend_open(self):
+        return "trends" not in self.ov.collapsed
+
     def panel_assistant(self):
         """Screen 2's slim panel of the talking manual (AM5, CLAUDE.md W (5); the 13n1 look: draggable by the header,
         collapsible, theme.py sizes): the RECOGNISED question (a mis-hearing is visible), the answer, how it was
@@ -750,6 +809,8 @@ class App:
             self.uav_page.update(None)
         self.hist.clear()
         self.slam_hist.clear()
+        self.trends.clear()                     # TR2: the trend rings belong to that boat
+        self.trendpanel.escape()
         self.lamps = alerts.MasterLamps()
         self._uav_local = None
         self.adsb_state, self.adsb_said, self.adsb_notice = None, {}, None
@@ -3656,6 +3717,7 @@ class App:
         while self.hist and self.hist[0][0] < ts - PLOT_S:
             self.hist.pop(0)
         self.track_feed(d)
+        self.trend_feed(d)
         if prev and prev["mode"] != d["mode"]:
             self.event(T("cap.ev_mode", a=T("mode." + prev["mode_name"]), b=T("mode." + d["mode_name"])))
         if prev and alerts.bits_of(prev) != alerts.bits_of(d):         # both alarm words
@@ -4132,6 +4194,7 @@ class App:
 
     def collapse_changed(self, keys):
         settings.put("s2_collapsed", keys)
+        self.trend_fold = 0                         # TR2: a header click opens / closes the trend panel afresh
         self.render(force=True)
 
     def tools_menu(self, parent):
@@ -4392,6 +4455,7 @@ class App:
         except Exception:                           # never stops the screens
             pass
         try:
+            self.trends.tick(time.time())
             self.mapwin.tick()
             self.render()
         except tk.TclError:
@@ -4432,8 +4496,23 @@ class App:
         W, H = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())
         ko = self.mapwin.keepout(W, H)
         self.ov.dpi = theme.dpi_factor(self.root)
-        self.ov.begin(W, H)
-        self.build_panels(W, H)
+        # TR2: the trend panel folds BEFORE every panel's text shrinks: layout at the full text size, one graph fewer
+        # per failure, then its header only; the fold is kept until the window / text size / language / graphs change
+        key = (W, H, self.ov.dpi, theme.text_scale(), i18n.lang(), tuple(self.trendpanel.shown()),
+               self.trendpanel.choose_open, self.trend_open())
+        if key != self._trend_key:
+            self._trend_key, self.trend_fold = key, 0
+        while True:
+            self.ov.begin(W, H)
+            self.build_panels(W, H)
+            tp = next((q for q in self.ov.panels if q.key == "trends"), None)
+            if tp is None or tp.collapsed:
+                break
+            if not self.ov.try_layout(W, H, ko, self.extras_size):
+                break
+            if self.trend_fold >= trendpanel.fold_limit(len(self.trendpanel.shown())):
+                break
+            self.trend_fold += 1
         self.rects = self.ov.render(W, H, ko, self.extras_size, self.draw_extras)
         # AM5: the assistant's FULL passage is shown whenever it fits; when the panels do not fit with it (a small
         # window with every panel up) the panel gives way step by step - 1 the passage folded ([ΚΕΙΜΕΝΟ ▸] opens it),
@@ -5147,6 +5226,7 @@ class App:
         self.panel_traffic(H)
         self.panel_relays()                 # placed by the fit test (CLAUDE.md O)
         self.panel_assistant()              # the talking manual's answer (AM5), placed by the fit test
+        self.panel_trends()                 # the trend panel «ΤΑΣΕΙΣ» (TR2), collapsed until opened
         self.panel_sub()                    # ROUTE / MAX SPEED / GEOFENCE above bar 1, only while used (13n1)
 
     def panel_alarms(self):
@@ -6237,7 +6317,7 @@ class App:
         text = T("adsb.offer_" + kind, cs=p.get("cs") or p.get("icao"), n=p.get("slot"), alt="%d" % round(
             p.get("alt_safe_m") or 30))
 
-        def yes(pp=p):
+        def yes(_why=None, pp=p):         # (the driver screen calls on_yes with a text: it is not the proposal)
             self.adsb_do(pp)
         if self.driver is not None:
             self.driver.ask(text, yes, lambda: None, 30.0, tag=("adsb", p["id"]), head=T("adsb.head"))
