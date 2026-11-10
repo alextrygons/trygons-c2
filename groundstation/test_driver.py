@@ -169,10 +169,20 @@ def main():
         root.report_callback_exception = lambda *a: errors.append(repr(a[1]))
         app = A.App(root, "tcp:127.0.0.1:%d" % port)
 
+        import _tkinter
+
         def pump(seconds, until=None):
+            """Run the station's event loop for `seconds` (or until the condition holds). A bounded number of events
+            per step: root.update() returns only when NO event is pending, and on a busy PC the station's 50 / 100 ms
+            timers (shore_answer_tick, cam_tick, the HUD tick) fall due faster than their handlers run while a heavy
+            HUD frame (I16: AR + chart + vision mask) takes 100-300 ms - update() then never returns (CL2: the whole
+            suite stalled at I16 for the 900 s limit, 2 / 2 runs under 20 busy processes; the same mechanism as
+            tools/demo_screens.py's pump)."""
             end = time.time() + seconds
             while time.time() < end:
-                root.update()
+                for _i in range(400):
+                    if not root.tk.dooneevent(_tkinter.ALL_EVENTS | _tkinter.DONT_WAIT):
+                        break
                 if until and until():
                     return True
                 time.sleep(0.02)
@@ -255,7 +265,10 @@ def main():
         left_px, right_px = fl[hdr:hdr + 3], fl[hdr + 63 * 3:hdr + 64 * 3]
         app.vstreams = {"FRONT-1": FakeStream(colour=(30, 90, 160)), "REAR-LEFT": FakeStream()}
         app.front_sel = A.video.FrontSelector()
-        pump(0.6)
+        # (CL2) a frame COMPOSED after the streams were set - the HUD redraws every tick_ms (>= 2 x its own frame
+        # time, up to 1 s on a busy PC), so a fixed 0.6 s could show the frame from before
+        fr0 = dv.last_frame
+        pump(5.0, lambda: dv.last_frame is not fr0)
         W_, H_ = dv.cv.winfo_width(), dv.cv.winfo_height()
         mx0, my0, mx1, my1 = dv.layout.px("mirror_l", W_, H_)
         fr = dv.last_frame
@@ -474,9 +487,48 @@ def main():
         app.sj, app.sj_cfg = fj, dict(A.shorejoy.DEFAULT)
         if dv.question:
             dv.answer(False, why="done elsewhere")
+        # (CL2) the shore stick is read by the station's 20 Hz tick (app.shore_answer_tick -> yesno.Selector): the
+        # 0.5 s guard counts from the TICK that first saw the question, and on a busy PC a HUD frame of 100-300 ms
+        # sits between ticks. The fixed sleeps here had 0.1-0.2 s of margin against that guard (the measured I25
+        # flake: 1 / 3 runs on a quiet PC, 4 / 5 under 4 busy processes - "trigger at 0.3 s: none False" = the press
+        # reached the tick after the guard). Now: a press that must be INSIDE the guard is set in the same instant as
+        # the question (the tick registers the question and feeds the press with one clock = 0 s shown, whatever the
+        # load); a press that must be AFTER the guard waits on the selector's own clock (yn.shown); every step waits
+        # for the tick's visible result (yn counters / dv.qsel / the callbacks) with a time limit. The assertions are
+        # unchanged.
+        yn = app.yn
+        yes_now = yn.answered
+
+        def registered():
+            return pump(3.0, lambda: yn.q is not None and yn.q == app.open_question()[0])
+
+        def shown_for(s):
+            """The open question has been shown >= s by the selector's own clock."""
+            return registered() and pump(s + 3.0, lambda: time.time() - yn.shown >= s)
+
+        def press(button, inside_guard):
+            """Press (1 trigger / 2 thumb) and wait until the tick processed it; -> (guarded, answered) deltas."""
+            g0, a0 = yn.guarded, yn.answered
+            fj.d[0]["buttons"] = button
+            pump(3.0, lambda: yn.guarded != g0 or yn.answered != a0)
+            age = time.time() - yn.shown
+            fj.d[0]["buttons"] = 0
+            pump(3.0, lambda: not yn.trig_was and not yn.rej_was)      # the release seen by a tick
+            return yn.guarded - g0, yn.answered - a0, age
+
+        def stick_y(v, until):
+            fj.d[0]["axes"]["Y"] = v
+            return pump(3.0, until)
         got = []
         dv.ask("I25 question?", lambda why: got.append("yes"), lambda why: got.append("no:" + why), 30.0)
-        pump(0.3)
+        g0, a0 = yn.guarded, yn.answered
+        fj.d[0]["buttons"] = 1                                 # the trigger INSIDE the guard: pressed with the question
+        pump(3.0, lambda: yn.guarded != g0 or yn.answered != a0)
+        early_age = time.time() - yn.shown
+        early_none = not got and dv.question is not None and yn.guarded == g0 + 1 and yn.answered == a0
+        early_pkt = app.rjoy_source()["trigger"]               # never to the boat while the question is open
+        fj.d[0]["buttons"] = 0
+        pump(3.0, lambda: not yn.trig_was)
         Hh, Ww = dv.w.winfo_height(), dv.w.winfo_width()
         qy0, qy1 = dv.qbox.winfo_y(), dv.qbox.winfo_y() + dv.qbox.winfo_height()
         yb, nb, tb = dv.q_yes, dv.q_no, dv.qtime
@@ -484,27 +536,21 @@ def main():
         vert = yb.winfo_y() + yb.winfo_height() <= nb.winfo_y() and nb.winfo_y() + nb.winfo_height() <= tb.winfo_y() \
             and yb.winfo_width() >= 0.8 * dv.qbox.winfo_width() and abs(yb.winfo_width() - nb.winfo_width()) <= 2
         pre_yes = dv.qsel and yb.cget("bg") == A.theme.C["btn_ok"] and nb.cget("bg") != A.theme.C["btn_no"]
-        fj.d[0]["buttons"] = 1                                 # the trigger inside the 0.5 s guard (0.3 s shown)
-        pump(0.15)
-        early_none = not got and dv.question is not None
-        early_pkt = app.rjoy_source()["trigger"]               # never to the boat while the question is open
-        fj.d[0]["buttons"] = 0
-        pump(0.3)
-        fj.d[0]["axes"]["Y"] = 0.8                             # stick pulled back (inverted axis): NO selected
-        pump(0.2)
+        pump(3.0, lambda: yn.y_centred)                        # the stick seen centred: the next move is a selection
+        stick_y(0.8, lambda: not dv.qsel)                      # stick pulled back (inverted axis): NO selected
         no_sel = not dv.qsel and nb.cget("bg") == A.theme.C["btn_no"]
-        fj.d[0]["axes"]["Y"] = 0.0
-        pump(0.15)
-        fj.d[0]["axes"]["Y"] = -0.8                            # forward again: YES
-        pump(0.15)
+        stick_y(0.0, lambda: yn.y_centred)
+        stick_y(-0.8, lambda: dv.qsel)                         # forward again: YES
         yes_again = dv.qsel
-        fj.d[0]["axes"]["Y"] = 0.0
-        fj.d[0]["buttons"] = 1                                 # a fresh press after 0.5 s: ACCEPT
-        pump(0.2)
+        stick_y(0.0, lambda: yn.y_centred)
+        shown_for(A.yesno.GUARD_S)                             # a fresh press AFTER the guard: ACCEPT
+        g0, a0 = yn.guarded, yn.answered
+        fj.d[0]["buttons"] = 1
+        pump(3.0, lambda: got or yn.guarded != g0)
         accepted = got == ["yes"] and dv.question is None
         held_pkt = app.rjoy_source()["trigger"]                # still held after the answer: kept from the boat
         fj.d[0]["buttons"] = 0
-        pump(0.15)
+        pump(3.0, lambda: not yn.trig_was)
         app.rjoy_source()
         fj.d[0]["buttons"] = 1
         free_pkt = app.rjoy_source()["trigger"]                # a new press, no question: to the boat (13q3)
@@ -512,28 +558,22 @@ def main():
         app.rjoy_source()
         pump(0.1)
         dv.ask("I25 second?", lambda why: got.append("yes2"), lambda why: got.append("no2:" + why), 30.0)
-        pump(0.6)
-        fj.d[0]["buttons"] = 2                                 # the thumb: REJECT
-        pump(0.2)
-        fj.d[0]["buttons"] = 0
+        shown_for(A.yesno.GUARD_S)
+        press(2, inside_guard=False)                           # the thumb: REJECT
         thumb = got[-1:] == ["no2:rejected on the joystick"]
         # 13p review M1: a question REPLACED by another one in the same callback = a new question for the shore
         # stick (the 0.5 s guard + the YES pre-selection start again; the token is a serial, never id())
         dv.ask("I25 old?", lambda why: got.append("yes_old"), lambda why: got.append("no_old"), 30.0)
-        pump(0.7)
-        fj.d[0]["axes"]["Y"] = 0.8                             # NO selected on the old question
-        pump(0.2)
-        fj.d[0]["axes"]["Y"] = 0.0
-        pump(0.1)
+        shown_for(A.yesno.GUARD_S)
+        pump(3.0, lambda: yn.y_centred)
+        stick_y(0.8, lambda: not dv.qsel)                      # NO selected on the old question
+        stick_y(0.0, lambda: yn.y_centred)
         tok_old = app.open_question()[0]
         dv.ask("I25 new?", lambda why: got.append("yes_new"), lambda why: got.append("no_new"), 30.0)
         tok_new = app.open_question()[0]
-        pump(0.1)
-        fj.d[0]["buttons"] = 1                                 # 0.1 s after the new question: inside its guard
-        pump(0.15)
-        fj.d[0]["buttons"] = 0
-        pump(0.1)
-        replaced = tok_old != tok_new and dv.qsel and "yes_new" not in got and "no_new" not in got and             dv.question is not None and got[-1:] == ["no_old"]
+        g_new, a_new, new_age = press(1, inside_guard=True)    # pressed WITH the new question: inside its guard
+        replaced = tok_old != tok_new and dv.qsel and "yes_new" not in got and "no_new" not in got and \
+            dv.question is not None and got[-1:] == ["no_old"] and g_new == 1 and a_new == 0
         dv.answer(False, why="done elsewhere")
         dv.ask("I25 mouse?", lambda why: got.append("yes3"), lambda why: got.append("no3"), 30.0)
         pump(0.1)
@@ -541,23 +581,22 @@ def main():
         mouse = got[-1:] == ["no3"]
         cc = []
         app.captain_confirm("I25 own action", lambda: cc.append("sent"))
-        pump(0.6)
-        fj.d[0]["buttons"] = 1
-        pump(0.2)
-        fj.d[0]["buttons"] = 0
-        pump(0.1)
+        shown_for(A.yesno.GUARD_S)
+        press(1, inside_guard=False)
         cc_ok = cc == ["sent"] and app.cconf is None
+        yes_now = yn.answered - yes_now
         app.sj, app.sj_cfg = real_sj, real_cfg
         report("I25 YES / NO on screen 1 (13p): lower part, vertical (YES / NO full width, countdown below), YES "
                "pre-selected; trigger only after 0.5 s, stick Y selects, thumb REJECT, the answering trigger never sent "
                "to the boat; mouse + single-operator confirmation",
                low and vert and pre_yes and early_none and not early_pkt and no_sel and yes_again and accepted and
                not held_pkt and free_pkt and thumb and mouse and cc_ok and replaced and not errors,
-               "box y %d..%d of %d (low %s), vertical %s, YES pre-selected %s; trigger at 0.3 s: none %s, packet %s; "
-               "stick back -> NO %s, forward -> YES %s; trigger -> %s; held packet %s, free press %s; thumb %s; "
-               "mouse %s; own confirmation %s; replaced question = new guard + YES %s" % (
-                   qy0, qy1, Hh, low, vert, pre_yes, early_none, early_pkt, no_sel, yes_again, got, held_pkt, free_pkt,
-                   thumb, mouse, cc, replaced))
+               "box y %d..%d of %d (low %s), vertical %s, YES pre-selected %s; trigger pressed with the question (checked "
+               "%.2f s after it): none %s, packet %s; stick back -> NO %s, forward -> YES %s; trigger -> %s; held packet "
+               "%s, free press %s; thumb %s; mouse %s; own confirmation %s; replaced question = new guard + YES %s "
+               "(pressed with it, checked %.2f s after: guarded %d, answered %d); stick answers %d" % (
+                   qy0, qy1, Hh, low, vert, pre_yes, early_age, early_none, early_pkt, no_sel, yes_again, got, held_pkt,
+                   free_pkt, thumb, mouse, cc, replaced, new_age, g_new, a_new, yes_now))
 
         # I10 full-screen camera, every text inside its box in both languages, sizes
         import settings
@@ -947,7 +986,11 @@ def main():
         ask_ok = all(g_[2] for g_ in gaps)
         # the real screen 1: the alarms drawn in their box (right column, top half), no old alarm bar
         app.on_telem = lambda d_: orig_t(dict(d_, alarm_bits=d_["alarm_bits"] | 0x001 | 0x002))
-        pump(0.8)
+        # (CL2) handshake instead of a fixed 0.8 s: a telemetry frame WITH the alarm bits has arrived, then a HUD
+        # frame composed after it (the "live False (0 texts)" flake of W11 = the HUD not redrawn yet on a busy PC)
+        pump(5.0, lambda: app.t is not None and (app.t["alarm_bits"] & 0x003) == 0x003)
+        fr0 = dv.last_frame
+        pump(5.0, lambda: dv.last_frame is not fr0)
         W_, H_ = dv.cv.winfo_width(), dv.cv.winfo_height()
         live_box = dv.layout.px("alarms", W_, H_)
         live = [bb for t, bb, bx, s_ in dv.renderer.text_boxes if str(t).startswith("alarm_")]
@@ -1152,7 +1195,8 @@ def main():
         none_first = not fresh.sized and fresh.last_frame is None and not fresh.ops
         fresh.draw()
         none_first = none_first and fresh.last_frame is None and not fresh.ops          # (still no <Configure> seen)
-        pump(1.5)
+        # (CL2) the new window's <Configure> + its first frame: a condition with a time limit, not a fixed 1.5 s
+        pump(10.0, lambda: fresh.sized and fresh.last_frame is not None)
         sized_after = fresh.sized and fresh.last_frame is not None
         fresh.w.destroy()
         real_w, real_h = dv.cv.winfo_width, dv.cv.winfo_height

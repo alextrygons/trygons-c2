@@ -950,3 +950,6 @@ held-out top-1 64 % / top-3 77 %; en all top-1 53 %, top-3 77 %, held-out 78 % /
 the gate (a known open failure; its thresholds were NOT touched).
 Gate (tools/check.sh, 2026-11-10, one run): only the known items failed - AS17 (open), AC31 (s11_mob_search; passes alone) and
 gateway F9 (KEEP 5': 0.2 min in the ring, timing under load; passes alone); everything else passed.
+
+## CL2 - flaky tests under load (2026-11-10)
+Harness-timing fixes only (docs/cleanup_report.md CL2): test_driver bounded event pump + condition waits (I25, I10, I19, I23), gateway VR5 waits for the worker's asynchronous sample writes. Failure rates (tools/loadgen.py, 20 CPUs): test_driver 0 busy 1/3 -> 0/3, 4 busy 5/5 -> 0/5, 20 busy: the 900 s stall at I16 gone, only I23 (a real 60 ms / 150 ms render-time threshold) still fails 2/2; gateway VR 4 busy 0/5 (VR5 was 1/3 once), 20 busy = vision pauses by design (CPU guard), not a flake. No assertion or threshold changed.

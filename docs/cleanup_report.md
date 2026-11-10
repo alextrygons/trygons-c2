@@ -309,3 +309,29 @@ The gate stops ONLY what it can PROVE a suite started, and never a station / gat
   the fresh build from the clone (13 steps PASS incl. START_DEMO / STOP_DEMO from the clone: no leftover, no unproven
   note), storm 200 episodes 0 fails, time wrap, day at sea, gateway storm I80-I84, and the row "no leftover processes
   (tools/strays.py)": NO LEFTOVER PROCESSES in 7 suites (the proof = each suite's own Job).
+
+## CL2 - flaky tests under load (test harness only; no app/, hal/, gateway or groundstation LOGIC change)
+
+Tool: `tools/loadgen.py` (N busy processes in a KILL_ON_JOB_CLOSE job, `--repeat`, failure count per test; output test_results/flaky/<name>/). PC = 20 logical CPUs. "p4" = 4 busy processes, "pall" = 20 busy (the PC saturated).
+
+Causes found (all harness timing, assertions untouched):
+- test_driver `pump()` used `root.update()`, which returns only when no event is pending; under load the 50 / 100 ms station timers fall due faster than a heavy HUD frame (I16) is drawn, so it never returned = the 900 s stall at I16. Now a bounded `dooneevent` loop (400 events per step).
+- I25 (and the frame waits of I10 / I19 / I23): fixed `pump(0.15..0.6)` sleeps against the shore stick's 0.5 s guard, which counts from the 20 Hz TICK that saw the question. Now: a press that must be inside the guard is set with the question; a press after the guard waits on the selector's own clock (`yn.shown`); every step waits for the tick's visible result (counters / `dv.qsel` / callbacks) or a frame composed after the change, each with a time limit. Same assertions, same thresholds.
+- gateway VR5: the worker writes a sample asynchronously; under load a sample took longer than the fixed 1.2 s, so the next quota check did not see it (1819 kB vs 1 MB quota + 600 kB). Now the test waits until the samples folder stopped changing (1.5 s) before reading the sizes / taking the next sample. Assertion unchanged.
+
+Failure rates (runs failing / runs):
+
+| test | before | after |
+|---|---|---|
+| test_driver, no load | 1/3 (I25) | 0/3 |
+| test_driver, p4 | 5/5 (I25) | 0/5 |
+| test_driver, pall | run 1 stalled 900 s at I16, run 2 failed I17 I18 I19 I21 ... (2/2) | 0 stalls; 2/2 fail ONLY I23 (below) |
+| gateway VR, no load | 0/2 | not re-run |
+| gateway VR, p4 | 0/3 first series, then VR5 1/3 (re-measured series) | 0/5 (VR2 / VR3 / VR5 all pass) |
+| gateway VR, pall | not measured | 2/2 VR1-VR5 fail: NOT a harness flake (below) |
+
+Notes, NOT fixed (honest):
+- I23 under 20 busy processes: "composing 51 ms (< 60 ms), frame 184 ms (< 150 ms)" - a real PERFORMANCE threshold of the HUD renderer; a saturated CPU makes it slow. Raising it would weaken the test, so it stays; it passes at p4 and without load.
+- VR under 20 busy processes: the vision manager pauses itself by design ("VISION PAUSED: CPU 100 %", the product's CPU guard), so the worker does not run and VR1-VR5 cannot pass; this is correct product behaviour, not a flake. VR2 / VR3 / VR5 are stable at 4 busy processes.
+- I4 / I12 / I19 were not seen failing in these series (before_* runs: only I25 at p0 / p4; the pall run-2 list was caused by the stalled / overloaded harness) and pass in all after series.
+- test_boats.py (NOT touched by CL2, NOT in the CL2 list): in the one tools/check.sh run of this step (74 min, stopped by hand) test_boats hung > 55 min; 3 more runs alone, no load, quiet PC: hung again at B11 (run 1), B4 (run 2: faulthandler = inside root.update() in ov_tick -> render), B5 `toggle_screen()` + pump (run 3, with a bounded dooneevent pump tried: the hang is then INSIDE one dooneevent call, native Tk, no Python frame deeper). Same family as the driver stall (Tk event loop not returning) but here a single native call; not reproducible by timing alone, so the experiment was reverted (nothing proven). Open item for the owner / next step: test_boats B4 / B5 / B11 hang on this PC (the earlier gates passed it). The gate of this step was stopped at that suite: "section test_boats stalled, re-run alone 3 x: STALLED" - the suites after it (screen 2 ... gateway) were not run in this gate; of the gateway tests only section VR was run (above), the rest is unchanged by CL2 (VR5 wait helper only).

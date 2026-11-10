@@ -3466,13 +3466,27 @@ def section_vr():
         # VR5 samples (frame + mask) for a later own dataset: saved on request, inside the storage quota
         g.vision.cfg["samples"].update({"enabled": True, "max_mb": 1.0})
         folder = os.path.join(root, "vision", "samples")
+        def settled(max_s=30.0):
+            """(CL2) the worker writes a sample asynchronously (on a busy PC a sample takes longer than the fixed 1.2 s
+            below): wait until the folder's size stopped changing (1.5 s) - the quota check of the NEXT sample must see
+            every write of the earlier ones. The assertion below is unchanged."""
+            def size_now():
+                return sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))                     if os.path.isdir(folder) else 0
+            end, last, since = time.time() + max_s, size_now(), time.time()
+            while time.time() < end and time.time() - since < 1.5:
+                time.sleep(0.25)
+                cur = size_now()
+                if cur != last:
+                    last, since = cur, time.time()
         for _ in range(4):
             g.vision._sample("random")
             time.sleep(1.2)
+        settled()
         files = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
         size = sum(os.path.getsize(os.path.join(folder, f)) for f in files)
         g.vision._sample("random")                           # the quota check runs before every new sample
         time.sleep(1.2)
+        settled()
         size2 = sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))
         report("VR5 samples (frame + mask) saved for an own dataset, the oldest deleted above the quota",
                any(f.endswith(".ppm") for f in files) and any(f.endswith("_mask.pgm") for f in files) and
