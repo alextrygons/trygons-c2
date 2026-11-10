@@ -225,6 +225,7 @@ def b4_app_end_to_end():
     sys.path.insert(0, os.path.join(REPO, "gateway"))
     import test_gateway as TG
     import tkinter as tk
+    import _tkinter
     import app as A
     import proto
     tmp = tempfile.mkdtemp(prefix="boats_e2e_")
@@ -247,8 +248,13 @@ def b4_app_end_to_end():
 
     def pump(s, until=None):
         end = time.time() + s
+        # (CL2-b) a bounded number of events per step: root.update() returns only when NO event is pending, and
+        # the station's own timers (HUD / shore tick at 50-100 ms) fall due faster than a heavy screen-1 frame is
+        # drawn - update() then never returns (the B5 / B11 hang, stack: one native Tk call). Same as test_driver.
         while time.time() < end:
-            troot.update()
+            for _i in range(400):
+                if not troot.tk.dooneevent(_tkinter.ALL_EVENTS | _tkinter.DONT_WAIT) or time.time() >= end:
+                    break
             if until and until():
                 return True
             time.sleep(0.02)
