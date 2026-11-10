@@ -19,7 +19,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "groundstation"))
 
-LIMITS = {"sampler_us": 50.0, "redraw_ms": 10.0}
+LIMITS = {"sampler_us": 50.0, "redraw_ms": 10.0, "detect_ms": 1.0, "observe_us": 50.0}
 
 
 def frame(k, t_ms):
@@ -48,6 +48,38 @@ def measure_sampler():
     for k in range(n):
         tr.feed(base + k * 0.1, frame(k, k * 100), None, 12.0, 40.0)
     return (time.perf_counter() - t0) / n * 1e6
+
+
+def measure_detector(minutes=25):
+    """The silent highlight (TR3): per telemetry frame the commanded-change filter (observe, us) and per 2 Hz sample the
+    judgement of all 10 values (poll, ms) with the 10-minute buffers full. avg / p99 / max."""
+    import trends
+    import trenddetect
+    tr = trends.Trends()
+    det = trenddetect.Detector()
+    now = time.time() - minutes * 60.0
+    n = int(minutes * 60 * 10)
+    obs, polls = [], []
+    for k in range(n):
+        t = now + k * 0.1
+        d = frame(k, k * 100)
+        d.update(target=90.0, auto_wp=1, gear=1, power_fwd=100, speed_limited=False)
+        t0 = time.perf_counter()
+        det.observe(t, d, ("lte", False))
+        t1 = time.perf_counter()
+        tr.feed(t, d, 5.0 if k % 50 == 0 else None, 12.0, 40.0)
+        tr.tick(t)
+        t2 = time.perf_counter()
+        before = det.done
+        det.poll(tr)
+        t3 = time.perf_counter()
+        if k > n // 2:
+            obs.append((t1 - t0) * 1e6)
+            if det.done != before:
+                polls.append((t3 - t2) * 1000.0)
+    polls.sort()
+    return {"observe_us": sum(obs) / len(obs), "detect_avg_ms": sum(polls) / max(1, len(polls)),
+            "detect_p99_ms": polls[int(len(polls) * 0.99)], "detect_max_ms": polls[-1]}
 
 
 def measure_redraw(W, H, size, reps=8):
@@ -106,6 +138,7 @@ def measure_redraw(W, H, size, reps=8):
 
 def measure_all(sizes=("small", "normal", "large"), windows=((1920, 1080), (1366, 768))):
     res = {"sampler_us": measure_sampler(), "redraw": {}}
+    res.update(measure_detector())
     for W, H in windows:
         for sz in sizes:
             res["redraw"]["%dx%d %s" % (W, H, sz)] = measure_redraw(W, H, sz)
@@ -123,9 +156,12 @@ def main():
         for k, r in res["redraw"].items():
             print("%-18s " % k + "  ".join("%2d min: draw %.1f ms (data %.1f)" % (z, v["redraw_ms"], v["data_ms"])
                                           for z, v in r.items()))
+        print("detector: observe %.1f us per frame (limit %.0f), judging all values %.3f ms avg / %.3f p99 / %.3f max per "
+              "2 Hz sample (limit %.0f)" % (res["observe_us"], LIMITS["observe_us"], res["detect_avg_ms"],
+                                            res["detect_p99_ms"], res["detect_max_ms"], LIMITS["detect_ms"]))
         print("worst redraw %.1f ms (limit %.0f), worst data part %.1f ms" % (
             res["worst_redraw_ms"], LIMITS["redraw_ms"], res["worst_data_ms"]))
-    ok = res["sampler_us"] <= LIMITS["sampler_us"] and res["worst_redraw_ms"] <= LIMITS["redraw_ms"]
+    ok = res["sampler_us"] <= LIMITS["sampler_us"] and res["worst_redraw_ms"] <= LIMITS["redraw_ms"] and         res["observe_us"] <= LIMITS["observe_us"] and res["detect_avg_ms"] <= LIMITS["detect_ms"] and res["detect_p99_ms"] <= LIMITS["detect_ms"]*2
     print("TREND LOAD: %s" % ("OK" if ok else "OVER A LIMIT"))
     return 0 if ok else 1
 

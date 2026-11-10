@@ -2428,4 +2428,6 @@ trend.readout = {utc} UTC · {local} τοπική ώρα · {mode}
 trend.readout_none = Δεν υπάρχει δείγμα εκεί
 trend.hint = Πατήστε σε γράφημα για την ώρα και όλες τις τιμές
 trend.not_connected = Δεν υπάρχει σύνδεση – δεν υπάρχουν τιμές
+trend.hl = ΤΑΣΗ: {name} {arrow}
+trend.ev_on = ΤΑΣΗ: {name} {arrow} {a} → {b} {unit}
 trend.error = Τάσεις: σφάλμα {e}

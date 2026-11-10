@@ -2424,4 +2424,6 @@ trend.readout = {utc} UTC · {local} local · {mode}
 trend.readout_none = No sample there
 trend.hint = Click a graph for the time and every value
 trend.not_connected = Not connected – no values
+trend.hl = TREND: {name} {arrow}
+trend.ev_on = TREND: {name} {arrow} {a} → {b} {unit}
 trend.error = Trends: error {e}

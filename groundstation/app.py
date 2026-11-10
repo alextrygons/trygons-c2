@@ -88,6 +88,8 @@ import uavpanel
 import uavroute
 import trends as trendsmod                   # TR2: the trend panel «ΤΑΣΕΙΣ» - data (pure) + panel; read-only
 import trendpanel
+import trenddetect
+import trendlog
 import uavpics
 import ynbox
 import json
@@ -473,8 +475,11 @@ class App:
         # TR2: the trend panel «ΤΑΣΕΙΣ» (CLAUDE.md Y): the ring buffers + the panel; the panel gets a NARROW view (the
         # trends_* settings + the night flag), never this App; collapsed until the user opens it (first start)
         self.trends = trendsmod.Trends()
+        # TR3: the SILENT highlight «ΤΑΣΗ»: the detector judges the samples; its only outputs are the sink (this PC's
+        # log + a station event line) and the panel's red line / outlined label. No sound, no lamp, no alarm.
+        self.trenddet = trenddetect.Detector()
         self.trendpanel = trendpanel.TrendPanel(self.trends, trendpanel.TrendView(
-            settings.get, settings.put, lambda: settings.get("night")))
+            settings.get, settings.put, lambda: settings.get("night")), self.trenddet)
         self.trend_fold = 0                 # the layout's fold of the open panel (fewer graphs, then the header only)
         self._trend_key = None
         self._trend_dep = (0.0, None)       # the chart depth, 1 Hz (as screen 1)
@@ -711,10 +716,31 @@ class App:
             me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
             rtt = me[0].get("rtt_ms") if me else None
             self.trends.feed(now, d, xte, depth, rtt)
+            link = (self.gw_status or {}).get("net") or {}
+            self.trenddet.observe(now, d, (link.get("active"), bool(link.get("saver"))))
+            self.trenddet.poll(self.trends)
+            self.trend_events()
         except Exception as e:                      # (a display feature never stops the screens)
             if not getattr(self, "_trend_err", False):
                 self._trend_err = True
                 self.event(T("trend.error", e=repr(e)))
+
+    def trend_events(self):
+        """The highlights that went on / off (TR3): the local log + ONE station event line per ON. Silent: nothing else."""
+        for ev in self.trenddet.take():
+            self.trend_log(ev)
+
+    def trend_log(self, ev):
+        try:
+            trendlog.append(trendlog.entry(ev, (self.track_key() or ("", ""))[1]))
+            if ev["ev"] == "on":
+                vid = ev["val"]
+                u = trendpanel.TrendPanel.unit(vid)
+                self.event(T("trend.ev_on", name=T("trend." + vid), arrow=trendpanel.arrow(ev["kind"], ev["dir"]),
+                             a=trendpanel.fmt_value(vid, ev["base_m"]), b=trendpanel.fmt_value(vid, ev["rec_m"]),
+                             unit=u))
+        except Exception:
+            pass
 
     def panel_trends(self):
         """Screen 2's slim panel «ΤΑΣΕΙΣ» (the 13n1 look: draggable by the header, collapsible, 3 text sizes; collapsed
@@ -809,6 +835,8 @@ class App:
             self.uav_page.update(None)
         self.hist.clear()
         self.slam_hist.clear()
+        self.trenddet.end_all(time.time(), "disconnect")
+        self.trend_events()
         self.trends.clear()                     # TR2: the trend rings belong to that boat
         self.trendpanel.escape()
         self.lamps = alerts.MasterLamps()
@@ -4465,6 +4493,8 @@ class App:
             pass
         try:
             self.trends.tick(time.time())
+            self.trenddet.poll(self.trends)
+            self.trend_events()
             self.mapwin.tick()
             self.render()
         except tk.TclError:

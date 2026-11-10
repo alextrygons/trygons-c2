@@ -37,6 +37,7 @@ import settings  # noqa: E402
 import theme  # noqa: E402
 import trendpanel  # noqa: E402
 import trends as tr  # noqa: E402
+import alerts as alerts_mod  # noqa: E402
 
 results = []
 NAN = float("nan")
@@ -658,15 +659,573 @@ def tg10():
     report("TG10 CPU: the sampler <= %.0f us per frame and the whole panel (6 graphs, a full 60-minute ring, every "
            "zoom, 2 windows, 2 text sizes) <= %.0f ms per redraw (3 x the design limits 50 us / 10 ms; "
            "tools/trend_load.py gives the numbers)" % (lim_s, lim_r),
-           res["sampler_us"] <= lim_s and res["worst_redraw_ms"] <= lim_r,
-           "sampler %.1f us per frame; worst redraw %.1f ms (data part %.1f ms)" % (
-               res["sampler_us"], res["worst_redraw_ms"], res["worst_data_ms"]))
+           res["sampler_us"] <= lim_s and res["worst_redraw_ms"] <= lim_r and
+           res["observe_us"] <= trend_load.LIMITS["observe_us"] * 3 and
+           res["detect_avg_ms"] <= trend_load.LIMITS["detect_ms"] * 3 and
+           res["detect_p99_ms"] <= trend_load.LIMITS["detect_ms"] * 6,
+           "sampler %.1f us per frame; worst redraw %.1f ms (data part %.1f ms); silent-highlight detector: filter "
+           "%.1f us per frame, judging %.2f ms avg / %.2f ms p99 per 2 Hz sample (limits x3 / x6)" % (
+               res["sampler_us"], res["worst_redraw_ms"], res["worst_data_ms"], res["observe_us"],
+               res["detect_avg_ms"], res["detect_p99_ms"]))
+
+
+# --- TR3: the silent highlight «ΤΑΣΗ» (TH1 - TH11) ------------------------------------------------------------
+import random  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+import json  # noqa: E402
+import trenddetect  # noqa: E402
+import trendlog  # noqa: E402
+
+
+class Sim:
+    """Telemetry at 10 Hz through the model + the detector exactly like App.trend_feed / the idle tick."""
+
+    def __init__(self, seed=1, mode="AUTO", rate=10.0):
+        self.rng = random.Random(seed)
+        self.model = tr.Trends()
+        self.events = []
+        self.det = trenddetect.Detector()
+        self.t = 1000.0
+        self.k = 0
+        self.mode = mode
+        self.rate = rate
+        self.base = dict(est_sog=8.0, throttle=40.0, heading=90.0, target=90.0, yaw_rate=0.0, att_roll=0.0,
+                         att_pitch=3.0, slam_peak=0.3, slam_rate=2, bank_v=12.6, auto_wp=1, gear=1, att_age_ms=10)
+        self.noise = dict(est_sog=0.08, yaw_rate=0.25, att_roll=0.25, att_pitch=0.12, slam_peak=0.03, bank_v=0.02)
+        self.rtt = 60.0
+        self.link_key = ("lte", False)
+        self.drain = None
+
+    def frame(self, over):
+        d = {"t_ms": int(self.k * 100) % 2000000000, "mode_name": self.mode, "compass_ok": True}
+        for key, v in self.base.items():
+            d[key] = v + (self.rng.gauss(0, self.noise[key]) if key in self.noise else 0.0)
+        d["slam_peak"] = abs(d["slam_peak"])
+        d.update(over)
+        return d
+
+    def run(self, secs, over=None, fn=None, observe=True, rtt_noise=2.0):
+        for _ in range(int(secs * self.rate)):
+            self.t += 1.0 / self.rate
+            self.k += 1
+            o = dict(over or {})
+            if fn:
+                o.update(fn(self.t, self.k) or {})
+            d = self.frame(o)
+            rtt = self.rtt + self.rng.gauss(0, rtt_noise)
+            if observe:
+                self.det.observe(self.t, d, self.link_key)
+            self.model.feed(self.t, d, None, None, rtt)
+            self.model.tick(self.t)
+            self.det.poll(self.model)
+            if self.drain:
+                self.drain()                # (the station's own door: log + event line)
+            else:
+                self.events.extend(self.det.take())
+
+    def ons(self, val=None):
+        return [e for e in self.events if e["ev"] == "on" and (val is None or e["val"] == val)]
+
+    def offs(self, val=None):
+        return [e for e in self.events if e["ev"] == "off" and (val is None or e["val"] == val)]
+
+
+STEPS = {   # value -> the step (base override)
+    "sog": {"est_sog": 11.0}, "roll": {"att_roll": 6.0}, "pitch": {"att_pitch": 6.5},
+    "slam_g": {"slam_peak": 1.4}, "bank_v": {"bank_v": 11.8},
+}
+
+
+def apply_step(sim, vid):
+    if vid == "link_ms":
+        sim.rtt = 460.0
+    else:
+        sim.base.update(STEPS[vid])
+
+
+def th1():
+    out, ok = {}, True
+    for n, vid in enumerate(list(STEPS) + ["link_ms"]):
+        sim = Sim(seed=100 + n)
+        sim.run(400.0)
+        pre = len(sim.events)
+        t_step = sim.t
+        apply_step(sim, vid)
+        sim.run(120.0)
+        on = sim.ons(vid)
+        want = "down" if vid == "bank_v" else "up"
+        t_on = (on[0]["t"] - t_step) if on else None
+        out[vid] = None if t_on is None else round(t_on, 1)
+        ok = ok and pre == 0 and len(on) == 1 and len(sim.ons()) == 1 and on[0]["kind"] == "mean" and \
+            on[0]["dir"] == want and trenddetect.ON_S <= t_on <= 70.0
+    sim = Sim(seed=5)                       # a 6 s blip does not start it
+    sim.run(400.0)
+    sim.base.update(est_sog=11.0)
+    sim.run(6.0)
+    sim.base.update(est_sog=8.0)
+    sim.run(120.0)
+    blip = not sim.ons("sog")
+    report("TH1 a clear step of the mean (speed +3 kn, roll +6, pitch +3.5, impact peak +1.1 g, battery -0.8 V, round "
+           "trip +400 ms) -> ONE highlight with the right direction, after the 10 s hold and the half-window the "
+           "median needs, never before; nothing before the step; a 6 s blip is nothing",
+           ok and blip, "seconds from the step to ON %s; blip ignored %s" % (out, blip))
+
+
+def th2():
+    a = Sim(seed=2)                         # spread UP: an oscillation with the same median
+    a.run(400.0)
+    a.run(120.0, fn=lambda t, k: {"att_roll": 3.0 * math.sin(t / 8.0 * 2 * math.pi)})
+    up = a.ons("roll")
+    up_ok = len(up) == 1 and up[0]["kind"] == "spread" and up[0]["dir"] == "up"
+    b = Sim(seed=3)                         # spread DOWN: a rhythm that stops (s_B >= 2 s_min)
+    b.run(600.0, fn=lambda t, k: {"att_roll": 3.0 * math.sin(t / 8.0 * 2 * math.pi)})
+    pre = len(b.ons("roll"))
+    b.run(120.0)
+    dn = b.ons("roll")
+    dn_ok = len(dn) == 1 and dn[0]["kind"] == "spread" and dn[0]["dir"] == "down"
+    c = Sim(seed=4)                         # rate of turn: spread only, a mean shift is nothing
+    c.run(400.0)
+    c.run(120.0, over={"yaw_rate": 1.5})
+    rot_mean = not c.ons("rot")
+    import trendpanel as tp
+    arrows = (tp.arrow("spread", "up"), tp.arrow("spread", "down"), tp.arrow("mean", "up"), tp.arrow("mean", "down"))
+    report("TH2 a change of the SPREAD (an oscillation added / removed) -> ∿↑ / ∿↓ (spread down only when the old spread "
+           "was >= 2 s_min); rate of turn is judged on spread only (a mean shift is nothing)",
+           up_ok and dn_ok and pre == 0 and rot_mean and arrows == ("∿↑", "∿↓", "↑", "↓"),
+           "up %s; down %s (before the stop: %d); rot mean shift ignored %s; arrows %s" % (
+               [(e['kind'], e['dir']) for e in up], [(e['kind'], e['dir']) for e in dn], pre, rot_mean, arrows))
+
+
+def program(sim, observe=True, fault_at=None):
+    """A simulated AUTO program: legs of 300 s, a waypoint turn (heading +60 deg, heel 5 deg, 7.5 deg/s for 8 s) and a
+    throttle staircase between the turns (the speed follows with a 10 s lag)."""
+    st = {"sog": 8.0, "wp": 1, "tgt": 90.0, "turned": set()}
+    stairs = ((450, 55.0), (750, 70.0), (1050, 55.0), (1350, 40.0))
+    turns = (300, 600, 900, 1200)
+    t0 = sim.t
+
+    def fn(t, k):
+        r = t - t0
+        thr = 40.0
+        for tt, v in stairs:
+            if r >= tt:
+                thr = v
+        for n, tt in enumerate(turns):
+            if r >= tt and n not in st["turned"]:
+                st["turned"].add(n)
+                st["wp"] = n + 2
+                st["tgt"] = (st["tgt"] + 60.0) % 360.0
+        st["sog"] += (thr * 0.2 - st["sog"]) * (1.0 / sim.rate) / 10.0
+        turning = any(0 <= r - tt < 8 for tt in turns)
+        o = {"est_sog": st["sog"], "throttle": thr, "auto_wp": st["wp"], "target": st["tgt"],
+             "att_roll": 5.0 if turning else 0.0, "yaw_rate": 7.5 if turning else 0.0}
+        if fault_at is not None and r >= fault_at:
+            o.update(slam_peak=1.6, slam_rate=14)
+        return o
+    sim.run(1500.0, fn=fn, observe=observe)
+
+
+def th3():
+    cases = []
+
+    def case(name, seed, change, mode=None, link=None, rtt=None):
+        sim = Sim(seed=seed)
+        sim.run(400.0)
+        sim.base.update(change)
+        if mode:
+            sim.mode = mode
+        if link:
+            sim.link_key = link
+        if rtt:
+            sim.rtt = rtt
+        sim.run(300.0)
+        cases.append((name, len(sim.ons())))
+    case("F1 mode", 61, {"est_sog": 11.0}, mode="HDG_LOCK")
+    case("F2 throttle", 62, {"est_sog": 11.0, "throttle": 70.0, "slam_peak": 1.4, "att_pitch": 6.5})
+    case("F3 waypoint", 63, {"auto_wp": 2, "att_roll": 6.0, "est_sog": 11.0})
+    case("F3 target", 64, {"target": 150.0, "att_roll": 6.0})
+    case("F4 speed set", 65, {"speed_set_kn": 10.0, "est_sog": 11.0})
+    case("F5 gear", 66, {"gear": 2, "est_sog": 11.0, "att_pitch": 6.5})
+    case("F6 override", 67, {"ov_hand": 1, "att_roll": 6.0})
+    case("F7 generator", 68, {"gen_active": 1, "bank_v": 11.8})
+    case("F8 link", 69, {}, link=("sat", True), rtt=460.0)
+    bad = [c for c in cases if c[1]]
+    g = Sim(seed=9)                         # F9: a gap > 5 s in a value, then another level
+    g.run(400.0)
+    g.run(8.0, over={"att_roll": None, "att_age_ms": 5000})
+    g.base["att_roll"] = 6.0
+    g.run(300.0)
+    f9 = len(g.ons("roll"))
+    p = Sim(seed=11)
+    program(p)
+    ctl = Sim(seed=11)
+    program(ctl, observe=False)
+    report("TH3 every commanded change (F1 mode, F2 throttle, F3 waypoint / target, F4 speed set, F5 gear, F6 stick "
+           "override, F7 generator, F8 link, F9 a gap) of the size of TH1's step -> NO highlight; a full simulated AUTO "
+           "program (4 waypoint turns, a throttle staircase) = 0 highlights, the SAME run without the filter = some",
+           not bad and f9 == 0 and len(p.ons()) == 0 and len(ctl.ons()) >= 1,
+           "highlights per trigger case %s; F9 %d; program %d (without the filter %d: %s)" % (
+               cases, f9, len(p.ons()), len(ctl.ons()), sorted({e['val'] for e in ctl.ons()})))
+
+
+def th4():
+    s = Sim(seed=21)                        # ON at >= 1, kept through 0.6..1, OFF after 20 s below 0.6 (>= 30 s shown)
+    s.run(400.0)
+    s.base["bank_v"] = 12.6 - 0.4           # ratio 1.33 (threshold 0.3 V)
+    s.run(60.0)
+    s.base["bank_v"] = 12.6 - 0.22          # ratio 0.73: between 0.6 and 1 -> stays on
+    s.run(200.0)
+    still = len(s.ons("bank_v")) == 1 and not s.offs("bank_v")
+    s.base["bank_v"] = 12.6
+    s.run(120.0)
+    on, off = s.ons("bank_v"), s.offs("bank_v")
+    pair = len(on) == 1 and len(off) == 1 and off[0]["why"] == "calm" and off[0]["dur_s"] >= trenddetect.MIN_SHOWN_S
+    h = Sim(seed=22)                        # hovering at the threshold
+    h.run(400.0)
+    for i in range(40):
+        h.base["bank_v"] = 12.6 - (0.32 if i % 2 else 0.28)
+        h.run(7.0)
+    hover = len(h.ons("bank_v")) <= 1 and len(h.offs("bank_v")) <= 1
+    c = Sim(seed=23)                        # the cooldown
+    c.run(400.0)
+    c.base["bank_v"] = 11.8
+    c.run(60.0)
+    c.base["bank_v"] = 12.6
+    c.run(100.0)
+    coff = c.offs("bank_v")
+    t_off = coff[0]["t"] if coff else None
+    c.base["bank_v"] = 11.8                 # the same again soon after
+    c.run(600.0)
+    con = c.ons("bank_v")
+    cool = bool(coff) and len(con) == 2 and con[1]["t"] - t_off >= trenddetect.COOLDOWN_S
+    report("TH4 hysteresis + minimum time + cooldown: ON at >= 1 x the threshold, kept through 0.6..1, OFF only after "
+           "20 s below 0.6 and >= 30 s shown; a statistic hovering at the threshold = at most one on / off pair; the "
+           "same trend again within 5 min of its end is blocked until the cooldown is over",
+           still and pair and hover and cool,
+           "kept %s; pair %s (dur %s); hover on/off %d/%d; second on %s s after the first off" % (
+               still, pair, off[0]["dur_s"] if off else None, len(h.ons("bank_v")), len(h.offs("bank_v")),
+               round(con[1]["t"] - t_off) if len(con) > 1 and t_off else None))
+
+
+def th5():
+    a = Sim(seed=31)                        # too little BASE: 100 s of history, then a step
+    a.run(100.0)
+    a.base["est_sog"] = 11.0
+    a.run(60.0)
+    b = Sim(seed=32, rate=1.0)              # too little RECENT: one sample per second (30 < 45 in 30 s)
+    b.run(400.0)
+    b.base["est_sog"] = 11.0
+    b.run(200.0)
+    report("TH5 too little BASE (< 2 min) or RECENT (< 45 valid samples in the last 30 s) = nothing is judged",
+           not a.ons() and not b.ons(), "base %d / recent %d highlights" % (len(a.ons()), len(b.ons())))
+
+
+def th6():
+    s = Sim(seed=41)                        # missing for 60 s, back at another level: a gap is not a change
+    s.run(400.0)
+    s.run(60.0, over={"att_roll": None})
+    s.base["att_roll"] = 6.0
+    s.run(100.0)
+    back = not s.ons("roll")
+    m = Sim(seed=42)
+    m.run(600.0, over={"att_roll": None, "bank_v": None})
+    none = not m.ons()
+    g = Sim(seed=43)                        # a highlight is ended by a gap > 5 s
+    g.run(400.0)
+    g.base["att_roll"] = 6.0
+    g.run(60.0)
+    was = bool(g.det.active().get("roll"))
+    g.run(8.0, over={"att_roll": None})
+    ended = "roll" not in g.det.active() and bool(g.offs("roll")) and g.offs("roll")[-1]["why"] == "gap"
+    report("TH6 missing data: a gap > 5 s ends a highlight (why gap) and restarts the value's BASE; a value that comes "
+           "back at another level after a gap is not a trend; an all-missing value never highlights",
+           back and none and was and ended, "back %s; all-missing %s; was on %s; ended by the gap %s" % (
+               back, none, was, ended))
+
+
+def th10():
+    res = {}
+    for mode in ("MANUAL", "REMOTE_MANUAL", "MANEUVER", "TRAINING", "BENCH_TEST", "STANDBY", "DP"):
+        s = Sim(seed=51, mode=mode)
+        s.run(400.0)
+        s.base.update(est_sog=11.0, att_roll=6.0, att_pitch=6.5)
+        s.run(120.0)
+        res[mode] = sorted({e["val"] for e in s.ons()})
+    driver_quiet = all(not set(v) & {"sog", "rot", "xte", "roll", "pitch"} for v in res.values())
+    sl = {}
+    for mode in ("MANUAL", "REMOTE_MANUAL", "STANDBY", "DP", "BENCH_TEST"):
+        s = Sim(seed=52, mode=mode)
+        s.run(400.0)
+        s.base["slam_peak"] = 1.4
+        s.run(100.0)
+        sl[mode] = bool(s.ons("slam_g"))
+    slam_ok = sl["MANUAL"] and sl["REMOTE_MANUAL"] and not (sl["STANDBY"] or sl["DP"] or sl["BENCH_TEST"])
+    allm = True
+    for mode in ("MANUAL", "STANDBY"):
+        s = Sim(seed=53, mode=mode)
+        s.run(400.0)
+        apply_step(s, "link_ms")
+        s.run(100.0)
+        allm = allm and bool(s.ons("link_ms"))
+    never = all(v not in trenddetect.CFG for v in trenddetect.NOT_JUDGED)
+    f = Sim(seed=54)
+    f.run(400.0, over={"first_test": True})
+    f.base.update(est_sog=11.0)
+    f.run(120.0, over={"first_test": True})
+    ft = not f.ons("sog")
+    report("TH10 the modes table: no driver-commanded value (speed, rate of turn, cross-track, roll, pitch) is judged "
+           "in MANUAL / REMOTE / MANEUVER / TRAINING / BENCH / STANDBY / DP or FIRST TEST; impacts are judged in every "
+           "mode but STANDBY / DP / BENCH; battery + link in every mode; thr / hdg / depth are never judged",
+           driver_quiet and slam_ok and allm and never and ft,
+           "values judged per mode %s; impacts per mode %s; link in every mode %s; first test quiet %s" % (
+               res, sl, allm, ft))
+
+
+def th11():
+    """The 'simulator replay': the simulator runs in REAL time only (a 10 min baseline + an AUTO program would take
+    longer than the gate), so the replay is the AUTO program of TH3 driven through the same decoded-dict path
+    (App.trend_feed's calls) - 0 highlights; the same run with the SIM_FAULT slam values (impact peak + impacts per
+    minute up) = a slam_g / slam_pm up. The fault values are the ones the simulator's slam fault produces."""
+    p = Sim(seed=71)
+    program(p)
+    f = Sim(seed=71)
+    program(f, fault_at=900.0)
+    vals = {(e["val"], e["dir"]) for e in f.ons()}
+    only_slam = {e["val"] for e in f.ons()} <= {"slam_g", "slam_pm"}
+    report("TH11 replay of an AUTO run through the decoded-telemetry path: 0 highlights; the same run with the slam "
+           "fault (impact peak + impacts per minute rise) = slam_g / slam_pm up and nothing else",
+           not p.ons() and ("slam_g", "up") in vals and ("slam_pm", "up") in vals and only_slam,
+           "clean run %d highlights; slam run %s" % (len(p.ons()), sorted(vals)))
+
+
+def th8():
+    d = tempfile.mkdtemp(prefix="trygons_th8_")
+    old = dict(os.environ)
+    try:
+        os.environ["TRYGONS_TRENDS_LOG"] = d
+        os.environ.pop("TRYGONS_TEST", None)
+        folder_env = trendlog.log_dir() == d
+        os.environ.pop("TRYGONS_TRENDS_LOG")
+        os.environ["TRYGONS_TEST"] = "1"
+        folder_test = os.path.basename(trendlog.log_dir()) == "trygons_test_trends"
+        os.environ["TRYGONS_TRENDS_LOG"] = d
+        s = Sim(seed=81)
+        s.run(400.0)
+        s.base["est_sog"] = 11.0
+        s.run(100.0)
+        s.base["est_sog"] = 8.0
+        s.run(300.0)
+        for e in s.events:
+            trendlog.append(trendlog.entry(e, "rf49d", 1.7e9 + e["t"] - 1000.0), d)
+        files = trendlog.log_files(d)
+        lines = [json.loads(x) for fn in os.listdir(d) for x in open(os.path.join(d, fn), encoding="utf-8")]
+        keys = {"ts", "boat", "ev", "val", "kind", "dir", "base_m", "base_s", "rec_m", "rec_s", "stat", "thr", "mode",
+                "dur_s", "why"}
+        fmt = bool(lines) and all(set(x) == keys for x in lines) and lines[0]["ev"] == "on" and \
+            lines[0]["val"] == "sog" and lines[0]["dir"] == "up" and lines[0]["boat"] == "rf49d" and \
+            lines[0]["ts"].endswith("Z") and lines[0]["rec_m"] > lines[0]["base_m"] + 2 and \
+            any(x["ev"] == "off" and x["dur_s"] and x["why"] for x in lines)
+        # size limit: a full file continues in a numbered part; 30 days: old files go, at most 5 per write
+        d2 = tempfile.mkdtemp(prefix="trygons_th8b_")
+        old_max = trendlog.MAX_FILE_BYTES
+        trendlog.MAX_FILE_BYTES = 300
+        names = {trendlog.append({"ev": "on", "x": "y" * 120}, d2, 1.7e9) for _ in range(6)}
+        trendlog.MAX_FILE_BYTES = old_max
+        split = len(names) >= 2 and any("_2" in n for n in names)
+        d3 = tempfile.mkdtemp(prefix="trygons_th8c_")
+        for i in range(8):
+            open(os.path.join(d3, "2020-01-%02d.jsonl" % (i + 1)), "w").write("{}\n")
+        open(os.path.join(d3, "notes.txt"), "w").write("keep")
+        trendlog.append({"ev": "on"}, d3)
+        left = sorted(os.listdir(d3))
+        prune = len([n for n in left if n.startswith("2020")]) == 3 and "notes.txt" in left
+        # a disk error is swallowed
+        bad = trendlog.append({"ev": "on"}, os.path.join(d3, "notes.txt", "x"))
+        report("TH8 the local log: one JSON line per on / off with the design's fields (UTC time, boat, value, kind, dir, "
+               "base / recent mean + spread, statistic, threshold, mode, duration, why) in the log folder (a test run = "
+               "a temp folder, an env override); a full 5 MB file continues in a numbered part; files over 30 days go "
+               "(at most 5 per write, only its own names); a disk error is swallowed; the modules import no sender "
+               "(TG6 / TG7)",
+               folder_env and folder_test and fmt and split and prune and bad is None and len(files) >= 1,
+               "env %s test-folder %s format %s (%d lines) split %s prune %s (%s) error swallowed %s" % (
+                   folder_env, folder_test, fmt, len(lines), split, prune, left, bad is None))
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+        for x in (d,):
+            shutil.rmtree(x, ignore_errors=True)
+
+
+def th_rig_common(rig):
+    """The station ready for a highlight run: the live simulator's frames off, the trend rings empty, the panel open,
+    taps on the sound system and the local-alarm door."""
+    ap = rig.ap
+    ap.trend_feed = lambda d: None              # (the live simulator's frames would reset the synthetic ring)
+    ap.trends.clear()
+    ap.ov.collapsed.discard("trends")
+    rig.size(1920, 1080, 1.0)
+    taps = {"sound": 0, "local": 0}
+    for name in ("request", "say", "alarm", "feedback", "assistant_speak"):
+        if ap.sound is not None and hasattr(ap.sound, name):
+            orig = getattr(ap.sound, name)
+
+            def f(*a, _o=orig, **k):
+                taps["sound"] += 1
+                return _o(*a, **k)
+            setattr(ap.sound, name, f)
+    orig_local = ap.lamps.set_local
+
+    def loc(*a, **k):
+        taps["local"] += 1
+        return orig_local(*a, **k)
+    ap.lamps.set_local = loc
+    return taps
+
+
+def th7():
+    close_root()
+    d = tempfile.mkdtemp(prefix="trygons_th7_")
+    os.environ["TRYGONS_TRENDS_LOG"] = d
+    rig = S.Rig()
+    ap = rig.ap
+    try:
+        taps = th_rig_common(rig)
+        rig.pump(1.0)
+        ap.render(force=True)
+        lamps0 = [tuple(r) for r in ap.lamps.rows()]
+        bits0 = (ap.t or {}).get("alarm_bits")
+        s0 = dict(taps)
+        sim = Sim(seed=91)
+        sim.model, sim.det = ap.trends, ap.trenddet
+        sim.drain = ap.trend_events
+        sim.t = time.time() - 560.0
+        sim.run(400.0)
+        sim.base["est_sog"] = 11.0
+        sim.run(140.0)
+        on = ap.trenddet.active().get("sog")
+        ap.trends.tick(time.time() + 1.0)
+        rig.pump(0.5)
+        ap.render(force=True)
+        recs = [o["trend"] for o in ap.ov.ops if o.get("trend")]
+        line = next((li for r in recs for li in r["lines"] if li["id"] == "sog"), None)
+        rec1 = next((r for r in recs if r["graph"] == 1), None)
+        red = bool(line) and line["hl"] and line["colour"] == theme.WARN and line["tag"] == "TREND: SPEED ↑"
+        others = all(li["colour"] != theme.WARN for r in recs for li in r["lines"] if li["id"] != "sog")
+        tags = (rec1 or {}).get("tags") or []
+        outlined = bool(tags) and tags[0]["colour"] == theme.WARN
+        items = [i for i in ap.cv.find_all() if ap.cv.type(i) == "rectangle" and
+                 ap.cv.itemcget(i, "outline") == theme.WARN and ap.cv.itemcget(i, "fill") == ""]
+        frame_item = len(items) >= 1                   # a 1 px outline, no fill: not a filled alarm box
+        events = [e for e in ap.ev_texts() if e.startswith("TREND:")]
+        files = sorted(os.listdir(d))
+        logged = bool(files) and any('"ev": "on"' in open(os.path.join(d, f), encoding="utf-8").read() for f in files)
+        settings.put("night", True)                    # NIGHT: the night palette's warn red, thicker
+        ap.render(force=True)
+        recs_n = [o["trend"] for o in ap.ov.ops if o.get("trend")]
+        ln = next((li for r in recs_n for li in r["lines"] if li["id"] == "sog"), None)
+        night_ok = bool(ln) and ln["colour"] == theme.NIGHT["warn"] and ln["width"] == trendpanel.HL_NIGHT_W and \
+            all(li["colour"] in (theme.NIGHT["main"], theme.NIGHT["dim"], theme.NIGHT["warn"])
+                for r in recs_n for li in r["lines"])
+        settings.put("night", False)
+        ap.ov.collapsed.add("trends")                  # collapsed: nothing drawn, the header not coloured
+        ap.render(force=True)
+        pan = next((q for q in ap.ov.panels if q.key == "trends"), None)
+        hdr_red = False
+        if pan is not None and pan.r:
+            x0, y0, x1, y1 = pan.r
+            for i in ap.cv.find_overlapping(x0, y0, x1, y1):
+                for opt in ("fill", "outline"):
+                    try:
+                        if ap.cv.itemcget(i, opt) == theme.WARN:
+                            hdr_red = True
+                    except Exception:
+                        pass
+        no_ops = not [o for o in ap.ov.ops if o.get("trend")]
+        ap.ov.collapsed.discard("trends")
+        ap.render(force=True)
+        rig.pump(1.0)
+        lamps1 = [tuple(r) for r in ap.lamps.rows()]
+        silent = lamps1 == lamps0 and (ap.t or {}).get("alarm_bits") == bits0 and taps["sound"] == s0["sound"] and \
+            taps["local"] == s0["local"]
+        report("TH7 SILENT: a highlight draws the line + label red (NIGHT: the night warn red, thicker) and an OUTLINED "
+               "label «TREND: SPEED ↑» (a 1 px frame, no fill) inside the panel only; ONE station event line + the log; "
+               "no sound call, no lamp / local-alarm change, alarm bits and rows unchanged; a collapsed panel draws "
+               "nothing and its header has no colour",
+               bool(on) and red and others and outlined and frame_item and len(events) == 1 and logged and night_ok and
+               not hdr_red and no_ops and silent and not rig.errors,
+               "on %s; red %s (%s); other lines not red %s; outlined %s; frame item %s; events %s; logged %s; night %s; "
+               "collapsed header red %s / no ops %s; silent %s (taps %s); errors %s" % (
+                   bool(on), red, (line or {}).get("tag"), others, outlined, frame_item, events[:1], logged, night_ok,
+                   hdr_red, no_ops, silent, taps, rig.errors[:2]))
+    finally:
+        os.environ.pop("TRYGONS_TRENDS_LOG", None)
+        settings.put("night", False)
+        rig.gateway_like(False)
+        rig.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def th9():
+    close_root()
+    d = tempfile.mkdtemp(prefix="trygons_th9_")
+    os.environ["TRYGONS_TRENDS_LOG"] = d
+    rig = S.Rig()
+    ap = rig.ap
+    try:
+        th_rig_common(rig)
+        beeps = []
+        ap.root.bell = lambda *a: beeps.append(0)
+        ap._beep = lambda f: beeps.append(f)
+        sent = []
+        ap.cmd = lambda f, p, w: sent.append(f)
+
+        def alarm_run(with_highlight):
+            ap.trends.clear()
+            ap.trenddet.reset()
+            sim = Sim(seed=92)
+            sim.model, sim.det = ap.trends, ap.trenddet
+            sim.t = time.time() - 560.0
+            sim.run(400.0)
+            if with_highlight:
+                sim.base["est_sog"] = 11.0
+            sim.run(140.0)
+            hl = "sog" in ap.trenddet.active()
+            del beeps[:]
+            rig.extra.update(alarm_bits=0x001, alarm=True)           # COMPASS LOST (a WARNING)
+            ap.lamps = alerts_mod.MasterLamps()
+            rig.pump(2.6)
+            ap.render(force=True)
+            res = {"hl": hl, "warn": ap.lamps.on(alerts_mod.WARNING), "beeps": len(beeps) >= 1,
+                   "rows": sorted(tuple(r) for r in ap.lamps.rows()),
+                   "ack": bool([o for o in ap.ov.ops if o.get("tag") == "ack"]),
+                   "alarm_text": sorted(str(o.get("text")) for o in ap.ov.ops if "alarm" in str(o.get("tag", "")))}
+            rig.extra.update(alarm_bits=0, alarm=False)
+            rig.pump(0.5)
+            return res
+        a = alarm_run(True)
+        b = alarm_run(False)
+        same = a["rows"] == b["rows"] and a["alarm_text"] == b["alarm_text"] and a["ack"] and b["ack"]
+        report("TH9 a real WARNING at the same time: the MASTER lamp, the sound (beep), the alarm rows and the alarm panel "
+               "are exactly as without any highlight (the trend never delays, hides or changes an alarm)",
+               a["hl"] and not b["hl"] and a["warn"] and b["warn"] and a["beeps"] and b["beeps"] and same and
+               not sent and not rig.errors,
+               "highlight on in A %s / B %s; lamps %s / %s; beeps %s / %s; rows equal %s; alarm panel equal %s; sent %s; "
+               "errors %s" % (a["hl"], b["hl"], a["warn"], b["warn"], a["beeps"], b["beeps"], a["rows"] == b["rows"],
+                              a["alarm_text"] == b["alarm_text"], sent, rig.errors[:2]))
+    finally:
+        os.environ.pop("TRYGONS_TRENDS_LOG", None)
+        rig.extra.update(alarm_bits=0, alarm=False)
+        rig.gateway_like(False)
+        rig.close()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def main():
     settings.put("ui_lang", "en")
     i18n.set_lang("en", save=False)
-    for fn in (tg1, tg2, tg3, tg4, tg5, tg6, tg7, tg8, tg9, tg10):
+    for fn in (tg1, tg2, tg3, tg4, tg5, tg6, tg7, tg8, tg9, tg10, th1, th2, th3, th4, th5, th6, th7, th8, th9,
+               th10, th11):
         try:
             fn()
         except Exception as e:

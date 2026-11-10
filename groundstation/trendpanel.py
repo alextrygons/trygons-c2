@@ -19,6 +19,8 @@ SHOW_KEY, ZOOM_KEY = "trends_show", "trends_zoom"
 LINE_W = 1.25
 GLOW_W = 3.0
 NIGHT_W = 1.25
+HL_W = 2.0
+HL_NIGHT_W = 2.5
 
 
 class TrendView:
@@ -47,10 +49,25 @@ def fold_limit(n_shown):
     return max(1, n_shown - 2 + 1)
 
 
+ARROWS = {("mean", "up"): "↑", ("mean", "down"): "↓", ("spread", "up"): "∿↑", ("spread", "down"): "∿↓"}
+
+
+def arrow(kind, dr):
+    return ARROWS.get((kind, dr), "")
+
+
+def fmt_value(vid, x):
+    """A value for the event line / the log text (no language: digits only)."""
+    if not tr.finite(x):
+        return "—"
+    return "%.*f" % (tr.INFO[vid]["dec"], x % 360.0 if vid == "hdg" else x)
+
+
 class TrendPanel:
-    def __init__(self, model, view):
+    def __init__(self, model, view, detector=None):
         self.model = model
         self.view = view
+        self.det = detector             # TR3: the silent highlight (read only here: the panel never changes it)
         self.readout_t = None           # the clicked time (station epoch seconds) or None
         self.choose_open = False
         self.last = {}                  # the last drawing's record, per graph (what the tests and the click read)
@@ -191,10 +208,15 @@ class TrendPanel:
         rec = {"graph": g, "rect": r, "plot": (px0, px1), "lines": [], "cursor": None}
         night = self.view.night()
         cols = max(1, int(plot_w / 2.0))        # a min + a max per 2 px column: a spike is kept, half the points
+        hls = dict(self.det.active()) if self.det is not None else {}
+        tag_x = px0 + 3
         for rank, (vid, vtxt, full) in enumerate(labels):
             col = self.colour(vid, rank)
+            hl = hls.get(vid)
+            if hl:                                  # TR3: a silent trend = red line + red label (NIGHT: its warn red)
+                col = theme.NIGHT["warn"] if night else theme.WARN
             dash = theme.TREND_DASH[vid]
-            width = NIGHT_W if night else LINE_W
+            width = (HL_NIGHT_W if night else HL_W) if hl else (NIGHT_W if night else LINE_W)
             runs, lo, hi = self.runs(vid, window, now, cols)
             span = tr.INFO[vid]["span"]
             if lo <= hi:
@@ -221,8 +243,21 @@ class TrendPanel:
             room = x1 - px1 - pad
             txt = full if font.measure(full) <= room else vtxt
             c.create_text(x1 - pad, ty, text=txt, anchor="e", fill=col, font=font, tags="ov")
+            tag = None
+            if hl:                                  # the OUTLINED label «ΤΑΣΗ: ΟΝΟΜΑ ↑»: a 1 px frame, no fill
+                tag = T("trend.hl", name=T("trend." + vid), arrow=arrow(hl["kind"], hl["dir"]))
+                tw = font.measure(tag)
+                th = fs_small * 1.9
+                ty0 = y0 + 2
+                if tag_x + tw + 2 * pad <= px1 + pad or tag_x == px0 + 3:
+                    c.create_rectangle(tag_x, ty0, tag_x + tw + 2 * pad, ty0 + th, outline=col, fill="", width=1,
+                                       tags="ov")
+                    c.create_text(tag_x + pad, ty0 + th / 2, text=tag, anchor="w", fill=col, font=font, tags="ov")
+                    rec.setdefault("tags", []).append({"id": vid, "text": tag, "rect": (tag_x, ty0, tag_x + tw + 2 * pad,
+                                                                                      ty0 + th), "colour": col})
+                    tag_x += tw + 3 * pad
             rec["lines"].append({"id": vid, "colour": col, "dash": dash, "width": width, "runs": drawn,
-                                 "label": txt, "lo": lo, "hi": hi})
+                                 "label": txt, "lo": lo, "hi": hi, "hl": bool(hl), "tag": tag})
         if self.readout_t is not None and now - window <= self.readout_t <= now:
             cx = px0 + (self.readout_t - (now - window)) / window * plot_w
             c.create_line(cx, y0 + 1, cx, y1 - 1, fill=theme.TREND_TEXT, tags="ov")

@@ -62,6 +62,8 @@ class Trends:
         self.vals = {i: array("f", [NAN]) * N for i in IDS}
         self.times = array("d", [0.0]) * N
         self.modes = [""] * N
+        self.N = N
+        self.epoch = 0                      # +1 per clear: the highlight detector restarts with it (TR3)
         self.n = 0                          # samples ever written since the last clear
         self.gen = 0                        # +1 per sample / clear: a cache key for the drawing
         self._clear_slot()
@@ -83,6 +85,7 @@ class Trends:
             for k in range(N):
                 r[k] = NAN
         self.n = 0
+        self.epoch += 1
         self.gen += 1
         self.frames = []
         self.last_t_ms = None
