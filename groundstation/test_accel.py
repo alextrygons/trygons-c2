@@ -6,7 +6,7 @@
   AP3 the pass-through: the gateway sends {"t": "acc"} to the full-rate stations only (stations._on_acc); the station
       (gwclient) keeps it and merges it into the next telemetry dict like TELEM2; the USB link (link.py) the same
   AP4 the log: the simulator's .TLG (autopilot_sim logtest) has event 31 ACCEL once a second - tlg.accel_rows and
-      log2csv --accel read it (values in g, ~100 samples a second); the shortened HELM header entry still reads with
+      log2csv --accel read it (values in g, ~200 samples a second: the board's 200 Hz, FW-TR-r); the shortened HELM header entry still reads with
       its action names
 
     python test_accel.py
@@ -109,7 +109,9 @@ def main():
     texts = [x[1] for x in log.events if x[1].startswith("ACCEL")]
     helm = log.event_text(17, [3, 5, 0, 3])
     listed = log.events_def.get(31, ("",))[0] == "ACCEL" and log.events_def.get(17, ("",))[0] == "HELM"
-    sane = bool(rows) and all(90 <= r[7] <= 110 for r in rows[1:]) and all(abs(v) < 20.0 for r in rows for v in r[1:7])
+    # FW-TR-r LOW-1: event 30 is not in the AURIX header (no room in the worst case): tlg.py names it itself
+    listed = listed and log.events_def.get(30, ("",))[0] == "STEERMODEL"
+    sane = bool(rows) and all(190 <= r[7] <= 210 for r in rows[1:]) and all(abs(v) < 20.0 for r in rows for v in r[1:7])
     moving = max(r[1] for r in rows) > 0.02 if rows else False          # the AUTO start: longitudinal + average
     report("AP4 log event 31 ACCEL once a second: tlg.accel_rows + log2csv --accel; HELM still named",
            listed and len(rows) >= 250 and len(crow) == len(rows) and sane and moving and texts and

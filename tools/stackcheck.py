@@ -104,6 +104,38 @@ MAP_ADDR_OK = re.compile(r"^(IfxCpu_Trap_\w+|Ifx_Ssw\w*:\w+|Ifx_Ssw_\w+|core[0-2
 NOT_POINTERS = {("app/logfields.h", "slam_cap"): "the X-macro's log field NAME slam_cap (the call is slam_cap(...))"}
 C_KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "do", "else", "case", "defined"}
 
+# Step FW-TR-r (review of 872f75b M3): functions that must run ONLY from core 0's polled control loop, never from an
+# interrupt (they share unprotected statics with their readers: tc_bno085.c's report statistics s_a3 / the ring, copied
+# and cleared by bno_accel3 without an interrupt lock). main() FAILS when any interrupt routine of the call graph (after
+# the pointer calls are resolved) reaches one of them, or when one is missing from the graph (renamed = stale list).
+# input_reports / cargo are inlined into transfer by GCC (static): transfer stands for them. The iLLD ISR bodies
+# (IfxQspi_SpiMaster_isr*, IfxAsclin_Asc_isr*) have no graph here; they call no firmware function (no callbacks).
+POLLED_ONLY = {"tc_bno085:transfer": "the BNO085 packet read + report parse (input_reports, cargo)",
+               "bno_service": "the BNO085 service (imu_service)",
+               "bno_accel3": "the 3-axis statistics copy + clear",
+               "bno_accel_z": "the vertical-acceleration ring read"}
+
+
+def check_polled(g, isrs, problems, names=POLLED_ONLY):
+    """No interrupt routine reaches a POLLED_ONLY function; every listed one is in the graph."""
+    present = set(g.self_b) | set(g.edges)
+    for fn in sorted(names):
+        if fn not in present:
+            problems.append("POLLED_ONLY %s is not in the call graph (renamed? keep the list current)" % fn)
+    for isr in sorted(i for i in isrs if i in present):
+        seen, todo = {isr}, [isr]
+        while todo:
+            f = todo.pop()
+            if f in names:
+                problems.append("%s (%s) is reached from interrupt %s: it must run only from core 0's polled loop"
+                                % (f, names[f], isr))
+            for t in g.edges.get(f, ()):
+                if t not in seen:
+                    seen.add(t)
+                    todo.append(t)
+    return problems
+
+
 STACKS = [("ustack0", "user stack core 0", 0), ("istack0", "interrupt stack core 0", 0),
           ("ustack1", "user stack CPU1", 1), ("istack1", "interrupt stack CPU1", 1),
           ("ustack2", "user stack core 2", 2), ("istack2", "interrupt stack core 2", 2)]
@@ -462,14 +494,17 @@ def check_map_addr(g, problems):
             problems.append("the map's __INDIRECT__ (address taken): %s is no stackcheck.INDIRECT target" % fn)
 
 
-def analyse(g, reserved, isrs, trap=None, label="GCC call graph", source=None):
+def analyse(g, reserved, isrs, trap=None, label="GCC call graph", source=None, polled=None):
     """The checks of the module help. Returns (ok, report lines, per-stack estimates).
     source = source_indirect()'s result: INDIRECT must match it exactly (check_source); None = not checked
-    (the fixture graphs of the self-tests)."""
+    (the fixture graphs of the self-tests). polled = the POLLED_ONLY names to check (check_polled; None = not checked:
+    the fixtures and the TASKING map, whose static names differ)."""
     problems, lines = [], []
     if source is not None:
         check_source(source, problems)
     resolve(g, problems)
+    if polled is not None:
+        check_polled(g, isrs, problems, polled)
     check_map_addr(g, problems)
     for fn in sorted(g.dynamic):
         problems.append("%s has a dynamic stack frame (variable-length array / alloca)" % fn)
@@ -536,6 +571,8 @@ def analyse(g, reserved, isrs, trap=None, label="GCC call graph", source=None):
             lines.append("  core %d: %d levels = %d B of %d B%s" % (core, need // CSA_FRAME, need, r, flag))
     lines.append("recursion: %s" % ("NONE (every function-pointer call resolved: %d call sites)" % len(g.indirect)
                                     if not cyc else "FOUND"))
+    if polled is not None:
+        lines.append("polled only (never reached from an interrupt): %s" % ", ".join(sorted(polled)))
     if source is not None:
         lines.append("pointer targets: INDIRECT checked against the source (%d targets in %d modules)%s" % (
             sum(len(v) for v in source[0].values()), len(source[0]),
@@ -685,6 +722,21 @@ def selftest():
     check_map_addr(parse_map(m), probs0)
     check("ST23 map mode: an address-taken function (__INDIRECT__ child) no INDIRECT lists = FAIL; the fixture's OK",
           not probs0 and any("newdrv:hook" in p for p in probs))
+    # step FW-TR-r: POLLED_ONLY (check_polled)
+    pol = {"a": "fixture"}
+    check("ST24 a POLLED_ONLY function reached only from core0_main passes", analyse(base(), res, isrs, polled=pol)[0])
+    g = base()
+    g.edges["y_isr"].add("b")
+    g.edges["b"].add("a")
+    ok, lines, _ = analyse(g, res, isrs, polled=pol)
+    check("ST25 an interrupt reaching a POLLED_ONLY function (y_isr -> b -> a) = FAIL",
+          not ok and any("reached from interrupt y_isr" in l for l in lines))
+    g = base()
+    g.indirect["y_isr"] = "tc_fat32"
+    check("ST26 ... also through a resolved pointer call (y_isr -> tc_sd:read_block) = FAIL",
+          not analyse(g, res, isrs, polled={"tc_sd:read_block": "fixture"})[0])
+    check("ST27 a POLLED_ONLY name missing from the graph = FAIL (stale list)",
+          not analyse(base(), res, isrs, polled={"gone": "fixture"})[0])
     print("STACKCHECK SELFTEST: %s" % ("PASS" if not fails else "FAIL (%d)" % len(fails)))
     return not fails
 
@@ -752,7 +804,7 @@ def main(argv):
     g = parse_ci(paths)
     reserved, probs = lsl_sizes()
     ok, lines, _ = analyse(g, reserved, isr_table(), label="GCC call graph of %d units" % len(paths),
-                           source=source_indirect())
+                           source=source_indirect(), polled=POLLED_ONLY)
     print("\n".join(lines))
     for p in probs:
         print("FAIL: " + p)

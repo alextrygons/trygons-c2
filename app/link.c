@@ -1665,8 +1665,20 @@ void link_step(link_t *l, sb_t *s)
     if ((int32_t)(s->now_ms - l->next_telem_ms) >= 0) {
         l->next_telem_ms = s->now_ms + TELEM_PERIOD_MS;
         telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */
-        accel_frame(l, s);                              /* step FW-TR (display / log only): merged like TELEM2 */
         telemetry(l, s);
+        /* step FW-TR (display / log only), FW-TR-r (review of 872f75b M2): AFTER the TELEMETRY frame, and on the
+         * rate-limited gateway port only while the UART still has room for it on top of what is waiting (gw_room, the
+         * same rule as the log chunks) AND leaves GW_CTRL_RESERVE free - so it can never take the place of TELEMETRY /
+         * TELEM2 (mode, alarms) or of a control answer. Not sent = the samples stay in this link's window and go with
+         * the next frame (the station shows the newest ACCEL with the next telemetry: one period later) */
+        if (l->port != LINK_PORT_GW) {
+            accel_frame(l, s);
+        } else {
+            uint32_t need = PROTO_ACCEL_LEN + PROTO_OVERHEAD;
+            uint32_t used = HAL_GW_TX_RING - hal_gw_tx_free();
+            if (used + need <= l->gw_room && hal_gw_tx_free() >= need + GW_CTRL_RESERVE) accel_frame(l, s);
+            else l->acc_held++;
+        }
         if (l->port != LINK_PORT_GW && sb_mode(s) == MODE_BENCH) bench_diag(l, s);
     }
     if (l->port != LINK_PORT_GW && s->can.fitted && (int32_t)(s->now_ms - l->next_can_ms) >= 0) {

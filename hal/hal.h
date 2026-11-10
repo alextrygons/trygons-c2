@@ -85,7 +85,8 @@ uint32_t hal_read_accel_z(float *g, uint32_t max);
  * frame PROTO_T_ACCEL + log event 31 ACCEL) - never used for control, limits, modes or alarms.
  * hal_read_accel3 COPIES the statistics of the samples that arrived since the last call into *a and starts a new
  * set (bounded, no wait): sum = the sum per axis, peak = the sample with the largest magnitude per axis (signed),
- * n = how many. Returns n (0 = not fitted / nothing new; *a then has n 0). */
+ * n = how many. Returns n (0 = not fitted / nothing new; *a then has n 0). It does NOT service the sensor (FW-TR-r:
+ * call it after hal_read_accel_z in the same step - the board services the BNO085 there). */
 typedef struct {
     float    sum[3];
     float    peak[3];

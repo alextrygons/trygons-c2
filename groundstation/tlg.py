@@ -27,6 +27,14 @@ GEN_STOP_WHY = {0: "-", 1: "conditions", 2: "off", 3: "request", 4: "no volts", 
 RELAY_WHAT = {1: "command", 2: "table", 3: "states", 4: "board"}
 
 
+# Log events the AURIX does NOT list in its file header (app/logrec.c k_events: the header record is at most LOGR_MAX
+# 4096 B and the worst-case header leaves no room for them - FW-TR-r, review of 872f75b LOW-1); named here instead.
+EVENTS_NOT_IN_HEADER = {
+    30: ("STEERMODEL", ["what|why<<8", "k_stored*100|k_use*100<<16", "play_stored*10000|play_use*10000<<16",
+                        "thr_travel_s*100"]),
+}
+
+
 class Field:
     __slots__ = ("name", "type", "scale")
 
@@ -70,6 +78,8 @@ class Log:
             if item.count(":") >= 2:
                 code, name, args = item.split(":", 2)
                 self.events_def[int(code)] = (name, args.split(","))
+        for code, ev in EVENTS_NOT_IN_HEADER.items():
+            self.events_def.setdefault(code, ev)
         for item in self.header.get("alarms", "").split(","):
             if ":" in item:
                 bit, name = item.split(":")

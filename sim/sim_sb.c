@@ -5107,12 +5107,25 @@ typedef struct {
     uint32_t   ev_sovr, ev_sovr_mask, ev_sovr_why;   /* step 13q3b: event 26 SOVR records, the what / why bits seen */
     uint8_t    d_flags;         /* step 13q3b: TELEM2 group D flags (byte 40) + the pickup target (41-42) */
     uint16_t   d_pick;
+    int        accel;           /* FW-TR-r: ACCEL frames, and the bytes per kind (control frames vs ACCEL) */
+    uint32_t   ctl_bytes, acc_bytes, last_kind;   /* last_kind: 1 TELEMETRY, 2 ACCEL (AX6: ACCEL always after it) */
+    uint32_t   acc_before_tm;   /* an ACCEL frame that came right after TELEM2 (= before its TELEMETRY) */
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
 {
     proto_rd_t r;
     proto_rd_init(&r, f->payload, f->len);
+    if (f->type == PROTO_T_ACCEL) {
+        p->accel++;
+        p->acc_bytes += f->len + PROTO_OVERHEAD;
+        if (p->last_kind == 3u) p->acc_before_tm++;
+        p->last_kind = 2u;
+        return;
+    }
+    if (f->type != PROTO_T_LOG_CHUNK) p->ctl_bytes += f->len + PROTO_OVERHEAD;
+    if (f->type == PROTO_T_TELEMETRY) p->last_kind = 1u;
+    else if (f->type == PROTO_T_TELEM2) p->last_kind = 3u;
     if (f->type == PROTO_T_TELEMETRY) {
         if (p->telem && x->t - p->last_telem_ms > p->max_telem_gap_ms) {
             p->max_telem_gap_ms = x->t - p->last_telem_ms;
@@ -9428,7 +9441,7 @@ static void accel_tests(void)
                  "back to idle: longitudinal min %+.3f g", (unsigned long)fr, (unsigned long)wd,
                  (unsigned long)a.bad_len, n, acc_fwd, kn, lat_abs, vert_abs, dec);
         test_report("AX1 ACCEL frame 28 B at 10 Hz; throttle up = longitudinal +, idle = -, lateral / vertical ~0",
-                    fr >= 75u && fr <= 85u && wd + 2u >= fr && a.bad_len == 0u && n >= 8u && n <= 12u &&
+                    fr >= 75u && fr <= 85u && wd + 2u >= fr && a.bad_len == 0u && n >= 18u && n <= 22u &&
                     acc_fwd > 0.03f && dec < -0.02f && lat_abs < 0.05f && vert_abs < 0.05f, d);
     }
 
@@ -9454,7 +9467,7 @@ static void accel_tests(void)
         snprintf(d, sizeof d, "turn to starboard: lateral 1 s average %+.3f g (truth %+.3f g); to port: %+.3f g "
                  "(truth %+.3f g); %u samples in the last second", lat_r, want_r, lat_l, want_l, a.sec_n);
         test_report("AX2 lateral acceleration in a turn: sign = the turn's side, size = v x yaw rate / g", ok &&
-                    want_r > 0.0f && want_l < 0.0f && a.sec_n >= 90u && a.sec_n <= 110u, d);
+                    want_r > 0.0f && want_l < 0.0f && a.sec_n >= 190u && a.sec_n <= 210u, d);
     }
 
     /* AX3 sea 3 at speed: the vertical peaks are the hull impacts (signed, the largest magnitude), the average stays
@@ -9486,7 +9499,11 @@ static void accel_tests(void)
         float seen[3] = { 0.0f, 0.0f, 0.0f };
         for (int k = 0; k < 3; k++) {
             char cmd[96], line[256];
+#ifdef _WIN32
             snprintf(cmd, sizeof cmd, ".\\autopilot_sim.exe axtrace %d", k == 1 ? 1 : 0);
+#else
+            snprintf(cmd, sizeof cmd, "./autopilot_sim axtrace %d", k == 1 ? 1 : 0);   /* FW-TR-r LOW-3: by OS */
+#endif
             FILE *pp = popen(cmd, "r");
             while (pp && fgets(line, sizeof line, pp)) {
                 float s0, s1, s2;
@@ -9543,14 +9560,69 @@ static void accel_tests(void)
         static char hdr[LOGR_MAX];
         uint16_t hl = logrec_header_text(hdr, sizeof hdr, 1u, 1u);
         bool listed = strstr(hdr, "31:ACCEL:") != NULL && hl < sizeof hdr - 1u && strstr(hdr, "\nwhy=") != NULL;
+        /* FW-TR-r (review of 872f75b LOW-1): the WORST-CASE argument widths (boot / file number = 10 digits each;
+         * the format is a constant) - the whole text still fits, ending in the why list's newline */
+        static char hdr_w[LOGR_MAX], big_w[3u * LOGR_MAX];
+        uint16_t hw = logrec_header_text(hdr_w, sizeof hdr_w, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        uint16_t fw = logrec_header_text(big_w, sizeof big_w, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        bool worst = hw == fw && hw < sizeof hdr_w - 1u && hw > 0u && hdr_w[hw - 1u] == '\n' &&
+                     strstr(hdr_w, "\nwhy=") != NULL && strstr(hdr_w, "boot=4294967295\nfile=4294967295") != NULL;
+        listed = listed && worst;
         int16_t vpk = (int16_t)((uint32_t)al.last[2] >> 16), lavg = (int16_t)(al.last[0] & 0xFFFF);
         snprintf(d, sizeof d, "%d log file(s), %lu ACCEL events in ~20 s, the last: lon avg %d mg, vert peak %d mg, %ld "
-                 "samples; header %u of %u bytes, listed %s", nf, (unsigned long)al.events, lavg, vpk,
-                 (long)al.last[3], (unsigned)hl, (unsigned)sizeof hdr, listed ? "yes" : "NO");
+                 "samples; header %u of %u bytes (worst-case boot / file widths %u, whole %s), listed %s", nf,
+                 (unsigned long)al.events, lavg, vpk, (long)al.last[3], (unsigned)hl, (unsigned)sizeof hdr, (unsigned)hw,
+                 worst ? "yes" : "NO", listed ? "yes" : "NO");
         test_report("AX5 log event 31 ACCEL every second, the header lists it and fits",
-                    nf >= 1 && al.events >= 18u && al.events <= 23u && al.last[3] >= 90 && al.last[3] <= 110 &&
+                    nf >= 1 && al.events >= 18u && al.events <= 23u && al.last[3] >= 190 && al.last[3] <= 210 &&
                     listed, d);
     }
+}
+
+/* AX6 (FW-TR-r, review of 872f75b M2): the gateway UART. ACCEL goes AFTER the TELEMETRY frame and only while the
+ * rate-limited port still has room (link.c: gw_room + GW_CTRL_RESERVE); at a UART too slow for TELEM2 + TELEMETRY +
+ * ACCEL at 10 Hz every TELEMETRY still arrives (none dropped, 10 Hz kept), the ACCEL frames are held instead */
+static void ax6_run(uint32_t baud, uint32_t seed, pisim_t *p, sbsim_t *x)
+{
+    sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    pisim_init(p, x, baud);
+    sbsim_run(x, 2000u, pi_hook, p);
+    hdg_lock(x);
+    sbsim_run(x, x->t + 500u, pi_hook, p);
+    p->telem = p->telem2 = p->accel = 0;
+    p->ctl_bytes = p->acc_bytes = p->acc_before_tm = 0u;
+    p->max_telem_gap_ms = 0u;
+    p->last_telem_ms = x->t;
+    p->link.acc_held = 0u;
+    p->link.tx_dropped = 0u;
+    sbsim_run(x, x->t + 30000u, pi_hook, p);
+}
+
+static void accel_gw_test(void)
+{
+    char d[900];
+    static sbsim_t x, y;
+    static pisim_t f, sl;
+    ax6_run(921600u, 2106u, &f, &x);
+    uint32_t f_held = f.link.acc_held, f_drop = f.link.tx_dropped;
+    /* control traffic alone (TELEM2 + TELEMETRY + the other answers) at 921600 = this many bytes/s; a baud that carries
+     * it plus HALF of the ACCEL traffic: enough for the control frames, NOT for both (without the room rule the
+     * backlog grows until the 8 kB ring is full and frames - TELEMETRY too - are dropped) */
+    uint32_t ctl_bps = f.ctl_bytes / 30u, acc_bps = f.acc_bytes / 30u;
+    uint32_t baud = (ctl_bps + acc_bps / 2u) * 10u;
+    bool tight = (ctl_bps + acc_bps) * 10u > baud;
+    ax6_run(baud, 2107u, &sl, &y);
+    snprintf(d, sizeof d, "921600 baud: %d TELEMETRY / %d ACCEL frames in 30 s (held %lu, frames dropped %lu, ACCEL "
+             "between TELEM2 and its TELEMETRY %lu); control %lu B/s + ACCEL %lu B/s; at %lu baud (%lu B/s, too slow for "
+             "both: %s): %d TELEMETRY (max gap %lu ms), %d TELEM2, %d ACCEL (held %lu), frames dropped %lu",
+             f.telem, f.accel, (unsigned long)f_held, (unsigned long)f_drop, (unsigned long)f.acc_before_tm,
+             (unsigned long)ctl_bps, (unsigned long)acc_bps, (unsigned long)baud, (unsigned long)(baud / 10u),
+             tight ? "yes" : "NO", sl.telem, (unsigned long)sl.max_telem_gap_ms, sl.telem2, sl.accel,
+             (unsigned long)sl.link.acc_held, (unsigned long)sl.link.tx_dropped);
+    test_report("AX6 gateway UART: ACCEL after TELEMETRY, only with room; a slow UART drops no TELEMETRY for ACCEL",
+                f.telem >= 295 && f.accel + 5 >= f.telem && f_drop == 0u && f.acc_before_tm == 0u && tight &&
+                sl.telem >= 295 && sl.max_telem_gap_ms <= 250u && sl.link.tx_dropped == 0u && sl.link.acc_held > 0u &&
+                sl.acc_before_tm == 0u, d);
 }
 
 /* `autopilot_sim axtrace <0|1>` (test AX4, a fresh process): the control-output hash of one fixed run, with
@@ -9573,6 +9645,7 @@ int sb_accel_trace(int bias)
 void sb_accel_tests(void)
 {
     accel_tests();
+    accel_gw_test();
 }
 
 void sb_slam_tests(void)
@@ -18994,6 +19067,7 @@ void sb_tests(void)
     pulse_tests();
     slam_tests();
     accel_tests();
+    accel_gw_test();
     logging_tests();
     timing_tests();
     hardening_tests();

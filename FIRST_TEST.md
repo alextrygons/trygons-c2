@@ -142,6 +142,12 @@ Every 10 minutes without a bench command the board goes back to STANDBY.
       Lcf_Tasking_Tricore_Tc.lsl + Lcf_Gnuc_Tricore_Tc.lsl). The marks are the
       deepest use since the power-up: a later check after a day on the water
       (BENCH TEST at the dock) shows the real worst case.
+- [ ] **Core-0 step time** (FW-TR-r, review of 872f75b M1: the PC only has an
+      estimate): with the IMU streaming ("IMU ok", reports counting) leave BENCH
+      TEST running 5 min, then Tools page "System": write core 0's avg / max (us)
+      and overruns in the test log. Max above 25000 us (half of the 50 ms step)
+      or any overrun = stop and report. Repeat after the first trip at sea (the
+      BNO085 sends the most reports in waves).
 
 ### 3b. Steering motor in small pulses
 

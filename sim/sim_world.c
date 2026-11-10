@@ -240,6 +240,10 @@ static void slam_sample(world_t *w, float dt_s)
         float yaw = (w->yaw_dps + w->thr_yaw_dps) * 0.0174533f;
         float lat = v_ms * yaw / 9.80665f + 0.03f * sea * sinf(2.0f * PI_F * ts / 6.0f + 1.6f) +
                     0.01f * boat_rand_gauss(&w->acc_rng);
+        /* FW-TR-r (review of 872f75b LOW-2): the board's linear-acceleration report runs at 200 Hz (tc_bno085.c
+         * k_feat 5 ms); this model resolves 10 ms, so each sample is pushed twice (a 200 Hz zero-order hold): the
+         * counts per period / second match the board (~20 / ~200), the averages and peaks are those of the model */
+        sim_hal_push_accel3(lon, lat, a);
         sim_hal_push_accel3(lon, lat, a);
     }
     /* roll / pitch from the same waves (camera horizon for the gateway's obstacle detection) */

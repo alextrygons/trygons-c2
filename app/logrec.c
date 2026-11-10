@@ -98,8 +98,10 @@ static const char k_events[] =
     "29:CAN:what,masks,tec,drops;"
     "31:ACCEL:lon,lat,vert,n;";
 /* (the header record is at most LOGR_MAX: keep these short - the names of the
- * numbers above live in groundstation/tlg.py (HELM actions, ACCEL avg | peak << 16 mg: step FW-TR); sim test
- * ER6 checks it fits) */
+ * numbers above live in groundstation/tlg.py (HELM actions, ACCEL avg | peak << 16 mg: step FW-TR); sim tests
+ * ER6 / AX5 check it fits, AX5 also with the WORST-CASE boot / file widths (10 digits each, FW-TR-r).
+ * Event 30 STEERMODEL is deliberately NOT listed: the worst-case header has no room for it (review of 872f75b
+ * LOW-1); groundstation/tlg.py EVENTS_NOT_IN_HEADER names it) */
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"

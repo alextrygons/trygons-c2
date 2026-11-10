@@ -61,6 +61,7 @@ typedef struct {
     uint32_t    gw_room;        /* bytes allowed to wait in the UART (follows its real speed) */
     float       slam_peak;      /* slamming peak since this link's last telemetry */
     hal_accel3_t acc;           /* step FW-TR: 3-axis acceleration since this link's last ACCEL frame */
+    uint32_t    acc_held;       /* FW-TR-r: ACCEL frames not sent on the gateway port (no room after TELEMETRY) */
     uint16_t    telem_len, telem2_len;  /* payload sizes of the last TELEMETRY / TELEM2 (max PROTO_MAX_PAYLOAD) */
     uint32_t    telem_overflows;        /* a frame didn't fit (a field too many): not sent - test R17 */
 } link_t;

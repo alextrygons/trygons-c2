@@ -674,10 +674,13 @@ uint32_t hal_read_accel_z(float *g, uint32_t max)
     return bno_accel_z(g, max);
 }
 
+/* Step FW-TR-r (review of 872f75b M1): NO imu_service() here. sb_step reads hal_read_accel_z on the line just before
+ * (smallboat.c), which already serviced the sensor in this step (imu_service: at most once per 10 ms anyway), and the
+ * statistics only ACCUMULATE between reads (nothing is lost: a report parsed by a later service is in the next read).
+ * So the 3-axis frame never adds an SHTP transfer to a control step. Display / logging only. */
 uint32_t hal_read_accel3(hal_accel3_t *a)
 {
-    imu_service();
-    return bno_accel3(a);       /* step FW-TR: display / logging only */
+    return bno_accel3(a);
 }
 
 bool hal_read_attitude(float *roll_deg, float *pitch_deg)

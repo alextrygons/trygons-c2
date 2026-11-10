@@ -308,6 +308,12 @@ uint32_t bno_accel_z(float *g, uint32_t max)
     return n;
 }
 
+/* Step FW-TR-r (review of 872f75b M3): copied and cleared WITHOUT an interrupt lock - safe because s_a3 (like the
+ * ring and s_st) is written only by input_reports, which runs only from bno_service -> transfer -> cargo, i.e. from
+ * core 0's polled control step (hal_tc375.c imu_service, called by the hal_read_* functions sb_step / autopilot_step
+ * use) - never from an interrupt: the only BNO interrupts are the iLLD QSPI handlers in tc_spi.c (they move bytes,
+ * no callback into this file). tools/stackcheck.py POLLED_ONLY proves it on the call graph in tools/check.sh (FAILS
+ * if any interrupt routine reaches transfer / bno_service / bno_accel3 / bno_accel_z). */
 uint32_t bno_accel3(hal_accel3_t *a)
 {
     *a = s_a3;
