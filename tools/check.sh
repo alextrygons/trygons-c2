@@ -249,6 +249,10 @@ echo "== DroneCAN layer of the board (dronecan.c + libcanard vs an independent e
 "$PY" tests/hal_pc/dronecan_check.py > "$TEMP/dronecan_tests.txt" 2>&1 || { echo "DRONECAN TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|DRONECAN TESTS|BUILD PROBLEM" "$TEMP/dronecan_tests.txt"
 strays_check "hal_pc checks (fat32, nv, dronecan)"
+echo "== API review tool (tools/api_review.py, fake client, no network)"
+"$PY" tools/test_api_review.py > "$TEMP/apirev_tests.txt" 2>&1 || { echo "API REVIEW TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|API REVIEW TESTS" "$TEMP/apirev_tests.txt"
+strays_check "test_api_review"
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
