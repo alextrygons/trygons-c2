@@ -2390,7 +2390,7 @@ uavr.ask_note = WAITS FOR APPROVAL – UAV {n}
 mark.q_busy = Another question is open on screen 1 - answer it first, then choose again.
 gw.uav_why_newer = replaced by a newer route
 gw.uav_why_captain = replaced by the captain's own route
-adsb.uav_alt_unknown = ADS-B: UAV {n} unknown altitude - aircraft near it are judged CAUTION only
+adsb.uav_alt_unknown = ADS-B: UAV {n} altitude unknown - judged at the same altitude as aircraft near it (horizontal distance only)
 adsb.uav_pos_unknown = ADS-B: UAV {n} position unknown - no ADS-B judgement for it
 
 # --- trend panel «ΤΑΣΕΙΣ» (step TR2, CLAUDE.md Y): screen 2, display only ------------------------------------------

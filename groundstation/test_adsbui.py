@@ -11,6 +11,7 @@
        longer stands sends nothing
   AV5  texts (Greek + English, every voice line), the callouts exist for six slots
   AV6  the station's ADS-B code sends only what the answer to a proposal sends
+  AV8  W137 (AB-r): an unknown altitude = co-altitude: the lamp says «ύψος άγνωστο», DESCEND offered, nothing sent first
 
 Run:  python test_adsbui.py      (exit code 0 = all passed)
 """
@@ -255,7 +256,7 @@ def av6(env):
 
 def av7(env):
     """PF5-r: a UAV without a known altitude (gateway "uav_unknown") = a station-local CAUTION + the event line
-    «ADS-B: UAV n unknown altitude», gone with it; a UAV flown by hand by ANOTHER station's pilot is not offered to the
+    «ADS-B: UAV n altitude unknown – judged at the same altitude» (W137), gone with it; a UAV flown by hand by ANOTHER station's pilot is not offered to the
     captain (his HOLD would only meet the pilot lock, 127); the DESCEND offer says it replaces the mission."""
     ap = env.ap
     i18n.set_lang("en", save=False)
@@ -268,7 +269,8 @@ def av7(env):
     st["uav_unknown"] = [3]
     ap.adsb_sync(st)
     lamp = ap.lamps.local.get("adsb_unk_3")
-    said = [e for e in ap._evlog[-5:] if "UAV 3 unknown altitude" in e] if getattr(ap, "_evlog", None) else []
+    said = [e for e in ap._evlog[-5:] if "UAV 3 altitude unknown" in e and "same altitude" in e] \
+        if getattr(ap, "_evlog", None) else []
     ap.adsb_sync(state())
     gone = "adsb_unk_3" not in ap.lamps.local
     # PF4-r2 LOW-3: a UAV WITHOUT a position (gateway "uav_nopos") gets its own text: no ADS-B judgement for it
@@ -294,6 +296,43 @@ def av7(env):
     ap.driver = None
 
 
+def av8(env):
+    """W137 (owner 2026-11-10, step AB-r): a warning judged with an UNKNOWN altitude (the gateway's d_v None) says
+    «ύψος άγνωστο» / "altitude unknown" in its lamp text, a WARNING is a WARNING (no CAUTION cap on the station), and
+    the DESCEND proposal is offered to the captain with "altitude unknown" in it - a YES / NO question only: nothing is
+    sent before the YES."""
+    ap = env.ap
+    dr = TS.FakeDriver()
+    dr.w = env.rig.root
+    ap.driver = dr
+    fly(env)
+    captain(env)
+    res = {}
+    for lang, word in (("el", "ύψος άγνωστο"), ("en", "altitude unknown")):
+        i18n.set_lang(lang, save=False)
+        w = dict(warn(2), d_v=None, kind="descend")
+        ap.adsb_sync(state(warn=[w]))
+        lamp = ap.lamps.local.get("adsb_4B1815_3")
+        res["lamp_" + lang] = bool(lamp) and lamp[1] == alerts.WARNING and word in lamp[0]
+        ap.adsb_sync(state(warn=[]))
+    i18n.set_lang("en", save=False)
+    env.sent.clear()
+    n0 = len(dr.asks)
+    p = dict(prop("adsb81", 3, "descend", level=2), d_v=None)
+    ap.adsb_sync(state(props=[p], warn=[dict(warn(2), d_v=None, kind="descend")]))
+    env.rig.pump(1.0, lambda: len(dr.asks) > n0)
+    ask = dr.asks[n0] if len(dr.asks) > n0 else None
+    res["offered"] = bool(ask) and "DESCEND" in ask["text"] and "altitude unknown" in ask["text"]
+    res["nothing_sent"] = not [m for m in env.sent if m.get("t") in ("uav_hold", "uav_route")]
+    if ask:
+        ask["yes"]()
+    res["yes_sends"] = len([m for m in env.sent if m.get("t") == "uav_route"]) == 1
+    ap.adsb_sync(state(props=[], warn=[]))
+    report("AV8 W137: an unknown altitude = co-altitude on the station: the lamp says «ύψος άγνωστο» / altitude unknown "
+           "(WARNING kept), DESCEND offered with it, nothing sent before the YES", all(res.values()), str(res))
+    ap.driver = None
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="trygons_adsb_")
@@ -304,7 +343,7 @@ def main():
     try:
         env = TS.Env(rig, tmp)
         keep_t = (rig.ap.t, rig.ap.t_rx)
-        for fn in (av1, av2, av3, av4, av5, av6, av7):
+        for fn in (av1, av2, av3, av4, av5, av6, av7, av8):
             try:
                 env.reset()
                 fn(env)

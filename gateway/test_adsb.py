@@ -7,12 +7,14 @@
   AB3  aircraft state: stale / removed, a short track, merge of the partial messages
   AB4  filters: altitude, range, on the ground; an unknown altitude is KEPT
   AB5  CPA geometry: head-on, crossing, diverging, vertical separation, an old position moved along its velocity
-  AB6  warning levels: CAUTION / WARNING limits + times, unknown altitude = CAUTION only, only UAVs in the air
+  AB6  warning levels: CAUTION / WARNING limits + times, unknown altitude = co-altitude (W137), only UAVs in the air
   AB7  proposals: HOLD / DESCEND, one per UAV, held 10 s, never without an event
   AB8  no receiver / no data states (the real worker process): NO_RX, NO_DATA, RX; never "clear sky"
   AB9  the simulated helicopter end to end (worker + sim): a CAUTION then a WARNING for the UAV, a proposal
   AB10 receive-only proof: no ADS-B module imports / names a UAV command, MAVLink, the AURIX or the allow-list
   AB13 PF4-r2: a UAV record without an altitude age = unknown altitude; a UAV without a position listed apart (uav_nopos)
+  AB14 W137 (AB-r): an unknown altitude (aircraft or UAV) = CO-ALTITUDE: inside the horizontal limits the same level as
+       an aircraft at the UAV's level, outside nothing; the proposal (DESCEND) is offered; never sent by itself
 """
 import json
 import os
@@ -207,7 +209,7 @@ def ab6():
     sep_v2 = lv(ac(2000, 0, 330 + 700, 80, 270))                    # 213 m above: nothing
     side = lv(ac(2000, 800, 330, 80, 270))                          # passes 800 m north: CAUTION (< 1000, > 500)
     wide = lv(ac(2000, 1500, 330, 80, 270))                         # 1500 m: nothing
-    unk = lv(ac(2000, 0, None, 80, 270))                            # no altitude: CAUTION, never WARNING
+    unk = lv(ac(2000, 0, None, 80, 270))                            # no altitude: co-altitude (W137) = WARNING
     old = lv(ac(2000, 0, 330, 80, 270, age=40.0))                   # too old to judge
     gnd = lv(dict(ac(2000, 0, 330, 80, 270), gnd=True))
     ground_uav = adsb.evaluate([ac(2000, 0, 330, 80, 270)], {"1": uav(armed=False)}, CFG)[0]
@@ -216,7 +218,8 @@ def ab6():
     nopos = adsb.evaluate([ac(2000, 0, 330, 80, 270)], {"1": dict(uav(), lat=None)}, CFG)[0]
     near_now = lv(ac(300, 0, 330, 80, 90))                          # already close, moving away: still a WARNING now
     ok = (w and w["level"] == 2 and c and c["level"] == 1 and far_t is None and sep_v and sep_v["level"] == 1 and
-          sep_v2 is None and side and side["level"] == 1 and wide is None and unk and unk["level"] == 1 and
+          sep_v2 is None and side and side["level"] == 1 and wide is None and unk and unk["level"] == 2 and
+          unk["alt_unknown"] is True and unk["d_v"] is None and w["alt_unknown"] is False and
           old is None and gnd is None and ground_uav == [] and slot_uav == [] and landed == [] and nopos == [] and
           near_now and near_now["level"] == 2)
     report("AB6 warning levels (CAUTION 1000 m / 150 m / 120 s, WARNING 500 m / 100 m / 60 s; only UAVs in the air)",
@@ -249,7 +252,8 @@ def ab7():
     lo = {"ac_alt_m": 30.0, "uav_alt_m": 100.0}
     low_uav = {"ac_alt_m": 150.0, "uav_alt_m": 35.0}
     unk = {"ac_alt_m": None, "uav_alt_m": 100.0}
-    ok_k = k(hi, CFG) == "descend" and k(lo, CFG) == "hold" and k(low_uav, CFG) == "hold" and k(unk, CFG) == "hold"
+    # W137 (AB-r): an unknown aircraft altitude = at the UAV's level -> DESCEND for a UAV well above the safe height
+    ok_k = k(hi, CFG) == "descend" and k(lo, CFG) == "hold" and k(low_uav, CFG) == "hold" and k(unk, CFG) == "descend"
     m = mgr()
     u1, u2 = uav(alt=100.0), dict(uav(alt=60.0), slot=2)
     heli = ac(2000, 0, 330 + 200, 80, 270)
@@ -452,19 +456,21 @@ def ab11():
 
 def ab12():
     """PF5-r MED-2 + LOW: a UAV with an UNKNOWN altitude (None / NaN / stale record) is never taken as 0 m - it is
-    judged with no vertical separation (CAUTION at most, HOLD proposal) and listed as unknown; a stale record = its
+    judged with no vertical separation (W137: co-altitude - the horizontal CPA decides, DESCEND offered) and listed as
+    unknown; a stale record = its
     last place, standing still; non-finite speed / course / climb = standing still, never a NaN that silences the
     warning; non-finite position = not judged, listed unknown."""
     a = ac(2000, 0, 330 + 700, 80, 270)            # 213 m ABOVE a UAV at 100 m: no conflict when the height is known
     known, _f = adsb.evaluate([a], {"1": uav(alt=100.0)}, CFG)
-    # at an unknown height the same aircraft MAY be at its level: CAUTION (before: alt None = 0 m = "317 m apart")
+    # at an unknown height the same aircraft MAY be at its level: W137 co-altitude = WARNING (head-on, 49 s, ~0 m
+    # horizontally at the CPA); before PF5-r: alt None = 0 m = "317 m apart"; PF5-r..AB-r: CAUTION + HOLD
     res = {}
     for name, d in (("none", dict(uav(), alt=None)), ("nan", dict(uav(), alt=float("nan"))),
                     ("stale", dict(uav(alt=100.0), alt_age=12.0)), ("age_nan", dict(uav(alt=100.0), alt_age=float("nan")))):
         unk = []
         ev, fl = adsb.evaluate([a], {"1": d}, CFG, unknown_out=unk)
-        res[name] = bool(ev) and ev[0]["level"] == adsb.LEVEL_CAUTION and ev[0]["d_v"] is None and \
-            ev[0]["uav_alt_m"] is None and ev[0]["kind"] == "hold" and unk == [1] and fl == [1]
+        res[name] = bool(ev) and ev[0]["level"] == adsb.LEVEL_WARNING and ev[0]["d_v"] is None and \
+            ev[0]["uav_alt_m"] is None and ev[0]["kind"] == "descend" and unk == [1] and fl == [1]
     # a head-on aircraft at the UAV's level with NaN speed / course / climb on the UAV still WARNS
     w = ac(2000, 0, 330, 80, 270)
     ev, _f = adsb.evaluate([w], {"1": dict(uav(alt=100.0), gs=float("nan"), cog=float("inf"), climb=float("nan"))}, CFG)
@@ -483,7 +489,7 @@ def ab12():
         t.update({"icao": "%06X" % (0x100000 + i), "alt_ft": 1000.0}, float(i))
     res["cap"] = len(t.ac) == adsb.MAX_AIRCRAFT and "%06X" % 0x100000 not in t.ac and "%06X" % (
         0x100000 + adsb.MAX_AIRCRAFT + 49) in t.ac
-    report("AB12 PF5-r MED-2: an unknown / NaN / stale UAV altitude = CAUTION with no vertical separation + HOLD + listed "
+    report("AB12 PF5-r MED-2 + W137: an unknown / NaN / stale UAV altitude = co-altitude (WARNING head-on) + DESCEND + listed "
            "unknown (never sea level); NaN UAV speed still warns; a NaN position is listed unknown; the aircraft table is "
            "capped at %d" % adsb.MAX_AIRCRAFT, all(res.values()), str(res))
 
@@ -497,7 +503,7 @@ def ab13():
     d.pop("alt_age")
     unk, nop = [], []
     ev, fl = adsb.evaluate([a], {"1": d}, CFG, unknown_out=unk, nopos_out=nop)
-    res = {"no_age": bool(ev) and ev[0]["level"] == adsb.LEVEL_CAUTION and ev[0]["uav_alt_m"] is None and unk == [1]
+    res = {"no_age": bool(ev) and ev[0]["level"] == adsb.LEVEL_WARNING and ev[0]["uav_alt_m"] is None and unk == [1]
            and nop == []}
     unk, nop = [], []
     ev, fl = adsb.evaluate([a], {"1": dict(uav(), lat=None), "2": dict(uav(), slot=2, alt=None)}, CFG,
@@ -506,12 +512,79 @@ def ab13():
     m = mgr()
     m.judge(10.0, aircraft=[a], drones={"3": dict(uav(), lat=float("nan"))}, state="RX")
     res["status"] = m.uav_nopos == [3]
-    report("AB13 PF4-r2: a UAV record without an altitude age = unknown altitude (CAUTION at most, listed unknown); a "
+    report("AB13 PF4-r2: a UAV record without an altitude age = unknown altitude (co-altitude, listed unknown); a "
            "UAV without a usable position is listed apart (uav_nopos: not judged)", all(res.values()), str(res))
 
 
+class SpyUav:
+    """FakeGw.uav that records every attribute asked for: the ADS-B manager may only READ (boat / drones / enabled)."""
+    def __init__(self, d):
+        object.__setattr__(self, "d", d)
+        object.__setattr__(self, "asked", [])
+
+    def __getattr__(self, name):
+        self.asked.append(name)
+        if name == "enabled":
+            return True
+        if name == "boat":
+            return lambda: {"pos": (LAT0, LON0)}
+        if name == "drones":
+            return lambda: self.d
+        raise AttributeError(name)
+
+
+def ab14():
+    """W137 (owner 2026-11-10, step AB-r): an UNKNOWN altitude - the aircraft's, the UAV's or both - is taken as
+    CO-ALTITUDE: inside the horizontal limits the level is EXACTLY that of an aircraft at the UAV's own level (CAUTION /
+    WARNING by the horizontal CPA alone), outside them nothing; the event says altitude unknown; the HOLD / DESCEND
+    proposal is offered (DESCEND for a UAV well above the safe height / both unknown); the manager never sends a UAV
+    command by itself (it only reads the drones)."""
+    res = {}
+    geos = {"head_on_2km": (2000, 0, 80, 270), "head_on_4km": (4000, 0, 80, 270), "side_800": (2000, 800, 80, 270),
+            "side_400": (2000, 400, 80, 270), "near_now": (300, 0, 80, 90), "far_7km": (7000, 0, 80, 270),
+            "wide_1500": (2000, 1500, 80, 270), "slow_far": (1500, 0, 5, 270)}
+    lv_rows = []
+    for name, (dx, dy, gs, trk) in geos.items():
+        base = lv(ac(dx, dy, 330, gs, trk))                                   # co-altitude: 330 ft = 100.6 m = the UAV
+        a_unk = lv(ac(dx, dy, None, gs, trk))                                 # the aircraft's altitude unknown
+        u_unk = lv(ac(dx, dy, 330 + 1500, gs, trk), dict(uav(alt=None)))      # the UAV's unknown (aircraft 557 m up)
+        both = lv(ac(dx, dy, None, gs, trk), dict(uav(alt=None)))
+        lvs = [x["level"] if x else 0 for x in (base, a_unk, u_unk, both)]
+        lv_rows.append("%s %s" % (name, lvs))
+        res[name] = len(set(lvs)) == 1 and all(x is None or x["alt_unknown"] for x in (a_unk, u_unk, both))
+    res["inside_warns"] = lv(ac(2000, 0, None, 80, 270))["level"] == adsb.LEVEL_WARNING and \
+        lv(ac(2000, 800, None, 80, 270))["level"] == adsb.LEVEL_CAUTION
+    res["outside_none"] = lv(ac(7000, 0, None, 80, 270)) is None and lv(ac(2000, 1500, None, 80, 270)) is None
+    # a KNOWN altitude far above still gives nothing (only the unknown is co-altitude)
+    res["known_above_clear"] = lv(ac(2000, 0, 330 + 1500, 80, 270)) is None
+    # DESCEND offered: aircraft altitude unknown + a UAV at 100 m; the UAV's unknown + an aircraft at 557 m; both unknown
+    res["descend"] = all(x and x["kind"] == "descend" for x in (
+        lv(ac(2000, 0, None, 80, 270)), lv(ac(2000, 0, 330 + 1500, 80, 270), dict(uav(alt=None))),
+        lv(ac(2000, 0, None, 80, 270), dict(uav(alt=None)))))
+    # a UAV low (35 m) with an aircraft of unknown altitude: co-altitude at 35 m, not above the safe height -> HOLD
+    low = lv(ac(2000, 0, None, 80, 270), uav(alt=35.0))
+    res["low_hold"] = bool(low) and low["kind"] == "hold" and low["level"] == adsb.LEVEL_WARNING
+    # the manager: the proposal stands (DESCEND, d_v None) - and nothing is sent: the UAV side is only READ
+    spy = SpyUav({"1": uav(alt=100.0)})
+
+    class Gw:
+        uav = spy
+    m = adsbmgr.AdsbManager({"enabled": True}, Gw())
+    m.judge(0.0, aircraft=[ac(2000, 0, None, 80, 270)], drones=None, state="RX")
+    m.judge(1.0, aircraft=[ac(1900, 0, None, 80, 270)], drones=None, state="RX")
+    st = m.status()
+    props = st["proposals"]
+    res["proposal"] = len(props) == 1 and props[0]["kind"] == "descend" and props[0]["level"] == adsb.LEVEL_WARNING and \
+        props[0]["d_v"] is None and st["warn"] and st["warn"][0]["d_v"] is None
+    res["only_reads"] = set(spy.asked) <= {"enabled", "boat", "drones"} and "drones" in spy.asked
+    report("AB14 W137: unknown altitude (aircraft / UAV / both) = co-altitude: the same level as at the UAV's level "
+           "inside the horizontal limits, none outside; DESCEND offered; the manager only reads (never sends)",
+           all(res.values()), "%s; levels [co-alt, ac unknown, UAV unknown, both]: %s; asked %s" % (
+               {k: v for k, v in res.items() if not v} or "all ok", "; ".join(lv_rows), sorted(set(spy.asked))))
+
+
 def main():
-    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10, ab11, ab12, ab13):
+    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10, ab11, ab12, ab13, ab14):
         try:
             f()
         except Exception as e:                              # a crash is a failure, with its reason

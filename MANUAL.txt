@@ -4375,10 +4375,10 @@ point of approach with each aircraft, horizontally and vertically:
   * CAUTION: closer than 1000 m horizontally AND 150 m vertically within
     120 s. Voice: "Aircraft near UAV 3".
   * WARNING: closer than 500 m AND 100 m within 60 s (red, voice again).
-An aircraft without an altitude can only give a CAUTION. The same for a UAV
-whose own height is not known (no fresh height from it, a lost link): the
-notice "ADS-B: UAV n unknown altitude" says so, and aircraft near it give a
-CAUTION (never taken as "far below", never as sea level). An aircraft that was
+An aircraft without an altitude is taken as being AT THE UAV'S HEIGHT: the
+horizontal distance alone gives the CAUTION or WARNING, and the text says
+"altitude unknown". The same for a UAV whose own height is not known (no fresh
+height, a lost link): "ADS-B: UAV n altitude unknown" says so. An aircraft that was
 reported on the ground is watched again as soon as it reports flying. A UAV
 in the air WITHOUT a usable position is not judged at all: the notice
 "ADS-B: UAV n position unknown - no ADS-B judgement for it" says so. The
@@ -4388,8 +4388,8 @@ boat alarm, never go to the autopilot and never change a mode or the throttle.
 
 PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box
 (a UAV flown by hand: only its pilot): HOLD the UAV where it is, or DESCEND it
-to 30 m over its position (when the aircraft is above it and the UAV is high;
-DESCEND REPLACES its observation mission - it then hovers there). NOTHING
+to 30 m over its position (when the aircraft is above it and the UAV is high,
+also with a height unknown; DESCEND REPLACES its observation mission - it then hovers there). NOTHING
 happens by itself: without
 your YES nothing is sent. YES sends the normal UAV command (hold, or a route
 change - a copilot's route change for a flying UAV still waits for the

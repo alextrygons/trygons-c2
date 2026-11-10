@@ -6331,7 +6331,7 @@ class App:
                     self.sound.say("adsb.%s%d" % ("w" if lv == 2 else "c", int(e["slot"])))
         nopos = set(st.get("uav_nopos") or [])
         for slot in sorted(set(st.get("uav_unknown") or []) | nopos):
-            # PF5-r MED-2: a UAV in the air without a known (fresh) altitude: judged CAUTION at most - said;
+            # PF5-r MED-2: a UAV in the air without a known (fresh) altitude: judged as CO-ALTITUDE (W137) - said;
             # PF4-r2 LOW-3: WITHOUT a position it is not judged at all - its own text says so
             code = "adsb_unk_%s" % slot if slot not in nopos else "adsb_nopos_%s" % slot
             live.add(code)
@@ -6371,8 +6371,10 @@ class App:
             return
         self.adsb_asked.add(p["id"])
         kind = p.get("kind") or "hold"
-        text = T("adsb.offer_" + kind, cs=p.get("cs") or p.get("icao"), n=p.get("slot"), alt="%d" % round(
-            p.get("alt_safe_m") or 30))
+        cs = p.get("cs") or p.get("icao")
+        if "d_v" in p and p.get("d_v") is None:      # W137 (AB-r): judged as co-altitude - say the altitude is unknown
+            cs = "%s (%s)" % (cs, T("adsb.alt_unknown"))
+        text = T("adsb.offer_" + kind, cs=cs, n=p.get("slot"), alt="%d" % round(p.get("alt_safe_m") or 30))
 
         def yes(_why=None, pp=p):         # (the driver screen calls on_yes with a text: it is not the proposal)
             self.adsb_do(pp)

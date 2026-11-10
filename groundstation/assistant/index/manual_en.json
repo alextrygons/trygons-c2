@@ -9112,7 +9112,7 @@
 4384
 ],
 "term": "",
-"text": "* WARNING: closer than 500 m AND 100 m within 60 s (red, voice again). An aircraft without an altitude can only give a CAUTION. The same for a UAV whose own height is not known (no fresh height from it, a lost link): the notice \"ADS-B: UAV n unknown altitude\" says so, and aircraft near it give a CAUTION (never taken as \"far below\", never as sea level). An aircraft that was reported on the ground is watched again as soon as it reports flying. A UAV in the air WITHOUT a usable position is not judged at all: the notice \"ADS-B: UAV n position unknown - no ADS-B judgement for it\" says so."
+"text": "* WARNING: closer than 500 m AND 100 m within 60 s (red, voice again). An aircraft without an altitude is taken as being AT THE UAV'S HEIGHT: the horizontal distance alone gives the CAUTION or WARNING, and the text says \"altitude unknown\". The same for a UAV whose own height is not known (no fresh height, a lost link): \"ADS-B: UAV n altitude unknown\" says so. An aircraft that was reported on the ground is watched again as soon as it reports flying. A UAV in the air WITHOUT a usable position is not judged at all: the notice \"ADS-B: UAV n position unknown - no ADS-B judgement for it\" says so."
 },
 {
 "ch": "24",
@@ -9135,10 +9135,10 @@
 "kind": "manual",
 "lines": [
 4389,
-4397
+4396
 ],
 "term": "",
-"text": "PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box (a UAV flown by hand: only its pilot): HOLD the UAV where it is, or DESCEND it to 30 m over its position (when the aircraft is above it and the UAV is high; DESCEND REPLACES its observation mission - it then hovers there). NOTHING happens by itself: without your YES nothing is sent. YES sends the normal UAV command (hold, or a route change - a copilot's route change for a flying UAV still waits for the captain's YES, and a UAV flown by someone else is refused as always). A proposal that no longer stands (the aircraft is gone) sends nothing."
+"text": "PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box (a UAV flown by hand: only its pilot): HOLD the UAV where it is, or DESCEND it to 30 m over its position (when the aircraft is above it and the UAV is high, also with a height unknown; DESCEND REPLACES its observation mission - it then hovers there). NOTHING happens by itself: without your YES nothing is sent. YES sends the normal UAV command (hold, or a route change - a copilot's route change for a flying UAV still waits for the captain's YES, and a UAV flown by someone else is refused as always)."
 },
 {
 "ch": "24",
@@ -9147,11 +9147,11 @@
 "id": "en:704",
 "kind": "manual",
 "lines": [
-4397,
+4396,
 4403
 ],
 "term": "",
-"text": "Altitude of the aircraft is barometric, the UAV's is above its launch point: near the sea level the difference is small and the limits carry it. DEMO. The demo shows a simulated helicopter at 400 ft crossing the area. A real receiver needs a decoder (readsb or dump1090) and an antenna: see PARTS.md."
+"text": "A proposal that no longer stands (the aircraft is gone) sends nothing. Altitude of the aircraft is barometric, the UAV's is above its launch point: near the sea level the difference is small and the limits carry it. DEMO. The demo shows a simulated helicopter at 400 ft crossing the area. A real receiver needs a decoder (readsb or dump1090) and an antenna: see PARTS.md."
 },
 {
 "ch": "25",
@@ -11443,7 +11443,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "d799da60d5c6bbc1723d3e17b57074d14fa7cb4b6dafd92411bb3a20218346c2",
+"MANUAL.txt": "a885d5336f950a1c914b381a4be404c07fd816fd52c03a2c7269ba0b521fe519",
 "academy/content/tour.json": "e4464b2235485412b35a599069004cd30d67a8d402000a0612e6b2b90926facd",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },

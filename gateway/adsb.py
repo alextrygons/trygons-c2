@@ -15,7 +15,11 @@ AdsbTargets; the manager (adsbmgr.py) judges them against the UAVs that are IN T
   proposal_kind(...)     HOLD / DESCEND text of the proposal - a PROPOSAL only, never a command
 
 Levels (TO CONFIRM W132): CAUTION d_h < 1000 m AND d_v < 150 m within 120 s; WARNING d_h < 500 m AND d_v < 100 m
-within 60 s. An aircraft without an altitude can only give CAUTION (never a guess of "far above"). Barometric altitude
+within 60 s. UNKNOWN altitude (owner W137, 2026-11-10; step AB-r): an aircraft without an altitude, or a UAV whose
+altitude is unknown (missing / non-finite / stale), is taken as CO-ALTITUDE with the UAV (d_v = 0, never a guess of
+"far above"): the horizontal CPA alone decides CAUTION / WARNING, the event says "altitude unknown" (d_v None,
+alt_unknown True) and the HOLD / DESCEND proposal is offered as for any conflict (proposal_kind: the unknown side at
+the known side's altitude; both unknown = DESCEND). Still only a proposal - nothing is sent without a YES. Barometric altitude
 of the aircraft against the UAV's height above the launch point (= the sea): the difference is a few tens of metres
 at most near sea level; the limits carry it.
 """
@@ -413,8 +417,8 @@ def cpa(ac, uav, cfg=None):
     if v2 > 0.01:
         t = min(300.0, max(0.0, -(rx * vx + ry * vy) / v2))
     alt_m = None if ac.get("alt_ft") is None else ac["alt_ft"] * FT + avz * age
-    # PF5-r MED-2: an UNKNOWN UAV altitude is never sea level (0 m): no vertical separation is claimed (CAUTION at
-    # most, like an aircraft without an altitude)
+    # PF5-r MED-2: an UNKNOWN UAV altitude is never sea level (0 m): no vertical separation is claimed; W137 (AB-r):
+    # level_of then judges it as co-altitude (d_v None = 0 m apart)
     uz = uav.get("alt")
     uz = float(uz) if _fin(uz) else None
     rz = None if alt_m is None or uz is None else alt_m - uz
@@ -427,13 +431,17 @@ def cpa(ac, uav, cfg=None):
 
 
 def level_of(c, cfg):
-    """The worse of 'now' and 'at the CPA' (an aircraft that is close now counts even when it is moving away)."""
+    """The worse of 'now' and 'at the CPA' (an aircraft that is close now counts even when it is moving away).
+    W137 (owner 2026-11-10, AB-r): d_v None (the aircraft's or the UAV's altitude unknown) = CO-ALTITUDE (0 m apart):
+    the horizontal limits alone decide, CAUTION or WARNING exactly as for an aircraft at the UAV's own level."""
     best, tbest = LEVEL_NONE, c["t"]
     for tt, dh, dv in ((0.0, c["d_h0"], c["d_v0"]), (c["t"], c["d_h"], c["d_v"])):
         lv = LEVEL_NONE
-        if dh < cfg["warn_h_m"] and dv is not None and dv < cfg["warn_v_m"] and tt <= cfg["warn_t_s"]:
+        if dv is None:
+            dv = 0.0
+        if dh < cfg["warn_h_m"] and dv < cfg["warn_v_m"] and tt <= cfg["warn_t_s"]:
             lv = LEVEL_WARNING
-        elif dh < cfg["caution_h_m"] and (dv is None or dv < cfg["caution_v_m"]) and tt <= cfg["caution_t_s"]:
+        elif dh < cfg["caution_h_m"] and dv < cfg["caution_v_m"] and tt <= cfg["caution_t_s"]:
             lv = LEVEL_CAUTION
         if lv > best:
             best, tbest = lv, tt
@@ -442,10 +450,17 @@ def level_of(c, cfg):
 
 def proposal_kind(c, cfg):
     """What to PROPOSE for a UAV near an aircraft: DESCEND (to alt_safe_m) when the aircraft is not clearly below the
-    UAV and the UAV is well above the safe height, else HOLD (hover where it is). Never a command."""
+    UAV and the UAV is well above the safe height, else HOLD (hover where it is). Never a command.
+    W137 (AB-r): an unknown altitude = co-altitude - the unknown side is taken at the known side's altitude (an aircraft
+    without an altitude at the UAV's height; a UAV of unknown height at the aircraft's), both unknown = DESCEND (get
+    below the manned traffic; offered as for any conflict, the captain answers)."""
     ac, uz = c.get("ac_alt_m"), c.get("uav_alt_m")
+    if ac is None and uz is None:
+        return "descend"
+    if ac is None:
+        ac = uz
     if uz is None:
-        return "hold"                                  # PF5-r MED-2: unknown height = never "descend to 30 m"
+        uz = ac
     if ac is not None and ac >= uz - 15.0 and uz > cfg["alt_safe_m"] + 10.0 and ac > cfg["alt_safe_m"] + 30.0:
         return "descend"
     return "hold"
@@ -476,7 +491,8 @@ def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None, nopos_out=Non
         # PF4-r2 LOW-2: a record WITHOUT an altitude age (key missing) = an unknown altitude, never "known"
         if not _fin(d.get("alt")) or "alt_age" not in d or                 (age is not None and (not _fin(age) or age > cfg["uav_max_age_s"])):
             # PF5-r MED-2: altitude missing / non-finite / stale (a lost link keeps the old record): judged with an
-            # UNKNOWN altitude (CAUTION at most) and, stale, standing at its last place - never a silent 0 m
+            # UNKNOWN altitude = co-altitude (W137: the horizontal CPA decides) and, stale, standing at its last
+            # place - never a silent 0 m
             d["alt"] = None
             unknown.append(n)
         if age is not None and (not _fin(age) or age > cfg["uav_max_age_s"]):
@@ -497,6 +513,7 @@ def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None, nopos_out=Non
                         "d_h": round(c["d_h"]), "d_v": None if c["d_v"] is None else round(c["d_v"]),
                         "d_h0": round(c["d_h0"]), "ac_alt_m": None if c["ac_alt_m"] is None else round(c["ac_alt_m"]),
                         "uav_alt_m": None if c["uav_alt_m"] is None else round(c["uav_alt_m"], 1),
+                        "alt_unknown": c["d_v"] is None,       # W137: judged as co-altitude, "altitude unknown"
                         "kind": proposal_kind(c, cfg)})
     out.sort(key=lambda e: (-e["level"], e["t"]))
     if unknown_out is not None:                        # PF5-r MED-2: the UAVs without a known altitude / position

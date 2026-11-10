@@ -187,7 +187,12 @@ speed, (UAV) altitude. Turns to STARBOARD (IAMSAR standard) unless "port" is cho
 - CPA per (aircraft, flying UAV): relative position / velocity in ENU (aircraft from SBS, UAV from
   its GLOBAL_POSITION_INT velocity), t_cpa = -(r.v)/|v|^2 clipped 0..300 s; horizontal d_h and
   vertical d_v at t_cpa. CAUTION: d_h < 1000 m AND d_v < 150 m within 120 s; WARNING: d_h < 500 m
-  AND d_v < 100 m within 60 s (TO CONFIRM W132). Notices / lamps station-local
+  AND d_v < 100 m within 60 s (TO CONFIRM W132). UNKNOWN altitude (owner W137, 2026-11-10, step AB-r):
+  an aircraft without an altitude and / or a UAV whose altitude is unknown (missing / non-finite /
+  stale) = CO-ALTITUDE (d_v taken as 0): the horizontal CPA alone gives CAUTION / WARNING, the text
+  says «ύψος άγνωστο» / "altitude unknown", HOLD / DESCEND is proposed as for any conflict (the
+  unknown side at the known side's altitude; both unknown = DESCEND) - replaces "unknown = CAUTION
+  only, no DESCEND". Notices / lamps station-local
   (MasterLamps.set_local "adsb_<icao>_<slot>") + voice «Αεροσκάφος κοντά στο UAV 3»; never a boat
   alarm bit.
 - Proposal (vertical Y/N, that UAV's pilot or the captain): HOLD = the existing `uav_hold {uav}`;
