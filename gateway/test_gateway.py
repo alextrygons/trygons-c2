@@ -512,7 +512,7 @@ def section_b():
         tv = vic.telem or {}
         axes = [tv.get("acc_" + a) for a in proto.ACCEL_AXES] + [tv.get("acc1_" + a + "_pk") for a in proto.ACCEL_AXES]
         report("B2a FW-TR: the ACCEL frame reaches the station through the gateway (3 axes, period + 1 s window)",
-               all(isinstance(v, float) for v in axes) and 5 <= tv.get("acc_n", 0) <= 15 and tv.get("acc1_n", 0) >= 50,
+               all(isinstance(v, float) for v in axes) and 15 <= tv.get("acc_n", 0) <= 25 and tv.get("acc1_n", 0) >= 150,   # FW-TR-r: the sim at 200 Hz (board rate)
                "period avg %s, 1 s peaks %s, samples %s / %s" % (axes[:3], axes[3:], tv.get("acc_n"), tv.get("acc1_n")))
         link, w = sim.station()
         link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
