@@ -49,6 +49,7 @@ class GatewayLink:
         self.error = None
         self.gw_status = None
         self.t2 = {}
+        self.acc = {}                   # step FW-TR: the latest ACCEL (display only)
         self.last_full = None
         self.tmode = "full"
         self.seq = 0
@@ -209,12 +210,15 @@ class GatewayLink:
             b = bytes.fromhex(m["b"])
             d = proto.decode_telemetry(b)
             d.update(self.t2)
+            d.update(self.acc)
             self.last_full = d
             if self.logger:
                 self.logger.write("rx", proto.Frame(proto.T_TELEMETRY, 0, b), {"telemetry": d})
             self.events.put(("telemetry", d))
         elif t == "t2":
             self.t2 = proto.decode_telem2(bytes.fromhex(m["b"]))
+        elif t == "acc":
+            self.acc = proto.decode_accel(bytes.fromhex(m["b"]))
         elif t == "lite":
             self.events.put(("telemetry", full_from_lite(m["d"], self.last_full)))
         elif t == "ack":

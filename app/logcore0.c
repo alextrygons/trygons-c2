@@ -34,6 +34,7 @@ static struct {
     uint16_t can_seq;
     uint16_t sovr_seq;          /* step 13q3b: the shore stick override (event 26 SOVR) */
     uint16_t steer_seq;
+    uint16_t acc_seq;           /* step FW-TR: the 1 s acceleration window (event 31 ACCEL) */
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -395,7 +396,17 @@ static void changes(const sb_t *s)
            (int32_t)((uint32_t)lroundf(bs * 10000.0f) | ((uint32_t)lroundf(sm_play(m) * 10000.0f) << 16)),
            (int32_t)lroundf(s->servo.cfg.travel_s * 100.0f));
     }
-    k.steer_seq = s->steer.log_seq;
+    k.steer_seq = s->steer.log_seq;
+    /* step FW-TR: the acceleration of every complete second with samples (display / logging only) */
+    if (s->acc.sec_seq != k.acc_seq && s->acc.sec.n > 0u) {
+        const hal_accel3_t *w = &s->acc.sec;
+        int32_t ax[3];
+        for (unsigned i = 0; i < 3u; i++)
+            ax[i] = (int32_t)(((uint32_t)(uint16_t)accel_mg(accel_avg(w, i))) |
+                              ((uint32_t)(uint16_t)accel_mg(w->peak[i]) << 16));
+        ev(s, EV_ACCEL, ax[0], ax[1], ax[2], (int32_t)w->n);
+    }
+    k.acc_seq = s->acc.sec_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

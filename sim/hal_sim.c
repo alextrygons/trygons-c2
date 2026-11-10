@@ -274,6 +274,37 @@ void sim_hal_push_accel(float g)
     if (s_acc_head - s_acc_tail > ACC_RING) s_acc_tail = s_acc_head - ACC_RING;
 }
 
+/* step FW-TR: the 3-axis statistics (longitudinal, lateral, vertical; display / logging only), like the board's
+ * tc_bno085.c: since the last hal_read_accel3, restarted after 4000 samples nobody read */
+static hal_accel3_t s_a3;
+static float s_a3_bias[3];          /* test AX4: added to every 3-axis sample only (display-only proof) */
+
+void sim_hal_accel3_bias(float lon_g, float lat_g, float vert_g)
+{
+    s_a3_bias[0] = lon_g;
+    s_a3_bias[1] = lat_g;
+    s_a3_bias[2] = vert_g;
+}
+
+uint32_t hal_read_accel3(hal_accel3_t *a)
+{
+    *a = s_a3;
+    memset(&s_a3, 0, sizeof s_a3);
+    return a->n;
+}
+
+void sim_hal_push_accel3(float lon_g, float lat_g, float vert_g)
+{
+    if (!s_acc_fitted) return;
+    if (s_a3.n >= 4000u) memset(&s_a3, 0, sizeof s_a3);
+    float v[3] = { lon_g + s_a3_bias[0], lat_g + s_a3_bias[1], vert_g + s_a3_bias[2] };
+    for (int i = 0; i < 3; i++) {
+        s_a3.sum[i] += v[i];
+        if (fabsf(v[i]) > fabsf(s_a3.peak[i])) s_a3.peak[i] = v[i];
+    }
+    s_a3.n++;
+}
+
 /* BNO085 attitude: the boat model's wave roll / pitch */
 static bool  s_att_fitted = true, s_att_new;
 static float s_roll_deg, s_pitch_deg;
@@ -303,6 +334,7 @@ void sim_hal_set_accel(bool fitted)
 {
     s_acc_fitted = fitted;
     s_acc_tail = s_acc_head;
+    memset(&s_a3, 0, sizeof s_a3);
 }
 
 static bool s_neutral_fitted = false;

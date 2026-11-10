@@ -674,6 +674,12 @@ uint32_t hal_read_accel_z(float *g, uint32_t max)
     return bno_accel_z(g, max);
 }
 
+uint32_t hal_read_accel3(hal_accel3_t *a)
+{
+    imu_service();
+    return bno_accel3(a);       /* step FW-TR: display / logging only */
+}
+
 bool hal_read_attitude(float *roll_deg, float *pitch_deg)
 {
     imu_service();

@@ -3129,7 +3129,14 @@ THE TOOLS (in groundstation\, use C:\msys64\ucrt64\bin\python.exe):
     python log2csv.py FILE.TLG          -> CSV for Excel (all fields)
     python log2csv.py FILE.TLG -f heading,target,thr_out --events
     python log2csv.py FILE.TLG --list   the field names
+    python log2csv.py FILE.TLG --accel  -> the boat's acceleration, one row a second
     python tlgreplay.py FILE.TLG        replay the drive in the simulator
+ACCELERATION VALUES (display and log only): the IMU (BNO085) measures the
+boat's acceleration forward / back, sideways and up / down. The boat sends
+the average and the peak of each, ten times a second and for every second,
+to the stations (through the gateway too), and writes every second into its
+log (event 31 ACCEL). They are information only: nothing on the boat drives,
+limits, slows or alarms on them.
 The ground station saves its own copy of the telemetry in the same format
 (groundstation\logs\log_*.TLG).
 

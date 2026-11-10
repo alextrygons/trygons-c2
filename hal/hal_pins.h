@@ -126,6 +126,8 @@
 #define BNO_YAWRATE_SIGN    (-1.0f)             /* the sensor's Z points up: counter-clockwise positive */
 #define BNO_PITCH_SIGN      (-1.0f)
 #define BNO_ROLL_SIGN       1.0f
+#define BNO_ACC_LON_SIGN    1.0f                /* step FW-TR: sensor X = the bow (as the heading): + forward */
+#define BNO_ACC_LAT_SIGN    (-1.0f)             /* sensor Y = port (X fwd, Z up): + starboard; CHECK on the bench */
 
 /* --- microSD click (mikroBUS, QSPI2), WIRING.md section 4 ----------------------- */
 #define SD_QSPI             MODULE_QSPI2

@@ -93,6 +93,9 @@ typedef enum {
                            2 TRAINING values stored, 3 a version-1 (DC-motor) record refused, 4 thr_travel_s changed) |
                            why (SM_RESET_) << 8, K stored*100 | K in use*100 << 16, play stored*10000 | in use*10000
                            << 16, thr_travel_s*100 */
+    EV_ACCEL = 31,      /* step FW-TR, once per complete 1 s window with samples (DISPLAY / LOG ONLY): the BNO085 linear
+                           acceleration, milli-g, average (low i16) | peak = the largest magnitude, signed (high i16):
+                           longitudinal (+ fwd), lateral (+ stbd), vertical (+ up), samples in that second */
     EV_COUNT
 } log_event_t;
 

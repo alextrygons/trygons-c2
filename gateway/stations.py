@@ -14,6 +14,7 @@ Protocol: TCP port 5761, one JSON object per line (UTF-8).
   gateway -> station
     {"t":"welcome", "id":2, "role":"HELM", "local":false, "sid":"...", "max_age_s":2.0}
     {"t":"tm", "b":"<hex TELEMETRY>"}  {"t":"t2", "b":"<hex TELEM2>"}      (full rate, 10 Hz)
+    {"t":"acc", "b":"<hex ACCEL>"}                                       (full rate, 10 Hz; step FW-TR, display only)
     {"t":"lite", "d":{...essential fields...}}                             (reduced, 2 Hz)
     {"t":"frame", "type":130, "b":"<hex>"}       other AURIX answers (parameter, program, ...)
     {"t":"ack", "seq":17, "type":16, "result":0, "text":"OK"}
@@ -221,6 +222,7 @@ class StationServer:
         a.on(proto.T_GW_ACK, self._on_gw_ack)
         a.on(proto.T_TELEMETRY, self._on_telem)
         a.on(proto.T_TELEM2, self._on_t2)
+        a.on(proto.T_ACCEL, self._on_acc)
         for t in (proto.T_PARAM_VALUE, proto.T_PROG_WP_VALUE, proto.T_PROG_ERROR, proto.T_JOYMAP_VALUE,
                   proto.T_JOY_RAW):
             a.on(t, self._on_reply)
@@ -980,6 +982,13 @@ class StationServer:
             new = self.stations.get(helm)
             if new is not None and new.crew != "captain" and new.role != "VIEWER":
                 self._set_captain(new, "took HELM")         # e.g. a station on the boat took it
+
+    def _on_acc(self, f):
+        """T_ACCEL (step FW-TR, display / logging only): passed through to the full-rate stations as {"t": "acc"}."""
+        b = f.payload.hex()
+        for st in list(self.stations.values()):
+            if st.tmode == "full":
+                st.send({"t": "acc", "b": b})
 
     def _on_reply(self, f):
         msg = {"t": "frame", "type": f.type, "b": f.payload.hex()}

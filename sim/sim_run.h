@@ -86,6 +86,8 @@ void sb_phase4_tests(void);       /* P4: AUTO speed control (debugging) */
 void sb_phase5_tests(void);       /* P5: AUTO line following (debugging) */
 void sb_steer_tests(void);        /* SM: the DroneCAN steering position servo (step 11e) */
 void sb_nv_tests(void);           /* DF: data flash / non-volatile storage */
+int sb_accel_trace(int bias);     /* AX4's fresh-process run */
+void sb_accel_tests(void);        /* AX: step FW-TR, the acceleration telemetry frame (display / log only) */
 void sb_battery_tests(void);      /* BV: supply voltage of the 12 V bank, LOW BATTERY */
 void sb_relay_tests(void);        /* RB: RS485 Modbus relay board (tc_modbus.c + relays.c) */
 void sb_engine_tests(void);       /* ER: engine controls + remote restart (engine.c, section N) */

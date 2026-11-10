@@ -3913,6 +3913,8 @@ void sb_step(sb_t *s)
     bool roll_new = hal_read_roll_rate(&roll);
     static float acc[96];       /* step 13s: static, not on core 0's user stack (sb_step is never re-entered) */
     uint32_t n_acc = hal_read_accel_z(acc, 96u);
+    (void)hal_read_accel3(&s->acc.step);    /* step FW-TR: display / logging only (telemetry ACCEL, log event 31) */
+    accel_step(&s->acc, s->now_ms);
     bool nsw;
     int8_t neutral_sw = hal_read_neutral_switch(&nsw) ? (nsw ? 1 : 0) : -1;
     s->buttons_now = buttons;

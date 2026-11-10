@@ -60,6 +60,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "accel.h"
 #include "autopilot.h"
 #include "battery.h"
 #include "gear.h"
@@ -889,6 +890,7 @@ typedef struct {
     bool     roll_ok;
     float    att_roll_deg, att_pitch_deg;   /* BNO085 attitude (only passed on to the gateway) */
     uint32_t att_ms;                        /* when it last came (0 = never) */
+    accel_t  acc;                           /* step FW-TR: 3-axis acceleration windows (display / log only) */
     float    motor_a;           /* steering motor current, -1 = no sensor */
     uint8_t  limit_bits;        /* bit0 left, bit1 right, 0x80 = no switches */
     int8_t   neutral_sw;        /* -1 none, 0 not neutral, 1 neutral */

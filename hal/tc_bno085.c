@@ -44,6 +44,14 @@ static const struct { uint8_t id; uint32_t us; } k_feat[4] = {
 };
 static float s_acc[ACC_RING];
 static uint32_t s_acc_head, s_acc_tail;
+static hal_accel3_t s_a3;            /* step FW-TR: 3-axis statistics since the last bno_accel3 (display / log only) */
+#define A3_MAX_N    4000u            /* not read for 20 s (the big boat never reads it): start again, no float drift */
+
+static void a3_add(uint32_t i, float g)
+{
+    s_a3.sum[i] += g;
+    if (fabsf(g) > fabsf(s_a3.peak[i])) s_a3.peak[i] = g;
+}
 
 static void cs(bool active) { if (active) IfxPort_setPinLow(PIN_BNO_CS); else IfxPort_setPinHigh(PIN_BNO_CS); }
 static bool int_low(void) { return !IfxPort_getPinState(PIN_BNO_INT); }
@@ -114,6 +122,12 @@ static void input_reports(const uint8_t *p, uint32_t n)
             float g = (s16(&r[8]) / 256.0f) / 9.80665f;
             s_st.accel_z_g = g;
             if (s_acc_head - s_acc_tail < ACC_RING) s_acc[s_acc_head++ % ACC_RING] = g;
+            /* step FW-TR: X / Y / Z into the 3-axis statistics (a few adds per report, ~10 reports per step) */
+            if (s_a3.n >= A3_MAX_N) memset(&s_a3, 0, sizeof s_a3);
+            a3_add(0u, BNO_ACC_LON_SIGN * (s16(&r[4]) / 256.0f) / 9.80665f);
+            a3_add(1u, BNO_ACC_LAT_SIGN * (s16(&r[6]) / 256.0f) / 9.80665f);
+            a3_add(2u, g);
+            s_a3.n++;
             break;
         }
         default:
@@ -292,6 +306,13 @@ uint32_t bno_accel_z(float *g, uint32_t max)
     uint32_t n = 0u;
     while (s_acc_tail != s_acc_head && n < max) g[n++] = s_acc[s_acc_tail++ % ACC_RING];
     return n;
+}
+
+uint32_t bno_accel3(hal_accel3_t *a)
+{
+    *a = s_a3;
+    memset(&s_a3, 0, sizeof s_a3);
+    return a->n;
 }
 
 const bno_stat_t *bno_stat(void)

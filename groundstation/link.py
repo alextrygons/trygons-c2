@@ -95,6 +95,7 @@ class Link:
         self.threads = []
         self.heartbeat_s = heartbeat_s
         self.t2 = {}                # latest TELEM2 (merged into every telemetry dict)
+        self.acc = {}               # latest ACCEL (step FW-TR, display only; merged too)
 
     # --- connection --------------------------------------------------------
     def _open(self):
@@ -202,9 +203,13 @@ class Link:
             if f.type == proto.T_TELEM2:
                 self.t2 = proto.decode_telem2(f.payload)
                 return
+            if f.type == proto.T_ACCEL:
+                self.acc = proto.decode_accel(f.payload)
+                return
             if f.type == proto.T_TELEMETRY:
                 d = proto.decode_telemetry(f.payload)
                 d.update(self.t2)
+                d.update(self.acc)
                 if self.logger:
                     self.logger.write("rx", f, {"telemetry": d})
                 self.events.put(("telemetry", d))

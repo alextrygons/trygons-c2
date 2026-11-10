@@ -37,6 +37,7 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->gps_pos_noise_m = 1.5f;
     w->slam_scale = 1.0f;
     w->slam_rng = seed * 2654435761u + 12345u;
+    w->acc_rng = seed * 2246822519u + 777u;       /* step FW-TR */
     w->heading_deg = heading_deg;
     w->speed_kn = speed_kn;
     w->rng = seed ? seed : 1u;
@@ -226,6 +227,21 @@ static void slam_sample(world_t *w, float dt_s)
         }
     }
     sim_hal_push_accel(a);
+    /* step FW-TR: longitudinal = d(speed)/dt (throttle changes) + a little surge from the waves and the hull impact's
+     * deceleration; lateral = the turn's centripetal v x yaw rate (+ = starboard, the centre of a turn to starboard)
+     * + the roll's sway; display / logging only */
+    {
+        float v_ms = w->speed_kn * 0.514444f;
+        float lon = w->acc_prev_ok ? (w->speed_kn - w->acc_prev_kn) * 0.514444f / dt_s / 9.80665f : 0.0f;
+        w->acc_prev_kn = w->speed_kn;
+        w->acc_prev_ok = true;
+        float ts = (float)w->t_ms * 0.001f;
+        lon += 0.015f * sea * sinf(2.0f * PI_F * ts / 3.0f + 0.7f) + 0.01f * boat_rand_gauss(&w->acc_rng) - 0.3f * (a - heave - noise);
+        float yaw = (w->yaw_dps + w->thr_yaw_dps) * 0.0174533f;
+        float lat = v_ms * yaw / 9.80665f + 0.03f * sea * sinf(2.0f * PI_F * ts / 6.0f + 1.6f) +
+                    0.01f * boat_rand_gauss(&w->acc_rng);
+        sim_hal_push_accel3(lon, lat, a);
+    }
     /* roll / pitch from the same waves (camera horizon for the gateway's obstacle detection) */
     float t_s = (float)w->t_ms * 0.001f;
     if (w->t_ms % 20u == 0u)

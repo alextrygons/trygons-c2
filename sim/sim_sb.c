@@ -9296,6 +9296,285 @@ void sb_gateway_tests(void)
     nav_tests();
 }
 
+
+/* ------------------- step FW-TR: the acceleration telemetry frame (BNO085, DISPLAY / LOGGING ONLY) -- */
+
+/* the USB link's ACCEL frames, decoded (the same layout as groundstation/proto.py decode_accel) */
+typedef struct {
+    link_t   usb;
+    proto_rx_t rx;
+    bool     link_on;
+    uint32_t frames, bad_len, with_data, sec_ok;
+    uint8_t  flags, n;
+    float    per_avg[3], per_pk[3], sec_avg[3], sec_pk[3];
+    uint16_t sec_n;
+    float    max_per_avg[3], min_per_avg[3], max_sec_pk[3];
+    uint32_t trace;                 /* a hash of the control outputs every step (AX4) */
+} axwatch_t;
+
+static void ax_hook(sbsim_t *x, void *ctx)
+{
+    axwatch_t *a = (axwatch_t *)ctx;
+    const sb_t *s = &x->sb;
+    uint32_t h = a->trace * 16777619u;
+    h ^= (uint32_t)s->servo.out_us * 2654435761u;
+    h ^= (uint32_t)s->gear.pwm_us * 40503u;
+    h ^= (uint32_t)lroundf(s->ap.est_angle * 100.0f) * 2246822519u;
+    h ^= (uint32_t)lroundf(s->ap.motor_cmd * 1000.0f) * 3266489917u;
+    h ^= (uint32_t)sb_mode(s) * 668265263u ^ s->alarm_bits ^ (s->alarm_bits2 << 7);
+    h ^= (uint32_t)lroundf(s->plim.fwd_pct * 10.0f) ^ ((uint32_t)lroundf(slam_cap(&s->slam) * 10.0f) << 12);
+    a->trace = h;
+    if (!a->link_on) return;
+    link_step(&a->usb, &x->sb);
+    uint8_t out[256];
+    uint32_t m;
+    while ((m = sim_hal_link_tx_pop(out, sizeof out)) > 0u) {
+        proto_frame_t f;
+        proto_rx_push(&a->rx, out, m);
+        while (proto_rx_next(&a->rx, &f)) {
+            if (f.type != PROTO_T_ACCEL) continue;
+            a->frames++;
+            if (f.len != PROTO_ACCEL_LEN) { a->bad_len++; continue; }
+            proto_rd_t r;
+            proto_rd_init(&r, f.payload, f.len);
+            a->flags = proto_rd_u8(&r);
+            a->n = proto_rd_u8(&r);
+            for (int i = 0; i < 3; i++) {
+                a->per_avg[i] = (int16_t)proto_rd_u16(&r) / 1000.0f;
+                a->per_pk[i] = (int16_t)proto_rd_u16(&r) / 1000.0f;
+            }
+            for (int i = 0; i < 3; i++) {
+                a->sec_avg[i] = (int16_t)proto_rd_u16(&r) / 1000.0f;
+                a->sec_pk[i] = (int16_t)proto_rd_u16(&r) / 1000.0f;
+            }
+            a->sec_n = proto_rd_u16(&r);
+            if (a->flags & 1u) {
+                a->with_data++;
+                for (int i = 0; i < 3; i++) {
+                    if (a->per_avg[i] > a->max_per_avg[i]) a->max_per_avg[i] = a->per_avg[i];
+                    if (a->per_avg[i] < a->min_per_avg[i]) a->min_per_avg[i] = a->per_avg[i];
+                }
+            }
+            if (a->flags & 2u) {
+                a->sec_ok++;
+                for (int i = 0; i < 3; i++)
+                    if (fabsf(a->sec_pk[i]) > fabsf(a->max_sec_pk[i])) a->max_sec_pk[i] = a->sec_pk[i];
+            }
+        }
+    }
+}
+
+static void ax_reset(axwatch_t *a)
+{
+    a->frames = a->bad_len = a->with_data = a->sec_ok = 0u;
+    for (int i = 0; i < 3; i++) a->max_per_avg[i] = a->min_per_avg[i] = a->max_sec_pk[i] = 0.0f;
+}
+
+static void ax_init(sbsim_t *x, axwatch_t *a, uint32_t seed, float sea, bool link)
+{
+    uint8_t junk[256];
+    memset(a, 0, sizeof *a);
+    slam_go(x, seed, sea);
+    joy_set(0.0f, 0.0f, false, false);                     /* MANUAL, idle */
+    a->link_on = link;
+    if (link) {
+        link_init(&a->usb, &x->sb);
+        proto_rx_init(&a->rx);
+        while (sim_hal_link_tx_pop(junk, sizeof junk) > 0u) {}
+    }
+}
+
+/* ACCEL log events read back from a .TLG (AX5) */
+typedef struct { uint32_t events; int32_t last[4]; } axlog_t;
+
+static void axlog_cb(void *ctx, uint8_t type, uint32_t t, const uint8_t *p, uint16_t len)
+{
+    (void)t;
+    axlog_t *l = (axlog_t *)ctx;
+    if (type != LOGR_EVENT || len < 18u || (uint16_t)(p[0] | (p[1] << 8)) != EV_ACCEL) return;
+    l->events++;
+    for (int i = 0; i < 4; i++)
+        l->last[i] = (int32_t)((uint32_t)p[2 + 4 * i] | ((uint32_t)p[3 + 4 * i] << 8) | ((uint32_t)p[4 + 4 * i] << 16) |
+                               ((uint32_t)p[5 + 4 * i] << 24));
+}
+
+static void accel_tests(void)
+{
+    char d[1200];
+    printf("\n=== FW-TR: acceleration telemetry frame (BNO085 3 axes, display / logging only) ===\n");
+
+    /* AX1 the frame: 28 bytes with every telemetry (10 Hz) on the USB link; full throttle from rest = a forward
+     * (longitudinal +) average, back to idle = a negative one; lateral and vertical ~0 in flat water, straight */
+    {
+        static sbsim_t x;
+        static axwatch_t a;
+        ax_init(&x, &a, 2101u, 0.0f, true);
+        sbsim_run(&x, x.t + 1000u, ax_hook, &a);
+        ax_reset(&a);
+        joy_set(0.0f, 1.0f, false, false);
+        sbsim_run(&x, x.t + 8000u, ax_hook, &a);
+        uint32_t fr = a.frames, wd = a.with_data;
+        float acc_fwd = a.max_per_avg[0];
+        float lat_abs = fmaxf(fabsf(a.max_per_avg[1]), fabsf(a.min_per_avg[1]));
+        float vert_abs = fmaxf(fabsf(a.max_per_avg[2]), fabsf(a.min_per_avg[2]));
+        float kn = x.w.speed_kn;
+        unsigned n = a.n;
+        ax_reset(&a);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 6000u, ax_hook, &a);
+        float dec = a.min_per_avg[0];
+        snprintf(d, sizeof d, "8 s full throttle: %lu ACCEL frames (%lu with samples, %lu bad length), %u samples in the "
+                 "last period, longitudinal average max %+.3f g (to %.1f kn), lateral max |%.3f| g, vertical max |%.3f| g; "
+                 "back to idle: longitudinal min %+.3f g", (unsigned long)fr, (unsigned long)wd,
+                 (unsigned long)a.bad_len, n, acc_fwd, kn, lat_abs, vert_abs, dec);
+        test_report("AX1 ACCEL frame 28 B at 10 Hz; throttle up = longitudinal +, idle = -, lateral / vertical ~0",
+                    fr >= 75u && fr <= 85u && wd + 2u >= fr && a.bad_len == 0u && n >= 8u && n <= 12u &&
+                    acc_fwd > 0.03f && dec < -0.02f && lat_abs < 0.05f && vert_abs < 0.05f, d);
+    }
+
+    /* AX2 a turn: the lateral 1 s average = the centripetal v x yaw rate / g (+ = starboard = the side the boat
+     * turns to), within 30 % of the world's truth */
+    {
+        static sbsim_t x;
+        static axwatch_t a;
+        ax_init(&x, &a, 2102u, 0.0f, true);
+        joy_set(0.0f, 0.6f, false, false);
+        sbsim_run(&x, x.t + 15000u, ax_hook, &a);
+        bool ok = true;
+        float lat_r = 0.0f, want_r = 0.0f, lat_l = 0.0f, want_l = 0.0f;
+        for (int k = 0; k < 2; k++) {
+            joy_set(k ? -0.7f : 0.7f, 0.6f, false, false);
+            sbsim_run(&x, x.t + (k ? 14000u : 8000u), ax_hook, &a);
+            float want = x.w.speed_kn * 0.514444f * (x.w.yaw_dps + x.w.thr_yaw_dps) * 0.0174533f / 9.80665f;
+            float got = a.sec_avg[1];
+            if (k) { lat_l = got; want_l = want; } else { lat_r = got; want_r = want; }
+            ok = ok && (a.flags & 2u) && fabsf(want) > 0.02f && got * want > 0.0f &&
+                 fabsf(got - want) < 0.3f * fabsf(want) + 0.01f;
+        }
+        snprintf(d, sizeof d, "turn to starboard: lateral 1 s average %+.3f g (truth %+.3f g); to port: %+.3f g "
+                 "(truth %+.3f g); %u samples in the last second", lat_r, want_r, lat_l, want_l, a.sec_n);
+        test_report("AX2 lateral acceleration in a turn: sign = the turn's side, size = v x yaw rate / g", ok &&
+                    want_r > 0.0f && want_l < 0.0f && a.sec_n >= 90u && a.sec_n <= 110u, d);
+    }
+
+    /* AX3 sea 3 at speed: the vertical peaks are the hull impacts (signed, the largest magnitude), the average stays
+     * near 0 (gravity removed) */
+    {
+        static sbsim_t x;
+        static axwatch_t a;
+        ax_init(&x, &a, 2103u, 3.0f, true);
+        x.sb.slam.cfg.limit_g = 9.0f;                          /* measure only */
+        x.sb.slam.cfg.yellow_frac = 0.9f;
+        joy_set(0.0f, 1.0f, false, false);
+        sbsim_run(&x, x.t + 25000u, ax_hook, &a);
+        ax_reset(&a);
+        sbsim_run(&x, x.t + 20000u, ax_hook, &a);
+        float pk = a.max_sec_pk[2], avg = a.sec_avg[2];
+        snprintf(d, sizeof d, "sea 3 at %.1f kn: vertical 1 s peak max %+.2f g (the world's last impact %.2f g), last 1 s "
+                 "average %+.3f g; longitudinal 1 s peak max %+.2f g (impact deceleration); %lu complete seconds seen",
+                 x.w.speed_kn, pk, x.w.slam_last_g, avg, a.max_sec_pk[0], (unsigned long)a.sec_ok);
+        test_report("AX3 vertical acceleration at sea: the impacts as signed peaks, average ~0", pk > 1.0f &&
+                    fabsf(avg) < 0.3f && a.max_sec_pk[0] < -0.2f && a.sec_ok > 150u, d);
+    }
+
+    /* AX4 DISPLAY / LOGGING ONLY: the same run (a fresh process each: `autopilot_sim axtrace <bias>`) with 5 g added
+     * to every 3-axis sample (not to the slamming input) gives the IDENTICAL control outputs every step (throttle,
+     * gear, steering, mode, alarms, power limit, cap) - and two plain runs agree (the comparison is not vacuous);
+     * no sensor = flags 0, values 0, nothing invented */
+    {
+        unsigned long tr[3] = { 0u, 0u, 0u };
+        float seen[3] = { 0.0f, 0.0f, 0.0f };
+        for (int k = 0; k < 3; k++) {
+            char cmd[96], line[256];
+            snprintf(cmd, sizeof cmd, ".\\autopilot_sim.exe axtrace %d", k == 1 ? 1 : 0);
+            FILE *pp = popen(cmd, "r");
+            while (pp && fgets(line, sizeof line, pp)) {
+                float s0, s1, s2;
+                unsigned long h;
+                if (sscanf(line, "AXTRACE %lx %f %f %f", &h, &s0, &s1, &s2) == 4) {
+                    tr[k] = h;
+                    if (k == 1) { seen[0] = s0; seen[1] = s1; seen[2] = s2; }
+                }
+            }
+            if (pp) pclose(pp);
+        }
+        bool reached = seen[0] > 4.0f && seen[1] < -4.0f && seen[2] > 4.0f;
+        static sbsim_t y;
+        static axwatch_t b;
+        ax_init(&y, &b, 2104u, 3.0f, true);
+        joy_set(0.0f, 1.0f, false, false);
+        sbsim_run(&y, y.t + 5000u, ax_hook, &b);
+        sim_hal_set_accel(false);
+        ax_reset(&b);
+        sbsim_run(&y, y.t + 3000u, ax_hook, &b);
+        bool none = b.frames >= 25u && b.with_data <= 1u && b.flags == 0u && b.n == 0u && b.sec_n == 0u &&
+                    b.per_avg[0] == 0.0f && b.sec_pk[2] == 0.0f;
+        sim_hal_set_accel(true);
+        snprintf(d, sizeof d, "control trace plain 0x%08lx, with a 5 g bias 0x%08lx, plain again 0x%08lx (%s); the bias "
+                 "reached the frame %s (1 s averages %+.2f / %+.2f / %+.2f g); sensor off: %lu frames, %lu with samples "
+                 "(the period before), flags %u", tr[0], tr[1], tr[2],
+                 tr[0] == tr[1] && tr[1] == tr[2] ? "identical" : "DIFFERENT", reached ? "yes" : "NO", seen[0], seen[1],
+                 seen[2], (unsigned long)b.frames, (unsigned long)b.with_data, b.flags);
+        test_report("AX4 display / logging only: a 5 g bias changes no control output; no sensor = no values",
+                    tr[0] != 0u && tr[0] == tr[1] && tr[1] == tr[2] && reached && none, d);
+    }
+
+    /* AX5 the log: event 31 ACCEL once per complete second (avg | peak << 16 mg per axis, samples), listed in the
+     * header, which still fits LOGR_MAX */
+    {
+        static sbsim_t x;
+        static axwatch_t a;
+        static char names[16][128];
+        char path[512];
+        ax_init(&x, &a, 2105u, 3.0f, false);
+        sbsim_log_start(&x, "sd_ax5", 15u);
+        joy_set(0.0f, 1.0f, false, false);
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        logger_close(&s_logger);
+        x.log_on = false;
+        int nf = tlg_list("sd_ax5", "B0", names, 16);
+        static axlog_t al;
+        memset(&al, 0, sizeof al);
+        static tlg_info_t in;
+        if (nf > 0) {
+            snprintf(path, sizeof path, "sd_ax5/%.120s", names[0]);
+            tlg_read(path, &in, axlog_cb, &al);
+        }
+        static char hdr[LOGR_MAX];
+        uint16_t hl = logrec_header_text(hdr, sizeof hdr, 1u, 1u);
+        bool listed = strstr(hdr, "31:ACCEL:") != NULL && hl < sizeof hdr - 1u && strstr(hdr, "\nwhy=") != NULL;
+        int16_t vpk = (int16_t)((uint32_t)al.last[2] >> 16), lavg = (int16_t)(al.last[0] & 0xFFFF);
+        snprintf(d, sizeof d, "%d log file(s), %lu ACCEL events in ~20 s, the last: lon avg %d mg, vert peak %d mg, %ld "
+                 "samples; header %u of %u bytes, listed %s", nf, (unsigned long)al.events, lavg, vpk,
+                 (long)al.last[3], (unsigned)hl, (unsigned)sizeof hdr, listed ? "yes" : "NO");
+        test_report("AX5 log event 31 ACCEL every second, the header lists it and fits",
+                    nf >= 1 && al.events >= 18u && al.events <= 23u && al.last[3] >= 90 && al.last[3] <= 110 &&
+                    listed, d);
+    }
+}
+
+/* `autopilot_sim axtrace <0|1>` (test AX4, a fresh process): the control-output hash of one fixed run, with
+ * (1) / without (0) a 5 g bias on every 3-axis acceleration sample */
+int sb_accel_trace(int bias)
+{
+    static sbsim_t x;
+    static axwatch_t a;
+    ax_init(&x, &a, 2104u, 3.0f, true);
+    if (bias) sim_hal_accel3_bias(5.0f, -5.0f, 5.0f);
+    joy_set(0.5f, 1.0f, false, false);
+    sbsim_run(&x, x.t + 20000u, ax_hook, &a);
+    joy_set(-0.5f, 0.3f, false, false);
+    sbsim_run(&x, x.t + 10000u, ax_hook, &a);
+    sim_hal_accel3_bias(0.0f, 0.0f, 0.0f);
+    printf("AXTRACE %08lx %.3f %.3f %.3f\n", (unsigned long)a.trace, a.sec_avg[0], a.sec_avg[1], a.sec_avg[2]);
+    return 0;
+}
+
+void sb_accel_tests(void)
+{
+    accel_tests();
+}
+
 void sb_slam_tests(void)
 {
     slam_tests();
@@ -18714,6 +18993,7 @@ void sb_tests(void)
     confirm_only_tests();
     pulse_tests();
     slam_tests();
+    accel_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

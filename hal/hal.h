@@ -80,6 +80,19 @@ bool hal_read_roll_rate(float *roll_dps);
  * returns how many. 0 if not fitted / nothing new. */
 uint32_t hal_read_accel_z(float *g, uint32_t max);
 
+/* Step FW-TR: the BNO085 linear acceleration on all three axes (gravity removed), g, in the boat frame:
+ * [0] longitudinal (+ forward), [1] lateral (+ starboard), [2] vertical (+ up). DISPLAY / LOGGING ONLY (telemetry
+ * frame PROTO_T_ACCEL + log event 31 ACCEL) - never used for control, limits, modes or alarms.
+ * hal_read_accel3 COPIES the statistics of the samples that arrived since the last call into *a and starts a new
+ * set (bounded, no wait): sum = the sum per axis, peak = the sample with the largest magnitude per axis (signed),
+ * n = how many. Returns n (0 = not fitted / nothing new; *a then has n 0). */
+typedef struct {
+    float    sum[3];
+    float    peak[3];
+    uint32_t n;
+} hal_accel3_t;
+uint32_t hal_read_accel3(hal_accel3_t *a);
+
 /* Boat attitude from the BNO085 (game rotation vector, no magnetometer):
  * roll deg (+ = starboard side down), pitch deg (+ = bow up). Only passed on
  * to the gateway (camera horizon for the obstacle detection), never used for

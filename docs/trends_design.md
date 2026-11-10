@@ -43,10 +43,22 @@ from the AURIX (link.c TELEM_PERIOD_MS 100), forwarded at full rate by the gatew
 - "throttle vs speed" (L1): G1 draws sog + thr together; the SOG mean-down highlight is judged only while
   the throttle is steady (filter F2) = "same throttle, less speed".
 - slamming: vertical peaks + impacts / min exist (above). NOT engine vibration (owner).
-- FIRMWARE ITEM FW-TR (listed, NOT done, NOT scheduled): longitudinal / lateral acceleration (and a raw
-  vertical value at a usable rate) are NOT in the telemetry (`accel_z` exists only in BENCH_DIAG 0x8D,
-  USB, bench mode). Carrying them needs a NEW frame (TELEM2 is full) in app/link.c = FIRMWARE: its own step
-  with its own SERIAL safety review (LOOP RULE 6). Until then G5 shows only slam_g / slam_pm. Owner: W136.
+- FIRMWARE ITEM FW-TR: DONE (step FW-TR, owner 2026-11-10 REQUESTED; DISPLAY / LOGGING ONLY). Before it,
+  longitudinal / lateral acceleration (and a raw vertical value at a usable rate) were NOT in the telemetry
+  (`accel_z` only in BENCH_DIAG 0x8D, USB, bench mode). Now: the BNO085 linear acceleration report (0x04,
+  already 200 Hz for the slamming - no new report, no rate change) feeds 3-axis statistics in tc_bno085.c
+  (sum / count / signed max-magnitude peak per axis since the last read; hal_read_accel3), app/accel.c keeps a
+  1 s window, each link its telemetry-period window; NEW frame PROTO_T_ACCEL 0x8F (28 bytes, both ports, with
+  every telemetry = 10 Hz): flags | samples | 3 x (avg, peak) mg over the period | 3 x (avg, peak) mg over the
+  last complete second | its samples. Axes: longitudinal + forward, lateral + starboard (BNO_ACC_*_SIGN in
+  hal_pins.h, CHECK on the bench), vertical + up. The gateway passes it through ({"t": "acc"}, full-rate
+  stations), the station merges it into the telemetry dict (keys acc_<lon|lat|vert>[_pk], acc1_..., acc_n,
+  acc1_n; proto.decode_accel). Black box: the 184 B DATA slot has 2 bytes left, so a NEW log event 31 ACCEL
+  once per complete second (avg | peak << 16 mg per axis, samples; the header's HELM entry was shortened to make
+  room: 4048 of 4096 B; tlg.py names it, log2csv --accel). Nothing in the control path reads it (sim AX4: a 5 g
+  bias on every 3-axis sample = identical control outputs; mutation proven). Using it in G5 / for AUTO limits =
+  a LATER owner decision (W136). Tests sim AX1-AX5 (`autopilot_sim ax`), groundstation/test_accel.py AP1-AP4,
+  gateway B2a.
 
 ## 2. Sampler + ring buffer
 

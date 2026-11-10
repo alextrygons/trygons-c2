@@ -455,6 +455,8 @@ int main(int argc, char **argv)
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "sm") == 0) { sb_steer_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "ax") == 0) { sb_accel_tests(); return 0; }
+    if (argc > 2 && strcmp(argv[1], "axtrace") == 0) return sb_accel_trace(atoi(argv[2]));
     if (argc > 1 && strcmp(argv[1], "bv") == 0) { sb_battery_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gen") == 0) { sb_generator_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "rb") == 0) {

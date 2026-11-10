@@ -133,6 +133,8 @@
 #define PROTO_BENCH_DIAG_STACK_OFF 86u  /* step 13s: the stack high-water marks start here (link.c bench_diag): */
 #define PROTO_BENCH_DIAG_LEN  114u    /* u8 n 6 | u8 flags | u8 known | u8 overflow | 6 x (u16 size, u16 used) */
 #define PROTO_T_CAN_NODES     0x8Eu   /* USB only, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table (link.c can_nodes) */
+#define PROTO_T_ACCEL         0x8Fu   /* step FW-TR, both ports, with every telemetry: 3-axis acceleration (link.c accel_frame), DISPLAY / LOG ONLY */
+#define PROTO_ACCEL_LEN       28u
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u

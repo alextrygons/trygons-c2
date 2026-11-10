@@ -507,6 +507,13 @@ def section_b():
         report("B2 VIEWER sees everything but can't command or take HELM",
                r_vcmd == 100 and r_vhelm == 100 and r_vread == 0 and vic.n_tel > 3,
                "command: %s, take HELM: %s, read: %s, telemetry frames %d" % (r_vcmd, r_vhelm, r_vread, vic.n_tel))
+        # FW-TR: the AURIX's ACCEL frame (display / logging only) is passed through ({"t": "acc"}) and merged into the
+        # station's telemetry like TELEM2 - the simulated BNO085's three axes, average + peak
+        tv = vic.telem or {}
+        axes = [tv.get("acc_" + a) for a in proto.ACCEL_AXES] + [tv.get("acc1_" + a + "_pk") for a in proto.ACCEL_AXES]
+        report("B2a FW-TR: the ACCEL frame reaches the station through the gateway (3 axes, period + 1 s window)",
+               all(isinstance(v, float) for v in axes) and 5 <= tv.get("acc_n", 0) <= 15 and tv.get("acc1_n", 0) >= 50,
+               "period avg %s, 1 s peaks %s, samples %s / %s" % (axes[:3], axes[3:], tv.get("acc_n"), tv.get("acc1_n")))
         link, w = sim.station()
         link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
         w.until(lambda d: d["mode"] == proto.MODE_HDG_LOCK, 3)

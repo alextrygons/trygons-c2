@@ -289,6 +289,10 @@ echo "== Bench tab stack use (13s review LOW-3): BENCH_DIAG stack block decoded 
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_benchstack.py > "$TEMP/benchstack_tests.txt" 2>&1 ) || { echo "BENCH STACK TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
 strays_check "test_benchstack"
+echo "== acceleration frame (FW-TR, display / logging only): proto.py = app/proto.h, decode, gateway pass-through, log event 31 (tlg / log2csv)"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_accel.py > "$TEMP/accel_tests.txt" 2>&1 ) || { echo "ACCEL FRAME TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|ACCEL FRAME TESTS|Traceback" "$TEMP/accel_tests.txt"
+strays_check "test_accel"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"

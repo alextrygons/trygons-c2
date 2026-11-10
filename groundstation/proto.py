@@ -83,6 +83,8 @@ T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / sla
 T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
 T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor (link.c bench_diag)
 T_CAN_NODES = 0x8E         # AURIX -> USB laptop, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table
+T_ACCEL = 0x8F             # AURIX -> both ports, with every telemetry: 3-axis acceleration (step FW-TR, display / log only)
+ACCEL_LEN = 28             # = app/proto.h PROTO_ACCEL_LEN
 
 # Commands that change how the boat is driven: through the gateway a copilot's are only
 # sent to the AURIX after the captain's ACCEPT on screen 1 (or in SINGLE-OPERATOR mode
@@ -151,7 +153,7 @@ TYPE_NAMES = {
     T_SIM_BRIDGE: "sim USB joystick", T_SIM_FAULT: "sim fault", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
-    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
+    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes", T_ACCEL: "acceleration",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_THRUSTER_CFG: "thruster settings", T_DP: "DP", T_CONFIRM_ONLY: "confirm-only (practical test)",
     T_LINK_TIME: "LINK TIME", T_SLAM_RESTORE: "slamming power restore",
@@ -379,6 +381,37 @@ def decode_can_nodes(payload: bytes) -> dict:
             "conflict": bool(flags & 4), "anon": bool(flags & 8), "silent": bool(flags & 16), "block": bool(flags & 32),
             "tec": tec, "rec": rec, "rx": rx, "tx": tx, "tx_drops": drops, "rx_errors": rxerr, "busoffs": boffs,
             "nodes": nodes}
+
+
+ACCEL_AXES = ("lon", "lat", "vert")    # + forward, + starboard, + up (BNO085 linear acceleration, gravity removed)
+_ACCEL = struct.Struct("<BB6h6hH")
+
+
+def decode_accel(payload: bytes) -> dict:
+    """T_ACCEL (link.c accel_frame, step FW-TR; DISPLAY / LOGGING ONLY): average + peak (the largest magnitude,
+    signed) per axis in g, over the boat's telemetry period (acc_<axis>, acc_<axis>_pk; None = no sample in it) and
+    over the last complete 1 s window (acc1_<axis>, acc1_<axis>_pk; None = no fresh second)."""
+    if len(payload) < _ACCEL.size:
+        raise ValueError("accel frame %d bytes, want %d" % (len(payload), _ACCEL.size))
+    v = _ACCEL.unpack_from(payload)
+    flags, n, per, sec, n1 = v[0], v[1], v[2:8], v[8:14], v[14]
+    d = {"acc_n": n, "acc1_n": n1 if flags & 2 else 0}
+    for k, ax in enumerate(ACCEL_AXES):
+        d["acc_" + ax] = per[2 * k] / 1000.0 if flags & 1 else None
+        d["acc_" + ax + "_pk"] = per[2 * k + 1] / 1000.0 if flags & 1 else None
+        d["acc1_" + ax] = sec[2 * k] / 1000.0 if flags & 2 else None
+        d["acc1_" + ax + "_pk"] = sec[2 * k + 1] / 1000.0 if flags & 2 else None
+    return d
+
+
+def encode_accel(per=None, sec=None, n=0, n1=0) -> bytes:
+    """Test / simulation helper, the inverse of decode_accel: per / sec = ((avg, peak) lon, lat, vert) in g or None."""
+    def mg(x):
+        return max(-32767, min(32767, int(round(x * 1000.0))))
+    flat = []
+    for w in (per, sec):
+        flat += [mg(x) for pair in (w or ((0, 0),) * 3) for x in pair]
+    return _ACCEL.pack((1 if per else 0) | (2 if sec else 0), min(255, n), *flat, min(65535, n1 if sec else 0))
 
 
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]

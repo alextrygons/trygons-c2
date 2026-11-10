@@ -50,6 +50,9 @@ typedef struct {
     uint32_t slam_impacts;      /* impacts of 1 g or more made (truth) */
     float slam_dead;            /* s until the next impact can come */
     float slam_last_g;
+    float acc_prev_kn;          /* step FW-TR: the speed 10 ms ago (longitudinal acceleration) */
+    bool  acc_prev_ok;
+    uint32_t acc_rng;           /* its own noise (the slamming tests keep their random sequence) */
     /* FIRST TEST: the engine is driven by hand (throttle / gear servos not connected) */
     bool  hand_drive;
     gear_t hand_gear;

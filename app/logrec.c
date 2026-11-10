@@ -83,7 +83,7 @@ static const char k_events[] =
     "14:MONITOR:reason,throttle*10,limit*10,-;"
     "15:LOG:what,a,b,c;"
     "16:TIME:date,time_of_day_ms,t_ms,-;"
-    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost 5 handed over),refused,holder;"
+    "17:HELM:station,action,refused,holder;"
     "18:SAVE:trigger(SB_SAVE_),arg,seq,-;"
     "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;"
     "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;"
@@ -95,9 +95,11 @@ static const char k_events[] =
     "26:SOVR:what|mode<<8,hdg*10,x*1000,n;"
     "27:RESTART:action(ENG_LOG_),why(eng_why_t),hold_ms,restarts|cranks<<16;"
     "28:DP:what,a,b,c;"
-    "29:CAN:what,masks,tec,drops;";
+    "29:CAN:what,masks,tec,drops;"
+    "31:ACCEL:lon,lat,vert,n;";
 /* (the header record is at most LOGR_MAX: keep these short - the names of the
- * numbers above live in groundstation/tlg.py; sim test ER6 checks it fits) */
+ * numbers above live in groundstation/tlg.py (HELM actions, ACCEL avg | peak << 16 mg: step FW-TR); sim test
+ * ER6 checks it fits) */
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"

@@ -3,6 +3,7 @@
     python log2csv.py B00012_001.TLG                       -> B00012_001.csv (all fields)
     python log2csv.py B00012_001.TLG -f heading,target,thr_out
     python log2csv.py B00012_001.TLG --events              -> B00012_001_events.csv as well
+    python log2csv.py B00012_001.TLG --accel               -> B00012_001_accel.csv (1 s acceleration, event 31)
     python log2csv.py B00012_001.TLG -o out.csv
 
 Opens in Excel / LibreOffice. Values are in real units (degrees, %, kn, m),
@@ -31,6 +32,8 @@ def main():
     ap.add_argument("-f", "--fields", help="comma-separated field names (default: all)")
     ap.add_argument("-o", "--out", help="output CSV (default: next to the log)")
     ap.add_argument("--events", action="store_true", help="also write the events to <name>_events.csv")
+    ap.add_argument("--accel", action="store_true",
+                    help="also write the 1 s acceleration (event 31 ACCEL, display / log only) to <name>_accel.csv")
     ap.add_argument("--list", action="store_true", help="list the field names and stop")
     a = ap.parse_args()
 
@@ -64,6 +67,15 @@ def main():
                 w.writerow([t, "PC %s seq %d -> %s payload %s" % (
                     tlg.proto.TYPE_NAMES.get(ftype, hex(ftype)), seq, tlg.proto.RESULTS.get(res, res), p.hex())])
         print("%s: %d events" % (eout, len(log.events) + len(log.pc_commands)))
+    if a.accel:
+        aout = os.path.splitext(out)[0] + "_accel.csv"
+        rows = tlg.accel_rows(log)
+        with open(aout, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["t_ms"] + tlg.ACCEL_COLS)
+            for r in rows:
+                w.writerow([fmt(v) for v in r])
+        print("%s: %d seconds" % (aout, len(rows)))
     return 0
 
 

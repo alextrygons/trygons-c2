@@ -1371,6 +1371,35 @@ static void can_nodes(link_t *l, sb_t *s)
     else l->telem_overflows++;
 }
 
+/* ACCEL (step FW-TR, both ports, with every telemetry; groundstation/proto.py decode_accel): the BNO085 linear
+ * acceleration (gravity removed), milli-g, DISPLAY / LOGGING ONLY (no control path reads it):
+ *   u8 flags (b0 samples in this period, b1 a complete 1 s window younger than 2 s) | u8 samples in the period (max 255) |
+ *   3 x { i16 average, i16 peak } over this link's telemetry period (longitudinal + fwd, lateral + stbd, vertical + up) |
+ *   3 x { i16 average, i16 peak } over the last complete 1 s window | u16 samples in that second
+ * peak = the sample with the largest magnitude (signed). PROTO_ACCEL_LEN bytes. */
+static void accel_frame(link_t *l, sb_t *s)
+{
+    uint8_t buf[PROTO_ACCEL_LEN];               /* 28 bytes: small, on the stack */
+    proto_wr_t w;
+    const accel_t *a = &s->acc;
+    bool sec_ok = a->sec.n > 0u && a->sec_ms != 0u && (uint32_t)(s->now_ms - a->sec_ms) < 2000u;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, (uint8_t)((l->acc.n ? 1u : 0u) | (sec_ok ? 2u : 0u)));
+    proto_wr_u8(&w, (uint8_t)(l->acc.n > 255u ? 255u : l->acc.n));
+    for (unsigned i = 0; i < 3u; i++) {
+        proto_wr_u16(&w, (uint16_t)accel_mg(accel_avg(&l->acc, i)));
+        proto_wr_u16(&w, (uint16_t)accel_mg(l->acc.n ? l->acc.peak[i] : 0.0f));
+    }
+    for (unsigned i = 0; i < 3u; i++) {
+        proto_wr_u16(&w, (uint16_t)accel_mg(sec_ok ? accel_avg(&a->sec, i) : 0.0f));
+        proto_wr_u16(&w, (uint16_t)accel_mg(sec_ok ? a->sec.peak[i] : 0.0f));
+    }
+    proto_wr_u16(&w, (uint16_t)(!sec_ok ? 0u : a->sec.n > 65535u ? 65535u : a->sec.n));
+    accel_clear(&l->acc);
+    if (!w.overflow) send(l, PROTO_T_ACCEL, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;
+}
+
 static void bench_diag(link_t *l, sb_t *s)
 {
     static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
@@ -1632,9 +1661,11 @@ void link_step(link_t *l, sb_t *s)
     }
 
     if (s->slam.peak > l->slam_peak) l->slam_peak = s->slam.peak;     /* the hardest since the last telemetry */
+    accel_fold(&l->acc, &s->acc.step);              /* step FW-TR: this step's samples into this link's period */
     if ((int32_t)(s->now_ms - l->next_telem_ms) >= 0) {
         l->next_telem_ms = s->now_ms + TELEM_PERIOD_MS;
         telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */
+        accel_frame(l, s);                              /* step FW-TR (display / log only): merged like TELEM2 */
         telemetry(l, s);
         if (l->port != LINK_PORT_GW && sb_mode(s) == MODE_BENCH) bench_diag(l, s);
     }

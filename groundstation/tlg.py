@@ -130,6 +130,19 @@ class Log:
                 kinds.get(a[0] & 0xFF, a[0] & 0xFF), " APPLIED" if (a[0] >> 25) & 1 else "", a[1] / 100.0,
                 "-" if a[2] < 0 else "%.1f kn" % (a[2] / 10.0), (a[0] >> 16) & 0xFF, (a[0] >> 8) & 0xFF,
                 " LOST (gateway quiet: slow + hold heading)" if (a[0] >> 24) & 1 else "")
+        if name == "HELM":
+            # (the AURIX header lists only the argument names since step FW-TR: the action names live here)
+            act = {0: "take", 1: "release", 2: "station lost", 3: "automatic take (USB laptop)", 4: "gateway lost",
+                   5: "handed over"}.get(a[1], a[1])
+            return "HELM station %d %s%s, holder %d" % (a[0], act, " REFUSED" if a[2] else "", a[3])
+        if name == "ACCEL":
+            # step FW-TR (display / logging only): one complete second, mg = average | peak << 16 (signed each)
+            def s16(x):
+                x &= 0xFFFF
+                return x - 0x10000 if x & 0x8000 else x
+            parts = ["%s avg %+.3f peak %+.3f g" % (ax, s16(a[k]) / 1000.0, s16(a[k] >> 16) / 1000.0)
+                     for k, ax in enumerate(("lon", "lat", "vert"))]
+            return "ACCEL 1 s: %s (%d samples)" % (", ".join(parts), a[3])
         if name == "SAVE":
             return "VIDEO SAVE request %d: %s" % (a[2], proto.save_trigger_text(a[0], a[1]))
         # (the AURIX header keeps these short: the names of the numbers live here)
@@ -186,6 +199,26 @@ class Log:
                 (a[2] >> 8) & 0xFF, a[3])
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]
         return name + " " + " ".join(parts)
+
+
+ACCEL_COLS = ["lon_avg_g", "lon_peak_g", "lat_avg_g", "lat_peak_g", "vert_avg_g", "vert_peak_g", "samples"]
+
+
+def accel_rows(log):
+    """The ACCEL events (step FW-TR, one per complete second; display / logging only) as rows
+    (t_ms, lon avg, lon peak, lat avg, lat peak, vert avg, vert peak in g, samples)."""
+    def s16(x):
+        x &= 0xFFFF
+        return x - 0x10000 if x & 0x8000 else x
+    out = []
+    for t, _text, code, a in log.events:
+        if log.events_def.get(code, ("",))[0] != "ACCEL":
+            continue
+        row = [t]
+        for k in range(3):
+            row += [s16(a[k]) / 1000.0, s16(a[k] >> 16) / 1000.0]
+        out.append(row + [a[3]])
+    return out
 
 
 def read(path):

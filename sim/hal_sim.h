@@ -46,6 +46,8 @@ void     sim_hal_reset_engine(void);
 void     sim_hal_set_roll(bool fitted, float roll_dps);
 void sim_hal_push_accel(float g);               /* one BNO085 vertical acceleration sample */
 void sim_hal_set_accel(bool fitted);            /* the BNO085 is fitted / works */
+void sim_hal_push_accel3(float lon_g, float lat_g, float vert_g);   /* step FW-TR: one 3-axis sample (g) */
+void sim_hal_accel3_bias(float lon_g, float lat_g, float vert_g);   /* test AX4: a bias on the 3-axis samples only */
 void sim_hal_push_attitude(float roll_deg, float pitch_deg);   /* BNO085 roll / pitch (waves) */
 void sim_hal_set_attitude(bool fitted);
 

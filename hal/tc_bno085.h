@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "hal.h"
+
 typedef struct {
     bool     ok;                    /* a report within the last 0.5 s */
     uint32_t reports, packets, resets, spi_errors;
@@ -25,6 +27,7 @@ bool bno_heading(float *deg);                   /* true = a new value since the 
 bool bno_yaw_rate(float *dps);
 bool bno_attitude(float *roll_deg, float *pitch_deg);   /* true = fresh (< 0.5 s) */
 uint32_t bno_accel_z(float *g, uint32_t max);   /* samples since the last call */
+uint32_t bno_accel3(hal_accel3_t *a);           /* step FW-TR: X / Y / Z statistics since the last call (hal.h) */
 const bno_stat_t *bno_stat(void);
 
 #endif /* TC_BNO085_H */
