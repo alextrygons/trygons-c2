@@ -3863,6 +3863,111 @@ def ua40_x1_tlog():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def ua41_x2_param_file():
+    """Step X2: docs/uav_params.param = the REQUIRED parameter set; the registry compares the live parameters with it
+    (READ ONLY) and refuses a drone that differs on a SAFETY line naming the parameter; the file and the registry's
+    own rules agree; tools/get_sitl.py refuses an unpinned / changed download; toolpaths.sitl() only a verified
+    build; the SITL suite without SITL = every test N/A, never a PASS (tools/run_sitl.py, the N/A path)."""
+    import hashlib
+    sys.path.insert(0, os.path.join(REPO, "tools"))
+    import get_sitl
+    import run_sitl
+    import toolpaths
+    rules, err = registry.load_param_file()
+    byname = {r["name"]: r for r in rules or []}
+    res = {}
+    res["loaded"] = err is None and len(rules) > 60
+    # the file agrees with the registry's own rules (FAILSAFE values, RC_OPTIONS bit 0, motors, release paths)
+    dis = []
+    for n, rule, _need in registry.FAILSAFE:
+        if rule is not None and n in byname and (byname[n]["value"] != rule or byname[n]["kind"] != "SAFETY"):
+            dis.append(n)
+    for n, off in registry.OFF_IF_PRESENT:
+        if n in byname and (byname[n]["value"] != off or byname[n]["kind"] != "SAFETY"):
+            dis.append(n)
+    r = byname.get("RC_OPTIONS") or {}
+    if not (r.get("mode") == "bits" and int(r.get("value", 0)) & registry.RC_IGNORE_RECEIVER):
+        dis.append("RC_OPTIONS")
+    servo = [int(byname["SERVO%d_FUNCTION" % i]["value"]) for i in range(1, 17) if "SERVO%d_FUNCTION" % i in byname]
+    if sorted(v for v in servo if v) != list(registry.MOTOR_FUNCS) or len(servo) != 16:
+        dis.append("SERVOn_FUNCTION")
+    for n in ("FS_THR_ENABLE", "FS_GCS_ENABLE", "FS_EKF_ACTION", "FENCE_ACTION", "BATT_FS_LOW_ACT",
+              "BATT_FS_CRT_ACT", "RC_OPTIONS", "GUID_TIMEOUT"):
+        if (byname.get(n) or {}).get("kind") != "SAFETY":
+            dis.append("%s not SAFETY" % n)
+    res["agree"] = not dis
+    # no payload / release path can be switched on by the file
+    res["no_release"] = all(byname[n]["value"] in (0, -1) for n in byname if n.startswith(
+        ("RELAY", "GRIP", "CHUTE", "WINCH", "MNT", "SCR_")) or (n.startswith("RC") and n.endswith("_OPTION")))
+    req, opt = registry.wanted_params()
+    res["wanted"] = "GUID_TIMEOUT" in req and "MAV1_POSITION" in req and "ARMING_RUDDER" in opt and         "MAV_SYSID" not in req + opt
+    good = registry.check(good_reading())
+    probe = {}
+    for name, val in (("GUID_TIMEOUT", 10), ("ARMING_RUDDER", 2), ("MAV1_POSITION", 0), ("FS_GCS_ENABLE", 1),
+                      ("RC_OPTIONS", 32)):
+        p = simdrone.good_params()
+        p[name] = val
+        probe[name] = registry.check(good_reading(params=p))
+    named = all(any(n in x for x in probs) for n, probs in probe.items())
+    p = simdrone.good_params()
+    p["MAV2_EXTRA1"] = 0                                   # an ADVICE line: listed, never refused
+    adv = registry.check(good_reading(params=p)) == [] and any("MAV2_EXTRA1" in a for a in
+                                                                 registry.advice(good_reading(params=p)))
+    res["check"] = good == [] and named and adv
+    # a missing / unmarked file = every drone refused (never a silent pass)
+    tmp = tempfile.mkdtemp(prefix="uavtest_x2_")
+    try:
+        old = registry.PARAM_FILE
+        try:
+            registry.PARAM_FILE = os.path.join(tmp, "none.param")
+            missing = registry.check(good_reading())
+            bad_file = os.path.join(tmp, "bad.param")
+            open(bad_file, "w").write("FS_GCS_ENABLE,0" + chr(10))              # no SAFETY / ADVICE mark
+            registry.PARAM_FILE = bad_file
+            unmarked = registry.check(good_reading())
+        finally:
+            registry.PARAM_FILE = old
+        res["fail_safe"] = any("unreadable" in x for x in missing) and any("mark" in x for x in unmarked)
+        # get_sitl: pins well formed; a changed download is REFUSED and nothing installed; verify() catches a change
+        pins_ok = all(len(sha) == 64 and size > 0 for pin in get_sitl.PINS.values() for _n, _u, size, sha in
+                      pin["files"])
+        old_bin, old_dl = get_sitl.BIN, get_sitl._download
+        try:
+            get_sitl.BIN = os.path.join(tmp, "sitl")
+            get_sitl._download = lambda url: b"not the pinned build"
+            said = []
+            rc = get_sitl.install(out=said.append)
+            refused = rc == 2 and not os.path.exists(get_sitl.folder()) and "REFUSED" in said[0]
+            plat = get_sitl.plat()
+            d = get_sitl.folder(plat)
+            os.makedirs(d)
+            for name, _u, size, _sha in get_sitl.PINS[plat]["files"]:
+                open(os.path.join(d, name), "wb").write(b"x" * size)      # the right sizes, the wrong content
+            ver_bad = get_sitl.verify(plat)[0] is False and get_sitl.exe(plat) is None
+            ts_none = toolpaths.sitl() is None
+        finally:
+            get_sitl.BIN, get_sitl._download = old_bin, old_dl
+        res["get_sitl"] = pins_ok and refused and ver_bad and ts_none
+        # the SITL suite without SITL: every test N/A, exit 0, nothing PASSED (the runner's own log)
+        log = os.path.join(tmp, "sitl.log")
+        os.environ["TRYGONS_SITL_NA"] = "1"
+        try:
+            lines = []
+            rc2 = run_sitl.run(["one"], 300, log, out=lines.append)
+        finally:
+            os.environ.pop("TRYGONS_SITL_NA", None)
+        text = open(log, encoding="utf-8", errors="replace").read()
+        res["na_path"] = rc2 == 0 and "[PASS]" not in text and text.count("[N/A ]") >= 14 and             "SITL TESTS: N/A" in text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    report("UA41 X2 docs/uav_params.param: loaded, agrees with the registry's own rules, no release path; the registry "
+           "reads its SAFETY lines (required / if-present) and refuses a differing drone NAMING the parameter (exact, "
+           "max, min, bits), ADVICE only listed; a missing / unmarked file refuses every drone; get_sitl refuses a "
+           "changed download + verify() a changed file, toolpaths.sitl() only a verified build; the SITL suite "
+           "without SITL = all N/A, never PASS",
+           all(res.values()), "%s; disagree %s; probes %s" % (res, dis, {k: v[:1] for k, v in probe.items()}))
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3871,7 +3976,8 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races, ua40_x1_tlog]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races, ua40_x1_tlog,
+             ua41_x2_param_file]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

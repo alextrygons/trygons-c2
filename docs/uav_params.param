@@ -1,0 +1,157 @@
+# docs/uav_params.param - the REQUIRED ArduPilot parameter set of a C2 camera drone (CLAUDE.md V, step X2)
+#
+# Camera / observation drones ONLY: 4 motors, nothing else on any output (no payload, no release, no servo, no relay,
+# no gripper, no winch, no parachute, no mount, no script).
+#
+# Who writes it: the OWNER, on the bench, with Mission Planner (Config -> Full Parameter List -> Load from file, then
+# Write Params) - over the drone's USB cable, NEVER through the gateway. The gateway NEVER writes a parameter: at
+# "Register" it only READS the drone's parameters and compares them with this file (gateway/uav/registry.py).
+#
+# Format = Mission Planner / ArduPilot SITL defaults ("NAME,VALUE", a '#' starts a comment; Mission Planner and the
+# SITL --defaults option ignore the rest of a line after the value). The word after '#' tells the registry what the
+# line is:
+#   SAFETY            the drone must have this parameter and it must be EXACTLY this value - else NOT launchable,
+#                     the notice names the parameter ("... (docs/uav_params.param: ...)")
+#   SAFETY if-present the same, but a firmware / board without the parameter is fine (the feature is not built in)
+#   SAFETY bits       every bit of this value must be set in the drone's value (other bits may be set too)
+#   SAFETY max        the drone's value must be > 0 and <= this value
+#   SAFETY min        the drone's value must be >= this value
+#   SAFETY backstop   battery backstop (W71): BATT_CRT_VOLT > 0 or BATT_CRT_MAH > 0 (the drone's own last-resort Land)
+#   ADVICE            recommended; a difference is listed in the registration record but is NOT a refusal
+#   PER-SLOT          differs per magazine slot (the value here = slot 1): see the note at the line
+#
+# ArduPilot version: written against ArduCopter 4.7 (the latest stable 4.x, 4.7.2, 2026-11) - TO CONFIRM by the owner:
+# the drones' real version (W60). 4.7 renamed SYSID_THISMAV -> MAV_SYSID and SYSID_MYGCS -> MAV_GCS_SYSID; the
+# registry reads the HEARTBEAT's sysid, not the parameter, so either name works.
+# Measured in ArduPilot SITL (tests: gateway/test_sitl.py, TEST_REPORT.md "SITL") - real drones: FIRST_TEST.md 6.
+
+# ---- frame: an ArduPilot quadcopter -------------------------------------------------------------------------------
+FRAME_CLASS,1          # SAFETY quad
+FRAME_TYPE,1           # ADVICE X frame
+
+# ---- identity ----------------------------------------------------------------------------------------------------
+# MAV_SYSID: sysid = 10 + slot (slot 1 = 11 ... slot 6 = 16); the registry refuses 0, 255 and a sysid another slot
+# already has (ArduCopter < 4.7: SYSID_THISMAV)
+MAV_SYSID,11           # PER-SLOT
+MAV_GCS_SYSID,255      # ADVICE the router's GCS sysid 255 (ArduCopter < 4.7: SYSID_MYGCS)
+
+# ---- the owner rules: NO RTL, NO LAND on a lost link; LAND only when the battery is finished --------------------
+FS_THR_ENABLE,0        # SAFETY radio (RC) failsafe OFF: the ELRS RC channels are not a control path
+FS_GCS_ENABLE,0        # SAFETY GCS failsafe OFF: a lost gateway link = the drone keeps its mode (hold / mission)
+FS_EKF_ACTION,2        # SAFETY EKF failsafe = ALT_HOLD (never Land)
+FS_DR_ENABLE,0         # SAFETY if-present dead-reckoning failsafe OFF (never RTL / SmartRTL)
+FENCE_ACTION,0         # SAFETY fence = report only (the gateway decides: no-fly zones / air geofence, docs 6)
+BATT_FS_LOW_ACT,0      # SAFETY battery LOW = warning only (the gateway's battery minimum lands it, docs 6.2)
+BATT_FS_CRT_ACT,1      # SAFETY battery CRITICAL = Land (the drone's own backstop when the gateway is gone)
+BATT_CRT_VOLT,13.6     # SAFETY backstop the critical voltage of the 4S pack (W71 TO CONFIRM; or BATT_CRT_MAH)
+BATT_CRT_MAH,0         # ADVICE (one of BATT_CRT_VOLT / BATT_CRT_MAH must be > 0)
+BATT2_FS_LOW_ACT,0     # SAFETY if-present a second battery monitor: the same
+BATT2_FS_CRT_ACT,1     # SAFETY if-present
+BATT_MONITOR,4         # ADVICE analog voltage + current (your board's type; 0 = no monitor = BATT_FS_* not readable)
+BATT_LOW_VOLT,14.4     # ADVICE warning only
+BATT_CAPACITY,3000     # ADVICE the pack's mAh (the gateway's route energy check reads it)
+
+# ---- telemetry streams (measured in SITL, step X2: the router never asks for streams - without these rates the
+# drone sends only HEARTBEAT and the gateway has no altitude / position / battery = no battery minimum rule).
+# MAV1_* = the first MAVLink port (SERIAL0 = USB); MAV2_* = the second (SERIAL1 on the SITL drone = its ELRS port:
+# on a real board set the MAVn of the UART the ELRS receiver is on). ArduCopter < 4.7: SR0_* / SR1_*.
+MAV1_EXT_STAT,2        # SAFETY min SYS_STATUS, GPS_RAW_INT, MISSION_CURRENT (Hz)
+MAV1_POSITION,2        # SAFETY min GLOBAL_POSITION_INT
+MAV1_EXTRA1,2          # SAFETY min ATTITUDE
+MAV1_EXTRA2,1          # SAFETY min VFR_HUD
+MAV1_EXTRA3,1          # SAFETY min BATTERY_STATUS, EKF_STATUS_REPORT
+MAV2_EXT_STAT,2        # ADVICE the ELRS port: the same, low rates (ELRS bandwidth)
+MAV2_POSITION,2        # ADVICE
+MAV2_EXTRA1,1          # ADVICE
+MAV2_EXTRA2,1          # ADVICE
+MAV2_EXTRA3,1          # ADVICE
+
+# ---- the RC receiver is IGNORED (U1 review HIGH-1, W68): the sticks are never a live input in LOITER / ALT_HOLD --
+RC_OPTIONS,1           # SAFETY bits bit 0 "Ignore RC Receiver"
+ARMING_RUDDER,0        # SAFETY if-present never arm / disarm with the sticks
+
+# ---- manual flight (step U5): a GUIDED velocity setpoint not renewed = the drone stops (hold) ----------------------
+GUID_TIMEOUT,3         # SAFETY max seconds (the router itself sends a zero setpoint after 0.5 s)
+
+# ---- limits matching the C2 checks (gateway/uav/uavcheck.py; the fence only REPORTS) ------------------------------
+# FENCE_ENABLE 0: measured in SITL (step X2) - an ENABLED fence refuses to ARM without a GPS position ("PreArm: Fence
+# requires position", also with FENCE_TYPE 1 altitude only), which would block the no-GPS climb fallback (W59 / W68);
+# with FENCE_ACTION 0 it only reports anyway. The values below are what the drone reports against if the owner
+# enables it (they match the gateway's own checks, which are the real limits).
+FENCE_ENABLE,0         # ADVICE
+FENCE_TYPE,3           # ADVICE altitude + circle
+FENCE_ALT_MAX,120      # ADVICE = uav_max_alt_m 120 m (EU open / specific category limit, W66)
+FENCE_RADIUS,1500      # ADVICE = uav_rf_range_m 1500 m (W59)
+WPNAV_SPEED,1000       # ADVICE cm/s = uav_max_speed_ms 10 m/s (the mission's DO_CHANGE_SPEED caps it anyway)
+
+# ---- outputs: ONLY the 4 motors ------------------------------------------------------------------------------------
+SERVO1_FUNCTION,33     # SAFETY Motor1 (the registry accepts Motor1-4 on ANY four outputs, each once)
+SERVO2_FUNCTION,34     # SAFETY Motor2
+SERVO3_FUNCTION,35     # SAFETY Motor3
+SERVO4_FUNCTION,36     # SAFETY Motor4
+SERVO5_FUNCTION,0      # SAFETY
+SERVO6_FUNCTION,0      # SAFETY
+SERVO7_FUNCTION,0      # SAFETY
+SERVO8_FUNCTION,0      # SAFETY
+SERVO9_FUNCTION,0      # SAFETY
+SERVO10_FUNCTION,0     # SAFETY
+SERVO11_FUNCTION,0     # SAFETY
+SERVO12_FUNCTION,0     # SAFETY
+SERVO13_FUNCTION,0     # SAFETY
+SERVO14_FUNCTION,0     # SAFETY
+SERVO15_FUNCTION,0     # SAFETY
+SERVO16_FUNCTION,0     # SAFETY
+# SERVO17..32: measured in SITL (step X2) - ArduPilot's default for these extra outputs is -1 (GPIO), which the
+# registry refuses: set them 0 on a board that has them
+SERVO17_FUNCTION,0     # SAFETY if-present
+SERVO18_FUNCTION,0     # SAFETY if-present
+SERVO19_FUNCTION,0     # SAFETY if-present
+SERVO20_FUNCTION,0     # SAFETY if-present
+SERVO21_FUNCTION,0     # SAFETY if-present
+SERVO22_FUNCTION,0     # SAFETY if-present
+SERVO23_FUNCTION,0     # SAFETY if-present
+SERVO24_FUNCTION,0     # SAFETY if-present
+SERVO25_FUNCTION,0     # SAFETY if-present
+SERVO26_FUNCTION,0     # SAFETY if-present
+SERVO27_FUNCTION,0     # SAFETY if-present
+SERVO28_FUNCTION,0     # SAFETY if-present
+SERVO29_FUNCTION,0     # SAFETY if-present
+SERVO30_FUNCTION,0     # SAFETY if-present
+SERVO31_FUNCTION,0     # SAFETY if-present
+SERVO32_FUNCTION,0     # SAFETY if-present
+
+# ---- every release / aux path OFF (U1 review MED-1) ----------------------------------------------------------------
+RELAY1_FUNCTION,0      # SAFETY if-present (ArduCopter 4.5+ ships RELAY1_FUNCTION 1 / RELAY1_PIN 13: set them here)
+RELAY2_FUNCTION,0      # SAFETY if-present
+RELAY3_FUNCTION,0      # SAFETY if-present
+RELAY4_FUNCTION,0      # SAFETY if-present
+RELAY5_FUNCTION,0      # SAFETY if-present
+RELAY6_FUNCTION,0      # SAFETY if-present
+RELAY1_PIN,-1          # SAFETY if-present
+RELAY2_PIN,-1          # SAFETY if-present
+RELAY3_PIN,-1          # SAFETY if-present
+RELAY4_PIN,-1          # SAFETY if-present
+RELAY5_PIN,-1          # SAFETY if-present
+RELAY6_PIN,-1          # SAFETY if-present
+GRIP_ENABLE,0          # SAFETY if-present no gripper
+CHUTE_ENABLED,0        # SAFETY if-present no parachute
+WINCH_TYPE,0           # SAFETY if-present no winch
+MNT1_TYPE,0            # SAFETY if-present no mount output (W60: no tilt)
+MNT2_TYPE,0            # SAFETY if-present
+SCR_ENABLE,0           # SAFETY if-present no Lua scripts
+RC1_OPTION,0           # SAFETY if-present no aux switch function on any RC channel
+RC2_OPTION,0           # SAFETY if-present
+RC3_OPTION,0           # SAFETY if-present
+RC4_OPTION,0           # SAFETY if-present
+RC5_OPTION,0           # SAFETY if-present
+RC6_OPTION,0           # SAFETY if-present
+RC7_OPTION,0           # SAFETY if-present
+RC8_OPTION,0           # SAFETY if-present
+RC9_OPTION,0           # SAFETY if-present
+RC10_OPTION,0          # SAFETY if-present
+RC11_OPTION,0          # SAFETY if-present
+RC12_OPTION,0          # SAFETY if-present
+RC13_OPTION,0          # SAFETY if-present
+RC14_OPTION,0          # SAFETY if-present
+RC15_OPTION,0          # SAFETY if-present
+RC16_OPTION,0          # SAFETY if-present

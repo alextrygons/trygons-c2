@@ -21,7 +21,12 @@ is NOT launchable (red, with every reason):
     switch function);
   - sensors: gyro, accelerometer, barometer present + healthy; a compass present; a GPS receiver seen (a fix is NOT
     needed in the slot - the hatch is closed; the launch re-checks before each drone, U3);
-  - unique sysid in the registry; the registered UID in a slot = the drone found there (else "unknown drone").
+  - unique sysid in the registry; the registered UID in a slot = the drone found there (else "unknown drone");
+  - (step X2) the REQUIRED parameter file docs/uav_params.param (the owner's rules in Mission Planner form): every
+    line marked SAFETY must match (exact / bits / max, "if-present" = only when the firmware has it); a mismatch
+    refuses the drone and the problem / notice NAMES the parameter; ADVICE lines only listed (rec "advice"). The
+    parameters the rules above already check are checked once (by those rules); a test proves the file and these
+    rules agree (test_uav UA41). The file missing / unreadable = every drone refused (never a silent pass).
 """
 import json
 import math
@@ -53,12 +58,124 @@ S_GYRO, S_ACCEL, S_MAG, S_BARO, S_GPS = 0x1, 0x2, 0x4, 0x8, 0x20
 S_PREARM = 0x10000000
 
 
+PARAM_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "docs",
+                          "uav_params.param")
+PARAM_FILE_NAME = "docs/uav_params.param"
+MODES = ("exact", "bits", "max", "min", "backstop")
+_pf_cache = {}
+
+
+def load_param_file(path=None):
+    """docs/uav_params.param -> (rules, error). rule = {"name", "value", "kind": SAFETY / ADVICE / PER-SLOT, "mode":
+    exact / bits / max / min / backstop, "present_only": "if-present"}. A line without a known kind = an error (the file is the owner's
+    rules: never guessed)."""
+    path = path or PARAM_FILE
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        if key in _pf_cache:
+            return _pf_cache[key]
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        return None, "required parameter file %s unreadable (%s)" % (PARAM_FILE_NAME, str(e)[:60])
+    rules, seen = [], set()
+    for k, line in enumerate(lines, 1):
+        body, _h, comment = line.partition("#")
+        body = body.strip()
+        if not body:
+            continue
+        parts = [x for x in body.replace(",", " ").split() if x]
+        words = comment.split()
+        kind = words[0] if words else ""
+        mode, present_only = "exact", False
+        if kind == "SAFETY":
+            for w in words[1:3]:
+                if w == "if-present":
+                    present_only = True
+                elif w in MODES:
+                    mode = w
+        try:
+            name, value = parts[0], float(parts[1])
+        except (IndexError, ValueError):
+            return None, "%s line %d is not NAME,VALUE" % (PARAM_FILE_NAME, k)
+        if kind not in ("SAFETY", "ADVICE", "PER-SLOT") or name in seen or not math.isfinite(value):
+            return None, "%s line %d (%s): no SAFETY / ADVICE / PER-SLOT mark, or a duplicate" % (
+                PARAM_FILE_NAME, k, name)
+        seen.add(name)
+        rules.append({"name": name, "value": value, "kind": kind, "mode": mode, "present_only": present_only})
+    res = (rules, None)
+    _pf_cache.clear()
+    _pf_cache[key] = res
+    return res
+
+
+def code_ruled():
+    """The parameter names the rules above check themselves (the file's SAFETY line for them is checked by those)."""
+    names = {n for n, r, _need in FAILSAFE if r is not None} | {"RC_OPTIONS", "BATT_CRT_VOLT", "BATT_CRT_MAH"}
+    names |= {"SERVO%d_FUNCTION" % i for i in list(SERVO_REQUIRED) + list(SERVO_OPTIONAL)}
+    names |= {n for n, _v in OFF_IF_PRESENT}
+    return names
+
+
 def wanted_params():
     """(required names, optional names) the registration reads."""
     req = [n for n, _r, need in FAILSAFE if need] + ["SERVO%d_FUNCTION" % i for i in SERVO_REQUIRED]
     opt = [n for n, _r, need in FAILSAFE if not need] + ["SERVO%d_FUNCTION" % i for i in SERVO_OPTIONAL]
     opt += [n for n, _v in OFF_IF_PRESENT] + ["BATT_CAPACITY"]     # (U3: the route energy check)
+    rules, _err = load_param_file()
+    for r in rules or []:
+        if r["name"] in req or r["name"] in opt or r["kind"] == "PER-SLOT":
+            continue
+        need = r["kind"] == "SAFETY" and r["mode"] != "backstop" and not r["present_only"]
+        (req if need else opt).append(r["name"])
     return req, opt
+
+
+def param_file_problems(params, rules=None):
+    """The file's SAFETY lines the rules above do not check themselves: [problem] naming the parameter. A missing
+    required one is already in "parameters not readable" (wanted_params made it required)."""
+    if rules is None:
+        rules, err = load_param_file()
+        if err:
+            return [err]
+    p = []
+    ruled = code_ruled()
+    for r in rules:
+        n, w, mode = r["name"], r["value"], r["mode"]
+        if r["kind"] != "SAFETY" or n in ruled or n not in params:
+            continue
+        v = params[n]
+        if mode == "exact":
+            bad = abs(v - w) > 1e-3 * max(1.0, abs(w))
+            need = "must be %g" % w
+        elif mode == "bits":
+            bad = (int(round(v)) & int(round(w))) != int(round(w))
+            need = "bits %d must be set" % int(round(w))
+        elif mode == "max":
+            bad = not 0 < v <= w
+            need = "must be > 0 and <= %g" % w
+        elif mode == "min":
+            bad = not v >= w
+            need = "must be >= %g" % w
+        else:
+            bad, need = False, ""
+        if bad:
+            p.append("%s is %g (%s: %s)" % (n, v, PARAM_FILE_NAME, need))
+    return p
+
+
+def advice(reading):
+    """The file's ADVICE lines the drone differs on (listed, never a refusal)."""
+    rules, err = load_param_file()
+    params = {k: _num(v) for k, v in (reading.get("params") or {}).items()} if isinstance(
+        reading.get("params"), dict) else {}
+    out = []
+    for r in rules or []:
+        v = params.get(r["name"])
+        if r["kind"] == "ADVICE" and v is not None and abs(v - r["value"]) > 1e-3 * max(1.0, abs(r["value"])):
+            out.append("%s is %g (recommended %g)" % (r["name"], v, r["value"]))
+    return out
 
 
 def fw_text(v):
@@ -139,6 +256,7 @@ def check(reading, others=()):
     gps = reading.get("gps")
     if not gps or gps.get("fix_type", 0) < 1:
         p.append("no GPS receiver")
+    p.extend(param_file_problems(params))
     sysid = reading.get("sysid")
     if sysid in (0, 255) or (sysid is not None and not 1 <= int(sysid) <= 254):
         p.append("sysid %s is not allowed (0 = broadcast, 255 = a ground station)" % sysid)   # U2 review LOW-6
@@ -164,7 +282,8 @@ def summary(reading):
             "gps_fix": gps.get("fix_type", 0), "gps_sats": gps.get("satellites_visible", 0),
             "prearm": bool(ss.get("onboard_control_sensors_health", 0) & S_PREARM),
             "prearm_text": list(reading.get("prearm", []))[-3:],
-            "capacity_mah": _cap((reading.get("params") or {}).get("BATT_CAPACITY"))}
+            "capacity_mah": _cap((reading.get("params") or {}).get("BATT_CAPACITY")),
+            "advice": advice(reading)[:8]}
 
 
 def _cap(v):

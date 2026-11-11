@@ -699,6 +699,9 @@ class UavManager:
             self.next_assist[slot] = 0.0            # the warm start at once
         text = ("slot %d registered: %s" % (slot, rec["name"]) if rec["ok"] else
                 "slot %d not launchable: %s" % (slot, "; ".join(rec["problems"][:3])))
+        if not rec["ok"]:
+            # step X2: a refused drone = a notice on every station naming the parameter(s) (gw_status uav notices)
+            self.notice(text, "caution")
         self._answer(sid, slot, rec["ok"], text, rec["problems"], rec)
 
     # --- U3: notices, the hatch, the launch io ---------------------------------------------------------------------

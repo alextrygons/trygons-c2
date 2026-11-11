@@ -955,3 +955,44 @@ gateway F9 (KEEP 5': 0.2 min in the ring, timing under load; passes alone); ever
 Harness-timing fixes only (docs/cleanup_report.md CL2): test_driver bounded event pump + condition waits (I25, I10, I19, I23), gateway VR5 waits for the worker's asynchronous sample writes. Failure rates (tools/loadgen.py, 20 CPUs): test_driver 0 busy 1/3 -> 0/3, 4 busy 5/5 -> 0/5, 20 busy: the 900 s stall at I16 gone, only I23 (a real 60 ms / 150 ms render-time threshold) still fails 2/2; gateway VR 4 busy 0/5 (VR5 was 1/3 once), 20 busy = vision pauses by design (CPU guard), not a flake. No assertion or threshold changed.
 
 CL2-c (2026-11-11): remaining known flakes - AC31 s11_mob_search (load; passes alone), gateway A2 (SD holes under load; passes on the re-run alone, W50), VR5 / LH2 / LH20 / F1 fixed in the harness. Known / env: AS17 (W84 recordings), SR8 (NVENC). check.sh needs > 45 min in one run.
+
+## X2 - real ArduPilot SITL behind the real router (2026-11-11)
+
+How to run: `python tools/get_sitl.py` (pinned download into tools/bin/sitl/, sha256-checked), then
+`python tools/run_sitl.py` (or `--bg`; log in test_results/sitl/, 45 min limit). Without SITL every test is N/A.
+tools/check.sh runs it only when `tools/get_sitl.py --check` passes. Details + measured answers:
+docs/uav_design.md section 14.
+
+Run on the owner's PC (Windows 11, native Cygwin SITL, no WSL), ArduCopter V4.7.3-beta1 (the rolling Windows
+'CopterStable' build; the version-pinned 4.7.2 Linux build is pinned but was not run here): 3 suites, ~9 min,
+**11 passed, 5 failed, 0 N/A**.
+
+| Test | Result | What it showed |
+|---|---|---|
+| SI1 registration (+ the parameter file) | PASS | good copter registered; FS_GCS_ENABLE 1 + GUID_TIMEOUT 10 refused, the notice names both |
+| SI2 GPS warm start | PASS | GPS_RTCM_DATA (MGA-INI time + position) delivered; the effect on a real u-blox = bench only |
+| SI3 route + launch sequence | **FAIL** | the mission upload never completes: ArduCopter answers MISSION_COUNT with MISSION_REQUEST (id 40), which the router's codec / allow.py FROM_DRONE do not have |
+| SI4 mission flown | **FAIL** | same cause (no mission on the drone) |
+| SI5 in-flight mission change | **FAIL** | same cause |
+| SI6 link loss = hold | PASS | 20 s radio loss: same mode, 30.0 m kept, no RTL / LAND |
+| SI7 manual flying + give back | PASS | 8.0 m/s forward, 0.1 m/s 6 s after centring, altitude kept; give back = BRAKE -> LOITER |
+| SI8 GPS lost in the air | PASS | EKF failsafe -> ALT_HOLD (~28 s), altitude held with RC ignored, no landing |
+| SI9 allow-list vs ArduPilot | PASS | 17 servo / relay / gripper / winch / mount / parachute / RTL / LAND / force / termination commands never left the router; drone unchanged |
+| SI10 battery minimum | PASS | manager NAV_LAND refused; the router's rule landed + disarmed it; no ArduPilot landing before |
+| SI11 SITL .tlog via pymavlink | PASS | ~2600 packets, in order, no denied command / PARAM_SET |
+| SI12 never a parameter write | PASS | 85 SAFETY parameters unchanged after the flights |
+| SI13 no-GPS climb fallback | **FAIL** | ALT_HOLD + ARM + TAKEOFF param3=1 accepted, NO climb, the DISARM then refused (MAV_RESULT 4) - stays armed on deck |
+| SI14a six copters: registration | PASS | 5 registered, FENCE_ACTION 1 refused naming it |
+| SI14b six copters: launch in series | **FAIL** | the mission upload (as SI3) |
+| SI14c six copters: hold | PASS | 5 flying, every radio cut 15 s, all held |
+
+Findings for the owner: W138 (no-GPS fallback does not climb and cannot be disarmed), W139 (MISSION_REQUEST:
+allow.py change needed = SERIAL safety review; blocks every real launch), W140 (the SITL / drone ArduPilot
+version). Parameter-file findings (built into docs/uav_params.param): telemetry stream rates needed (the router
+never asks for streams), SERVO17-32 default -1 refused, an enabled fence blocks the no-GPS ARM.
+The fast tests: test_uav UA41 NEW (the file vs the registry's rules, get_sitl pins / refusal, toolpaths, the
+N/A path of the runner).
+Note: tools/check.sh's Python (MSYS2 ucrt64) has no pymavlink, so in the gate the SITL suite reports N/A even with
+SITL installed; the run above used the Python that has pymavlink (`python tools/run_sitl.py`). Fast tests after
+the change: test_uav 48/48, test_uavui 16/16, test_lang 6/6, strays selftest OK, assistant index rebuilt (floor
+gate unchanged 7 / 86 + 4 / 33).

@@ -59,6 +59,11 @@ def good_params():
     for i in range(1, 7):
         p["RELAY%d_FUNCTION" % i] = 0
         p["RELAY%d_PIN" % i] = -1
+    # step X2: the rest of the required parameter set (docs/uav_params.param), so a good simulated drone passes
+    from uav import registry
+    for r in registry.load_param_file()[0] or []:
+        if r["kind"] != "PER-SLOT" and r["name"] not in p:
+            p[r["name"]] = r["value"]
     return p
 
 

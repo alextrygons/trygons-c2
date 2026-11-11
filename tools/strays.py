@@ -57,7 +57,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-PROGRAMS = {"python", "pythonw", "autopilot_sim", "storm", "mediamtx", "ffmpeg", "ffprobe", "piper"}
+PROGRAMS = {"python", "pythonw", "autopilot_sim", "storm", "mediamtx", "ffmpeg", "ffprobe", "piper",
+            "arducopter"}                       # (step X2: the SITL copters of gateway/test_sitl.py, tools/bin/sitl)
 TEMP_MARKERS = ("trygons_", "gwtest_")          # tempfile prefixes of our tests (the owner's programs use neither)
 # command lines the gate NEVER force-kills (a station may hold HELM of a real boat, a gateway talks to the AURIX)
 ENTRY_POINTS = (("groundstation/app.py", "a ground station"), ("gateway/gateway.py", "a gateway"),
@@ -154,7 +155,7 @@ def processes(retry=True):
 def program(name):
     """'python3.12' / 'pythonw.exe' -> 'python' / 'pythonw'; 'autopilot_sim.exe' -> 'autopilot_sim'."""
     n = (name or "").lower()
-    if n.endswith(".exe"):
+    if n.endswith(".exe") or n.endswith(".elf"):
         n = n[:-4]
     if n.startswith("python") and not n.startswith("pythonw"):
         return "python"

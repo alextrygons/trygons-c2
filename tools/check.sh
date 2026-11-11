@@ -350,6 +350,14 @@ echo "== UAV magazine on the gateway (U2): own MAVLink codec (+ pymavlink cross-
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_uav.py > "$TEMP/uav_tests.txt" 2>&1 ) || { echo "UAV TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|UAV TESTS|STALLED" "$TEMP/uav_tests.txt"
 strays_check "test_uav"
+echo "== UAV with real ArduPilot SITL (X2): only when SITL is installed + verified (python tools/get_sitl.py); else N/A"
+if "$PY" tools/get_sitl.py --check > "$TEMP/sitl_check.txt" 2>&1; then
+  PYTHONIOENCODING=utf-8 "$PY" tools/run_sitl.py --log "$TEMP/sitl_tests.txt" > "$TEMP/sitl_run.txt" 2>&1 || { echo "SITL TESTS FAILED (see $TEMP/sitl_tests.txt)"; fail=1; }
+  grep -E "^\[(FAIL|N/A )\]|^SITL TESTS|STALLED" "$TEMP/sitl_tests.txt"
+  strays_check "test_sitl"
+else
+  echo "SITL TESTS: N/A ($(cat "$TEMP/sitl_check.txt"))"
+fi
 echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕΜΑ UAV», answers in the screen language"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"

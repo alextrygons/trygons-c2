@@ -2835,6 +2835,33 @@ UAV MAGAZINE - MAP, TELEMETRY, VIDEO, AI (step U4)
   in operation: a second ground station would bypass the allow-list and the
   one-pilot rule.
 
+UAV MAGAZINE - THE REQUIRED DRONE PARAMETERS + HOW TO RUN THE SITL TESTS (X2)
+  docs/uav_params.param is the parameter set every C2 drone must have (no RTL
+  and no LAND when the radio or the gateway is lost, LAND only at the battery
+  backstop, the RC receiver ignored, only the 4 motors, every release / servo
+  / relay / mount output off, the telemetry rates the gateway needs). Load it
+  on the BENCH with Mission Planner (Config - Full Parameter List - Load from
+  file, then Write Params), set the slot's sysid (10 + slot: slot 1 = 11) and
+  the battery backstop, then REGISTER the drone. The gateway only READS: a
+  drone that differs on a line marked SAFETY is NOT launchable and the notice
+  names the parameter ("GUID_TIMEOUT is 10 (docs/uav_params.param: ...)").
+  SITL tests (a real ArduPilot copter simulated on a PC, for the workshop /
+  the developer, never on the boat):
+    1. python tools/get_sitl.py --where   (what works on this PC: Windows 11
+       runs ArduPilot's own Windows simulator build, no WSL needed; Ubuntu the
+       official Linux build)
+    2. python tools/get_sitl.py            (downloads it into tools/bin/sitl/;
+       every file is checked against its pinned sha256 - a changed download
+       is refused, nothing installed)
+    3. python tools/run_sitl.py            (about 10 minutes; one copter,
+       the no-GPS fallback, six copters; a 45 minute limit; the log goes to
+       test_results/sitl/). python tools/run_sitl.py --bg starts it in the
+       background and prints the log's name.
+  The test needs pymavlink in that Python (pip install pymavlink). Without the
+  simulator (or pymavlink) every SITL test is N/A, never a pass. The ArduPilot
+  version of the simulator should be the drones' own version (to confirm by
+  the owner); results: TEST_REPORT.md "X2".
+
 UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
   Who: the COPILOT may fly a UAV from his own station at any time (his joystick
   never drives the boat). The CAPTAIN only with the boat in STANDBY - while

@@ -78,8 +78,9 @@ slot) and an ELRS receiver bound 1:1 to an ELRS TX module on the boat.
   launch, section 5).
 
 ### 3.2 Parameter check (read only, the gateway NEVER writes a parameter)
-The owner sets the drones with Mission Planner; registration only reads and refuses a mismatch (TO CONFIRM
-against the drones' ArduPilot version in SITL / on the bench - W60):
+The owner sets the drones with Mission Planner; registration only reads and refuses a mismatch (W60;
+step X2: the parameter set is now docs/uav_params.param and was MEASURED against ArduCopter 4.7 SITL - section 14;
+the drones' own version on the bench = still TO CONFIRM):
 - the RC receiver ignored (RC_OPTIONS bit 0, U1 review HIGH-1, W68) and radio failsafe off (FS_THR_ENABLE 0: the
   ELRS RC channels are not a control path), GCS failsafe off
   (FS_GCS_ENABLE 0), EKF failsafe = AltHold (FS_EKF_ACTION 2, never Land), dead-reckoning failsafe off
@@ -363,8 +364,9 @@ the boat's own cameras only.
   sends it time + position (+ ephemeris when available) through the flight controller's GPS injection
   (GPS_RTCM_DATA / GPS_INJECT_DATA carry raw bytes the FC writes to its GPS port) as u-blox UBX-MGA
   messages (MGA-INI-TIME_UTC, MGA-INI-POS_LLH, MGA-GPS/GAL-EPH or an MGA-DBD dump). Needs u-blox GPS on
-  the drones; whether the drones' ArduPilot forwards UBX-MGA bytes to the u-blox untouched: TO CONFIRM in
-  SITL / on the bench.
+  the drones; whether the drones' ArduPilot forwards UBX-MGA bytes to the u-blox untouched: SITL (step X2,
+  section 14): the GPS_RTCM_DATA frames are taken by ArduPilot without error; the forwarding to a REAL u-blox and the
+  faster fix = still bench only (SITL's GPS has no time-to-fix model).
 - FINDING: the spec says "the boat's own u-blox data", but the boat's u-blox is wired to the AURIX (UART),
   not to the gateway, and the gateway only sees the AURIX's position / time in telemetry. Reading UBX
   ephemeris from it would need an AURIX change (forbidden here). Options (W56): (a) time + position from
@@ -376,7 +378,10 @@ the boat's own cameras only.
   ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m - the climb is the allow-listed MAV_CMD_NAV_TAKEOFF in
   ALT_HOLD with param3 = 1 ("horizontal navigation by the pilot acceptable": ArduCopter's ALT_HOLD user takeoff
   without position), NEVER a throttle / RC input (none is on the allow-list; the RC receiver is ignored, W68);
-  that ALT_HOLD then holds the altitude with the RC ignored: TO CONFIRM in SITL / on the bench (W68), hover until GPS + yaw are good (EKF-GSF yaw in
+  that ALT_HOLD then holds the altitude with the RC ignored: MEASURED in SITL (step X2, section 14): IN THE AIR
+  ALT_HOLD with the RC ignored HOLDS the altitude; ON THE GROUND the ALT_HOLD take-off (TAKEOFF param3 = 1) is
+  ACCEPTED but does NOT climb, and the following DISARM is refused (the drone stays armed in the slot) - the fallback
+  does not work as designed: owner decision W138; hover until GPS + yaw are good (EKF-GSF yaw in
   flight; the compass near the hull is not trusted; the boat's heading only as a hint), then switch to
   AUTO and the mission. No landing because of missing GPS - it hovers until GPS or the battery minimum.
   In ALT_HOLD it drifts with the wind: the sequence waits with the next drone until this one is clear.
@@ -463,8 +468,9 @@ allow-listed MAVLink leaves the router.
 Simulation (U2): gateway/uav/simdrone.py = 6 small simulated copters speaking the same MAVLink 2 subset
 (modes, mission, battery model, GPS time-to-fix incl. the warm start, faults: no fix, motor fail, link
 loss, battery), over UDP / a virtual serial pair; simhatch.py; simulated VRX = test pictures through the
-existing simcam.py. ArduPilot SITL copters are NOT practical on Windows without WSL / Cygwin builds -
-SITL only as an optional cross-check on Ubuntu (W67). `autopilot_sim server` is not changed (the drones
+existing simcam.py. (REPLACED by step X2, 2026-11-11: ArduPilot's own Cygwin SITL build runs NATIVELY on
+Windows 11 - no WSL - and the official Linux build on Ubuntu; tools/get_sitl.py + gateway/test_sitl.py = real
+ArduCopter behind the real router, see section 14. simdrone.py stays for the fast tests.) `autopilot_sim server` is not changed (the drones
 are gateway-side only).
 
 ## 10. Failure cases (each gets a test in its step)
@@ -600,3 +606,60 @@ All recommended defaults accepted, except where written. Recorded here (CLAUDE.m
   flight's twist axis): BENCH checks before the first flight = FIRST_TEST.md section 6.
 - W60, W64, W67, W73, W74: as listed / as built. W53 (station): the OS-native settings questions are now the
   vertical YES / NO layout (groundstation/ynbox.py, test_yesno YN7).
+
+
+## 14. Step X2 AS BUILT: real ArduPilot SITL + the required parameter file (2026-11-11)
+
+Owner spec J (C:/trygons/private/step_sitl.txt, X2). NO app / hal / AURIX change, gateway/uav/allow.py NOT changed.
+
+- tools/get_sitl.py: pinned ArduCopter SITL into tools/bin/sitl/<platform>/ (never in git), every file size + sha256
+  pinned, a different download REFUSED (nothing installed; the owner re-pins with --print-sha after reviewing it);
+  --check / --where. gateway/toolpaths.py sitl() returns the binary only while every pin verifies (no unpinned
+  override). What works where (measured on the owner's PC, Windows 11, no WSL installed): Windows = ArduPilot's own
+  Cygwin build for Mission Planner's simulator (firmware.ardupilot.org/Tools/MissionPlanner/sitl/CopterStable/:
+  ArduCopter.elf + 10 Cygwin DLLs) runs NATIVELY - 6 copters at once; it is a ROLLING upload, on 2026-11-11
+  ArduCopter V4.7.3-beta1 (there is no version-pinned Windows SITL); Linux / WSL 2 = the official 4.7.2 build
+  (Copter/stable-4.7.2/SITL_x86_64_linux_gnu/arducopter, pinned, not run here). Default version = the latest stable
+  4.x (4.7.2); the drones' real version = TO CONFIRM by the owner (W140).
+- docs/uav_params.param = the REQUIRED parameter set (Mission Planner / SITL --defaults format; SAFETY / SAFETY
+  if-present / bits / max / min / backstop / ADVICE / PER-SLOT marks). registry.py reads every SAFETY line at
+  "Register" (READ ONLY - the gateway never writes a parameter) and refuses a drone that differs, the problem AND a
+  station notice ("slot n not launchable: ...") NAME the parameter; ADVICE differences are listed in the record
+  ("advice"), never refused; the file missing / unmarked = every drone refused. The parameters registry.py already
+  checked by its own rules are checked once (UA41 proves the file and the rules agree). SAFETY parameters NEW in the
+  file: GUID_TIMEOUT <= 3 s (a manual setpoint not renewed = stop), ARMING_RUDDER 0 (if present), SERVO17..32 0 (if
+  present), MAV1_* telemetry stream rates >= the values (USB port). Measured findings that shaped the file:
+  ArduCopter 4.7 sends NO telemetry stream the router does not ask for (and the router never asks) - without MAVn_*
+  rates the gateway has no altitude / battery = no battery minimum rule; SERVO17..32 default to -1 (GPIO) and were
+  refused; an ENABLED fence refuses to ARM without GPS (also altitude-only) -> FENCE_ENABLE 0 (FENCE_ACTION 0 only
+  reports anyway); 4.7 renamed SYSID_THISMAV -> MAV_SYSID (the registry reads the HEARTBEAT sysid).
+- gateway/test_sitl.py (SI1-SI14) + tools/run_sitl.py (background --bg, log test_results/sitl/, one Windows job,
+  45 min limit): the REAL router process + allow.py + the REAL UavManager (registry, launch, routes, pilot lock,
+  battery rule) + simhatch, the boat simulated (STANDBY telemetry, relay board, the captain's YES given by the test),
+  the USB cable / ELRS radio = a TCP <-> UDP bridge per link (cut = the breakaway / a lost link), a "bench"
+  connection per copter (SERIAL2, sysid 250) for the world only (SIM_* parameters, the true state). Without SITL
+  every test is N/A (never PASS); tools/check.sh runs it only when get_sitl.py --check passes. ~9 min.
+- MEASURED (ArduCopter V4.7.3-beta1 SITL, Windows):
+  - HIGH (blocks every real launch, NOT fixed here): ArduCopter answers MISSION_COUNT with MISSION_REQUEST (id 40) -
+    never MISSION_REQUEST_INT, also after the GCS used MISSION_REQUEST_INT - and the router's codec + allow.py
+    FROM_DRONE do not know MISSION_REQUEST: NO mission can be uploaded to a real ArduPilot (simdrone sends
+    MISSION_REQUEST_INT, so the fast tests never saw it). The fix (FROM_DRONE + MISSION_REQUEST, the codec entry
+    (id 40, CRC extra 230), the router answering it with MISSION_ITEM_INT like MISSION_REQUEST_INT) changes allow.py =
+    a SERIAL safety review (W110 / W139) - stopped here as the step's hard rule requires. SI3 / SI4 / SI5 / SI14b FAIL
+    for this reason; SI6-SI10 / SI14c fly the copters up with GUIDED / ARM / TAKEOFF through the router instead.
+  - W60 / 6.1 lost link = hold: a 20 s radio loss -> the same mode at the same altitude (30.0 m), no RTL / LAND
+    (SI6; six copters SI14c). W68 in the air: GPS lost -> ArduPilot's EKF failsafe ALT_HOLD after ~28 s, the
+    altitude held with the RC receiver ignored (30.0 -> 30.0 m over 20 s), never a landing (SI8).
+  - W68 / W59 on the ground (SI13 FAIL): ALT_HOLD + ARM + TAKEOFF param3 = 1 are all ACCEPTED (COMMAND_ACK 0) but
+    the copter does NOT climb (ArduCopter's ALT_HOLD take-off needs pilot throttle; the RC receiver is ignored), and
+    the no-climb DISARM (never forced) is REFUSED (MAV_RESULT 4, 4 tries) - it stayed armed on the ground for 30+ s.
+    The climb fallback does not work and launch.py's no-climb DISARM cannot disarm it: owner decision W138.
+  - Manual flying (SI7): GUIDED velocity setpoints 8.0 m/s forward, centred -> 0.1 m/s in 6 s at the same altitude;
+    give back = BRAKE then LOITER. Battery minimum (SI10): the manager's NAV_LAND refused by allow.py; the router's
+    rule landed it where it was (LAND, down, disarmed), ArduPilot never landed by itself before (BATT_FS_LOW_ACT 0).
+  - Allow-list vs ArduPilot (SI9): 17 servo / relay / gripper / winch / mount / parachute / RTL / LAND / force-DISARM /
+    RTL-SmartRTL-LAND-mode / parameter-storage / flight-termination commands never left the router, the drone
+    unchanged; ArduPilot's other messages (SERVO_OUTPUT_RAW, RC_CHANNELS ...) never decoded (the codec knows only the
+    list). The SITL-made .tlog read by pymavlink (SI11: ~2600 packets, in order, no denied command / PARAM_SET); every
+    SAFETY parameter unchanged after the flights (SI12).
+  - Warm start (SI2): GPS_RTCM_DATA delivered and taken; the forwarding to a real u-blox = still bench only.

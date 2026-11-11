@@ -48,8 +48,23 @@ def vision_python():
                   sys.executable)
 
 
+def sitl():
+    """ArduPilot ArduCopter SITL for the SITL tests only (step X2; never on the boat): <repo>/tools/bin/sitl/<platform>/
+    (python tools/get_sitl.py) - returned only while every file matches its pinned sha256 (no unpinned override)."""
+    import sys
+    sys.path.insert(0, os.path.join(REPO, "tools"))
+    try:
+        import get_sitl
+    except ImportError:
+        return None
+    finally:
+        sys.path.pop(0)
+    return get_sitl.exe()
+
+
 if __name__ == "__main__":
     print("MediaMTX:", mediamtx() or "MISSING (python tools/get_mediamtx.py)")
+    print("ArduPilot SITL:", sitl() or "MISSING (python tools/get_sitl.py)")
     print("ffmpeg:  ", ffmpeg() or "MISSING (MSYS2: pacman -S mingw-w64-ucrt-x86_64-ffmpeg)")
     print("ADS-B decoder:", readsb() or "MISSING (python tools/get_readsb.py)")
     print("vision Python:", vision_python())
