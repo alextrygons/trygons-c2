@@ -58,6 +58,8 @@ from uav import allow, battery, flightlog, gpsassist, mavlink, mission, tlog, us
 TICK_S = 0.05
 RECONNECT_S = 2.0
 HB_LOST_S = 3.0
+MISSION_INVALID_SEQUENCE = 13   # MAV_MISSION_RESULT: an item with an unexpected seq (a duplicate) - not fatal
+REFUSED_BY_LIST = "refused by the allow-list"       # + ": <allow.check_out's reason>" in a command's answer
 HATCH_FRESH_S = 1.0          # the manager sends the hatch switch 4 x a second; older = NOT open
 ALT_FRESH_S = 2.0
 ON_GROUND = 1                # MAV_LANDED_STATE_ON_GROUND
@@ -65,6 +67,7 @@ AIRBORNE = (2, 4)            # MAV_LANDED_STATE_IN_AIR / _LANDING (UAV-r1: never
 # UAV-r1 review HIGH-1: "on the ground in its slot" for a FORCE DISARM - stricter freshness than for anything else
 SLOT_HB_S = 1.5              # the slot cable's HEARTBEAT (ArduPilot 1 Hz)
 SLOT_ALT_S = 1.0             # the newest altitude sample (MAV1_POSITION >= 2 Hz, docs/uav_params.param)
+GPS_FRESH_S = 3.0            # UAV-r1 review round 2: the fix / EKF state for an ARM (ArduPilot sends them 1-2 Hz)
 ESS_ASK_S = 3.0              # no EXTENDED_SYS_STATE heard this long on a registered slot cable = asked for (2 Hz)
 SLOT_STILL_S = 2.0           # every altitude sample of this window on the ground and still (>= 2 samples, >= 1 s)
 SLOT_STUCK_S = 4.0           # ... the window when the drone says TAKEOFF (SITL: ArduCopter reports TAKEOFF while it
@@ -208,6 +211,7 @@ class Drone:
         self.landed_state, self.ext_t = None, 0.0
         self.fix = self.sats = None
         self.ekf_flags = None
+        self.fix_t = self.ekf_t = 0.0                      # UAV-r1 review round 2: when GPS_RAW_INT / EKF were heard
         self.batt_pct = self.batt_v = None
         self.batt_t = 0.0                                  # U4 review MED-1: when the battery state was last heard
         self.batt_stale = False
@@ -315,6 +319,8 @@ class Router:
         d = self.drone(link.slot)
         return {"port": link.kind, "armed": d.armed(), "landed": self.on_deck(link.slot, d, now),
                 "in_slot": self.in_slot(link.slot, d, now),
+                "gps_ok": bool((d.fix or 0) >= 3 and now - d.fix_t < GPS_FRESH_S and
+                               ((d.ekf_flags or 0) & allow.EKF_POS) == allow.EKF_POS and now - d.ekf_t < GPS_FRESH_S),
                 "hatch_open": bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S),
                 "battery_land": bool(self.battery_land.get(link.slot))}
 
@@ -344,6 +350,8 @@ class Router:
             return False
         if d.landed_state not in (ON_GROUND, TAKEOFF) or now - d.ext_t >= ALT_FRESH_S:
             return False
+        if d.landed_state == TAKEOFF and now - d.ext_t >= 1.0:
+            return False                                   # review round 2 LOW-1: the TAKEOFF case on a 2 Hz ESS
         span = SLOT_STILL_S if d.landed_state == ON_GROUND else SLOT_STUCK_S
         if d.rel_alt is None or d.vz is None or now - d.alt_t >= SLOT_ALT_S:
             return False
@@ -354,6 +362,7 @@ class Router:
 
     def tx(self, link, name, fields):
         ok, why = allow.check_out(name, fields, self.ctx(link))
+        self.last_why = why                                # review round 2 LOW-3: the exact reason for a refusal
         if not ok:
             self.stats["denied_out"] += 1
             self.denied["out " + name] = self.denied.get("out " + name, 0) + 1
@@ -441,7 +450,7 @@ class Router:
             elif m.name == "GPS_RAW_INT":
                 link.info["gps_fix"] = f.get("fix_type")
                 link.info["sats"] = f.get("satellites_visible")
-                d.fix, d.sats = f.get("fix_type"), f.get("satellites_visible")
+                d.fix, d.sats, d.fix_t = f.get("fix_type"), f.get("satellites_visible"), now
             elif m.name == "GLOBAL_POSITION_INT":
                 d.rel_alt, d.vz, d.alt_t = f.get("relative_alt", 0) / 1000.0, -f.get("vz", 0) / 100.0, now
                 d.alt_hist = [h for h in d.alt_hist if now - h[0] <= SLOT_STUCK_S + 1.0] + [(now, d.rel_alt, d.vz)]
@@ -468,7 +477,7 @@ class Router:
             elif m.name == "EXTENDED_SYS_STATE":
                 d.landed_state, d.ext_t = f.get("landed_state"), now
             elif m.name == "EKF_STATUS_REPORT":
-                d.ekf_flags = f.get("flags")
+                d.ekf_flags, d.ekf_t = f.get("flags"), now
             elif m.name == "MISSION_CURRENT":
                 d.mission_cur, d.mcur_t = f.get("seq"), now
             elif m.name == "AUTOPILOT_VERSION" and link.kind == "usb":
@@ -494,7 +503,11 @@ class Router:
                         return self.job_end(j, False, "mission item %d refused by the allow-list" % s)
                     j.t_step, j.tries = now, 0
             elif j.phase == "upload" and m.name == "MISSION_ACK":
-                if int(f.get("type", 1)) != 0:
+                if int(f.get("type", 1)) == MISSION_INVALID_SEQUENCE:
+                    # UAV-r1 (SITL over the lossy radio link): ArduPilot answers a DUPLICATE / late item with
+                    # INVALID_SEQUENCE and goes on asking - not a refusal of the mission (the read-back still checks)
+                    self.stats["mission_seq_acks"] = self.stats.get("mission_seq_acks", 0) + 1
+                elif int(f.get("type", 1)) != 0:
                     self.job_end(j, False, "the drone refused the mission (MISSION_ACK %d)" % f.get("type", 1))
                 else:
                     j.phase, j.t_step, j.tries = "count", now, 0
@@ -598,7 +611,8 @@ class Router:
                 return out(dict(res, why="battery minimum: the drone is landing"))
             job = CmdJob(c.get("id"), slot, lk, int(c["command"]), p, now)
             if not self.send_cmd(job):
-                return out(dict(res, why="refused by the allow-list"))
+                # review round 2: the allow-list's exact reason (launch.py forces a DISARM only on WHY_NOT_LANDED)
+                return out(dict(res, why="%s: %s" % (REFUSED_BY_LIST, getattr(self, "last_why", ""))))
             old = self.cmds.get(slot)
             if old is not None:                            # U3 review M6: one job per slot - the old one is answered
                 out({"ev": "cmd", "id": old.id, "slot": slot, "command": old.command, "result": None,

@@ -75,6 +75,10 @@ GUID_TIMEOUT,3         # SAFETY max seconds (the router itself sends a zero setp
 # UAV-r1 review MED-1: MISSION_START [0, 0] (ArduCopter 4.7 denies a first item) must RESUME at the item the router
 # chose with MISSION_SET_CURRENT - MIS_RESTART 1 would restart every mission from its first item
 MIS_RESTART,0          # SAFETY if-present
+# UAV-r1 review round 2: the flight controller's own pre-arm checks (GPS included) stay ON - the second guard of
+# "no launch without GPS" beside the router's gps_ok (4.7 may name it ARMING_SKIPCHK: 0 = skip nothing)
+ARMING_CHECK,1         # SAFETY if-present
+ARMING_SKIPCHK,0       # SAFETY if-present
 
 # ---- limits matching the C2 checks (gateway/uav/uavcheck.py; the fence only REPORTS) ------------------------------
 # FENCE_ENABLE 0: measured in SITL (step X2) - an ENABLED fence refuses to ARM without a GPS position ("PreArm: Fence

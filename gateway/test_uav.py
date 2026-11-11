@@ -343,7 +343,10 @@ def ua3_allow():
             bad.append("mode %d listed" % mode)
     # arm / disarm
     want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {}, "arm without the hatch")
-    want(True, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {"hatch_open": True})
+    want(True, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {"hatch_open": True, "gps_ok": True})
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {"hatch_open": True}, "arm without GPS (UAV-r1)")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {"hatch_open": True, "gps_ok": False,
+                                                                 "in_slot": True, "landed": True}, "arm gps_ok False")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0, "param2": 21196.0}, {"hatch_open": True}, "force arm")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"landed": True}, "force disarm")
     # UAV-r1 (W138 b): a force DISARM ONLY with ctx in_slot (the router: on the ground in its slot), never in flight;
@@ -1182,6 +1185,9 @@ def ua15_hatch():
                                  cleared))
 
 
+from uav import launch as launch_mod  # noqa: E402  (UAV-r1: the exact refusal text)
+
+
 class FakeIo:
     """The manager seen by launch.Launch, with a scripted magazine (tests UA16)."""
 
@@ -1261,7 +1267,7 @@ class FakeIo:
             if res == 0:
                 d["armed"] = False
             # disarm_ok None = the router's allow-list refused the normal DISARM (SITL: the drone said TAKEOFF)
-            why = "refused by the allow-list" if res is None else ""
+            why = launch_mod.REFUSED_NOT_LANDED if res is None else ""
             return self.q.append(lambda: cb(res, why))
         self.q.append(lambda: cb(res, ""))
 
@@ -1556,6 +1562,7 @@ def ua17_router_flight():
         for d in fl.drones:
             d.sky = True
         until(lambda: fl.drones[0].fix >= 3, 6)
+        time.sleep(2.5)                                # UAV-r1: the router's gps_ok needs the fix + EKF heard
         mode = req("cmd", slot=1, via="usb", command=176, params=[1, 4])
         arm_closed = req("cmd", slot=1, via="usb", command=400, params=[1, 0])        # no hatch op: refused here
         armed_before = fl.drones[0].armed
@@ -3335,6 +3342,7 @@ def ua32_router_ctl():
         d = fl.drones[0]
         d.sky = True
         until(lambda: d.fix >= 3, 6)
+        time.sleep(2.5)                                # UAV-r1: the router's gps_ok needs the fix + EKF heard
         seq = [0]
 
         def req(**kw):
@@ -4221,6 +4229,31 @@ def ua42_uavr1_force_disarm_mission_request():
         clock[0] += 1.2                                               # the altitude sample older than 1 s
         feed(r, u, [hb, ("EXTENDED_SYS_STATE", {"landed_state": 1})])
         res["stale_refused"] = try_cmd(r, force) == []
+        # review round 2: the router's refusal text = launch.REFUSED_NOT_LANDED (the one refusal a force may follow)
+        from uav import launch as lmod
+        r, u, e = world(30.0, 0.0, landed_state=2)
+        try_cmd(r, [0, 0], "auto")
+        ev = [x for x in events if x.get("ev") == "cmd"]
+        res["refusal_text"] = bool(ev) and ev[-1].get("why") == lmod.REFUSED_NOT_LANDED
+        # review round 2 MED-2: ARM only with gps_ok (a fresh 3D fix + the EKF position flags, < 3 s)
+        def arm_out(r, gps, ekf, age=0.0):
+            if gps is not None:
+                feed(r, u, [("GPS_RAW_INT", {"fix_type": gps, "satellites_visible": 10}),
+                            ("EKF_STATUS_REPORT", {"flags": ekf})])
+            clock[0] += age
+            feed(r, u, [hb])
+            r.command({"op": "hatch", "open": True}, clock[0])
+            return try_cmd(r, [1, 0])
+        r, u, e = world(0.0, 0.0)
+        res["arm_no_gps_refused"] = arm_out(r, None, 0) == []
+        r, u, e = world(0.0, 0.0)
+        res["arm_fix2_refused"] = arm_out(r, 2, 0x1F) == []
+        r, u, e = world(0.0, 0.0)
+        res["arm_no_ekf_refused"] = arm_out(r, 3, 0x07) == []
+        r, u, e = world(0.0, 0.0)
+        res["arm_stale_gps_refused"] = arm_out(r, 3, 0x1F, 3.5) == []
+        r, u, e = world(0.0, 0.0)
+        res["arm_gps_ok"] = arm_out(r, 3, 0x1F) == [("usb", 1.0, 0.0)]
         # mutation 1: the router's in_slot always True -> an in-flight force DISARM leaves (caught by the cases above)
         real_in = rw.Router.in_slot
         rw.Router.in_slot = lambda self, slot, d, now: True
@@ -4258,6 +4291,8 @@ def ua42_uavr1_force_disarm_mission_request():
         n = next((f["count"] for nm, f in got if nm == "MISSION_COUNT"), 0)
         stored = []
         for i in range(n):
+            if i == 2:                                 # a duplicate's INVALID_SEQUENCE ack mid-upload: not fatal
+                say("MISSION_ACK", {"type": 13, "mission_type": 0})
             say("MISSION_REQUEST", {"seq": i, "mission_type": 0})
             drone_rx()
             it = [f for nm, f in got if nm == "MISSION_ITEM_INT" and f["seq"] == i]

@@ -465,7 +465,9 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
 - [ ] FORCE DISARM only in the slot (W138 b), props OFF: a drone armed in its slot whose normal DISARM is refused
       is disarmed by the forced DISARM ("disarmed in the hatch - FORCED") ____ ; lifted 1 m out of the slot / with
       its slot USB cable pulled, the forced DISARM is refused by the router (log "not sent: force DISARM only on
-      the ground in its slot") ____ .
+      the ground in its slot") ____ . The drone answers the router's EXTENDED_SYS_STATE request (2 Hz, landed state
+      in the flight log) ____ - without it no forced DISARM is ever possible (fail-safe). A drone with its GPS covered
+      is never armed (router: "ARM only with a good GPS fix") ____ .
 
 ### 6h. Video channels (W63)
 - [ ] Antennas (W63): the 2.4 GHz ELRS group and the 5.8 GHz video group at least 0.5 m apart ____ m, both clear

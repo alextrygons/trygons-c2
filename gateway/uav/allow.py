@@ -18,6 +18,8 @@ check_out(name, fields, ctx) -> (ok, why) before the router sends a frame to a d
             (and port "usb") allows a FORCE DISARM.
 ctx is built by the ROUTER from the state it holds (U2 review LOW-3), never taken from a caller.
   battery_land  the battery rule of docs/uav_design.md 6.2 asks for LAND (the ONLY landing - storm I82)
+  gps_ok    UAV-r1 review round 2 (owner W138: no launch without GPS): a fresh 3D fix (GPS_RAW_INT) AND the EKF
+            position flags (EKF_STATUS_REPORT), both heard < 3 s ago - never ARM without it
 check_in(name) -> (ok, why) for a frame from a drone.
 """
 import math
@@ -63,6 +65,8 @@ MISSION_FRAMES_DO = frozenset((2,))                   # MAV_FRAME_MISSION for DO
 COPTER_ALT_HOLD, COPTER_AUTO, COPTER_GUIDED, COPTER_LOITER, COPTER_RTL, COPTER_LAND, COPTER_BRAKE, COPTER_SMART_RTL = (
     2, 3, 4, 5, 6, 9, 17, 21)
 MODES = frozenset((COPTER_GUIDED, COPTER_AUTO, COPTER_LOITER, COPTER_ALT_HOLD, COPTER_BRAKE))
+WHY_NOT_LANDED = "DISARM only on the ground / in the slot"     # (launch.py matches this exact reason)
+EKF_POS = 0x08 | 0x10                                  # EKF_STATUS_REPORT: horizontal position relative + absolute
 FORCE_MAGIC = 21196                                    # ARM_DISARM param2: force (skips the checks): force ARM always
                                                        # refused; force DISARM only in_slot (UAV-r1, W138 b)
 MAX_SPEED_MS = 20.0                                    # hard ceiling of DO_CHANGE_SPEED (the manager caps lower)
@@ -116,10 +120,12 @@ def _command(cmd, p, ctx):
         if p[0] == 1:
             if not ctx.get("hatch_open"):
                 return False, "ARM only with the hatch OPEN switch"
+            if not ctx.get("gps_ok"):
+                return False, "ARM only with a good GPS fix (no launch without GPS)"
             return True, ""
         if p[0] == 0:
             if not ctx.get("landed"):
-                return False, "DISARM only on the ground / in the slot"
+                return False, WHY_NOT_LANDED
             return True, ""
         return False, "bad ARM / DISARM value"
     if cmd == CMD_DO_SET_MODE:

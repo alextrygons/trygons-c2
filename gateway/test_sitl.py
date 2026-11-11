@@ -916,6 +916,11 @@ def suite_ground(exe):
         if w.m.hatch.state != "OPEN":
             w.m.hatch_cmd(True, lambda o, y: None)
             w.run(20, lambda: w.m.hatch.state == "OPEN")
+        # review round 2: the router never ARMs without GPS (gps_ok) - the GPS back on for the stuck-drone case
+        b.set_param("SIM_GPS1_ENABLE", 1)
+        w.run(90, lambda: (w.drone(1).get("gps_fix") or 0) >= 3 and
+              ((w.drone(1).get("ekf_flags") or 0) & 0x18) == 0x18)
+        w.run(3)
 
         def stick_armed():
             acks = (cmd(w, 1, "usb", allow.CMD_DO_SET_MODE, [1, allow.COPTER_ALT_HOLD]),

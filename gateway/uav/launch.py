@@ -31,7 +31,9 @@ Nothing here sends to the AURIX but the hatch relay through io.hatch_relay (uavl
 """
 from . import allow, mission
 
-REFUSED_BY_LIST = "refused by the allow-list"   # the router's answer when allow.check_out refused a command
+# the router's answer when allow.check_out refused a normal DISARM because the drone is not "landed" (SITL: a stuck
+# take-off reports TAKEOFF) - the ONLY allow-list refusal after which a forced DISARM may be tried (review round 2)
+REFUSED_NOT_LANDED = "refused by the allow-list: " + allow.WHY_NOT_LANDED
 IDLE, ASK, RUN, CLOSING, DONE, STOPPED = "IDLE", "ASK", "RUN", "CLOSING", "DONE", "STOPPED"
 EKF_POS = 0x08 | 0x10                     # EKF_STATUS_REPORT: horizontal position relative + absolute
 
@@ -60,6 +62,7 @@ class Launch:
         self.cfg = dict(DEFAULTS, **(cfg or {}))
         self.state, self.why = IDLE, ""
         self.gen = 0
+        self.run_id = 0                   # one id per prepared sequence (a late DISARM answer of an older one)
         self.slots = []                   # the slots of this sequence, top first
         self.launched = []
         self.cur = None                   # the slot being launched
@@ -82,6 +85,7 @@ class Launch:
 
     def prepare(self, slots, by, now):
         self.gen += 1
+        self.run_id = getattr(self, "run_id", 0) + 1       # review round 2 LOW-2: one id per prepared sequence
         self.state, self.why, self.slots, self.launched = ASK, "", list(slots), []
         self.by, self.captain, self.cur, self.phase, self.t_phase = by, None, None, "", now
         self.keep_open = False
@@ -159,10 +163,14 @@ class Launch:
             # take-off reports TAKEOFF, so the router refuses the normal DISARM as "not on the ground") - never on a
             # timeout / "replaced" / "cancelled" (maybe a lost link in the air); only while the sequence knows the
             # drone is not lifting off
-            refused = result is not None or (w or "") == REFUSED_BY_LIST     # the drone's / allow.py's refusal
+            refused = result is not None or (w or "") == REFUSED_NOT_LANDED     # the drone's / that one refusal
+            if g != self.run_id:
+                return self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result),
+                                      "caution")          # review round 2 LOW-2: a newer sequence - never forced now
             if refused and force_ok and self.io.slot(n).get("usb_present"):
                 return self.io.cmd(n, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC], forced)
             self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result), "caution")
+        g = self.run_id
         self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], normal)
 
     def log(self, now, text):
@@ -350,7 +358,8 @@ class Launch:
                 self._phase("CLEAR", now)
             elif now - self.t_arm > float(c["no_climb_s"]) and (not fresh or alt < 1.0):
                 self.keep_open = True
-                self._disarm(n, "it did not climb")
+                # review round 2 MED-1: forced only on FRESH data showing it on deck (stale = the normal DISARM only)
+                self._disarm(n, "it did not climb", force_ok=bool(fresh and alt < 1.0))
                 self.armed_here = False
                 self.io.notice("UAV %d did not leave the hatch - check before closing (HATCH CLOSE = the captain's "
                                "button)" % n, "caution")

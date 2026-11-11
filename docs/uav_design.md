@@ -687,14 +687,21 @@ allow.py changed = the SERIAL safety review (LOOP RULE 6(3), W110).
   fix is NOT launchable ("no GPS fix - no launch without GPS") and PREPARE is refused 125 naming it. With the hatch
   CLOSED the drone usually has no sky (docs 7: the warm start), so the check is the GPS step after the opening -
   owner to confirm this reading of "the slot reports no GPS" (W143).
-- W138 (b) the FORCE DISARM only on the ground in its slot: allow.py lets COMMAND_LONG / _INT ARM_DISARM param1 0
-  param2 21196 out ONLY with ctx in_slot; a force ARM and any other param2 stay refused. in_slot is built by the
-  ROUTER from its own data (Router.in_slot): a fresh HEARTBEAT on the slot's USB cable (the breakaway cable, W58)
-  AND a fresh relative altitude (< 2 s) |alt| < 0.5 m with a known |vz| < 0.3 m/s AND the drone not saying IN_AIR /
-  LANDING (fresh EXTENDED_SYS_STATE). No fallback for stale / missing data (unlike on_deck's DISARM fallback).
-  launch.py _disarm (no-climb, and a STOP with a drone armed on deck): the normal DISARM first; refused by the drone
-  and the drone still on its slot cable = once more FORCED over USB ("disarmed in the hatch - FORCED"); else the
-  notice "DISARM not confirmed - check the magazine". Never sent / never let out in flight.
+- W138 (b) the FORCE DISARM only on the ground in its slot (AS BUILT after the two review rounds below): allow.py
+  lets COMMAND_LONG / _INT ARM_DISARM param1 0 param2 21196 out ONLY with ctx in_slot AND port "usb"; a force ARM
+  and any other param2 stay refused. in_slot is built by the ROUTER from its own data (Router.in_slot): a HEARTBEAT on
+  the slot's USB cable < 1.5 s old (the breakaway cable, W58); the drone's OWN landed state ON_GROUND or TAKEOFF from
+  a fresh EXTENDED_SYS_STATE (< 2 s; TAKEOFF < 1 s; missing / IN_AIR / LANDING = not in the slot; the router asks
+  for it at 2 Hz - ArduCopter does not stream it); the newest altitude sample < 1 s; every altitude sample of the
+  last 2 s (ON_GROUND) / 4 s (TAKEOFF) |alt| < 0.5 m and |vz| < 0.3 m/s (>= 2 samples over >= half the window). No
+  fallback for stale / missing data. launch.py _disarm (no-climb, and a STOP with a drone armed on deck): the normal
+  DISARM first; then ONCE FORCED over USB only if (1) it was REFUSED - the drone's MAV_RESULT or exactly allow.py's
+  WHY_NOT_LANDED (launch.REFUSED_NOT_LANDED; never a timeout / "replaced" / another refusal), (2) the drone is still
+  on its slot cable, (3) the sequence knows it cannot be lifting off (its TAKEOFF not sent yet, or the no-climb
+  judgement on FRESH data < 1 m) and (4) the same prepared sequence (run_id); else the notice "DISARM not confirmed -
+  check the magazine". Never let out in flight. ARM needs ctx gps_ok (review round 2: a 3D fix + the EKF position
+  flags heard < 3 s ago) beside the hatch OPEN switch; docs/uav_params.param keeps ArduPilot's own pre-arm checks on
+  (ARMING_CHECK 1 / ARMING_SKIPCHK 0, SAFETY if-present).
 - Tests: UA3 (in_slot cases, force ARM, near-magic, NaN, the exact TO_DRONE list, MISSION_REQUEST inbound only),
   UA16 (no GPS = STOPPED + never armed, in STANDBY and under way; the forced DISARM on the cable; none once the
   cable parted), UA42 (the router: MISSION_REQUEST upload + read-back, force DISARM out only in the slot, refused in
@@ -721,3 +728,15 @@ allow.py changed = the SERIAL safety review (LOOP RULE 6(3), W110).
   frames in 60 episodes; the in_slot-always-True mutation = 60 I84 fails). L1 CLAUDE.md's stale U3 / WA lines.
   Not changed: LOW-2 vz has the altitude's timestamp (both come only from GLOBAL_POSITION_INT); the academy uavsim
   has no "no GPS" fault (the lesson never needed the fallback); AC22 / AC54 / AC55 pre-existing since X1.
+- Round 2 of the serial review (review of 2d1da0b..3451b68, C:/trygons/private/reviews/review_3451b68.txt) - fixed:
+  MED-1 the no-climb DISARM forced only on FRESH data (< 1 m); a force follows only the drone's refusal or exactly
+  allow.py's WHY_NOT_LANDED (the router now answers "refused by the allow-list: <reason>"; UA42 checks the text) -
+  the TAKEOFF exception (the measured stuck case) is the router's explicit 4 s still-window, documented above.
+  MED-2 ARM needs ctx gps_ok in allow.py (fresh 3D fix + EKF position, < 3 s; UA3 / UA42; storm I81 has its own GPS
+  record and the gps_ok-always-True mutation fails it: 16 of 36) + ARMING_CHECK / ARMING_SKIPCHK SAFETY if-present.
+  LOW-1 TAKEOFF needs an ESS < 1 s. LOW-2 a late DISARM answer of an older prepared sequence never forces (run_id).
+  LOW-3 the exact refusal text shared (launch.REFUSED_NOT_LANDED from allow.WHY_NOT_LANDED). LOW-4 the storm's
+  coverage check once per uav part (force DISARMs out 22, ARMs out 31 in 60 episodes). Docs LOW-1 this bullet + the
+  PROGRESS row rewritten as built. Not changed (notes): the newest altitude may be up to 1 s old (MAV1_POSITION 2 Hz;
+  a 5 Hz request would tighten it); an ESS interval a firmware ignores = in_slot never true = no force (fail-safe,
+  the notice; FIRST_TEST 6g checks it on the real drones); the station lamp for "DISARM not confirmed" (a notice).

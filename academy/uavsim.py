@@ -309,7 +309,8 @@ class UavSim(object):
 
     def ctx(self, d, via):
         return {"port": via, "armed": d.armed, "landed": d.alt < 0.3, "hatch_open": self.hatch == "OPEN",
-                "battery_land": d.landing}
+                "battery_land": d.landing,
+                "gps_ok": d.gps_fix >= 3 and (d.ekf & allow.EKF_POS) == allow.EKF_POS}     # UAV-r1: never ARM without GPS
 
     def cmd(self, n, via, command, params, cb):
         """A COMMAND_LONG to drone n - only through the ALLOW-list (allow.check_out), like the gateway's router."""

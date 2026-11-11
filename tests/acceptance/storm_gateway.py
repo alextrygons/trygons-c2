@@ -527,10 +527,18 @@ def storm_uav_router(seed):
         # own ON_GROUND (< 2 s), the newest altitude sample (< 1 s) and EVERY sample of the last 2 s (>= 2 over >= 1 s)
         # on the ground (< 0.5 m) and still (< 0.3 m/s)
         usb_hb, alt_rec, land_rec = {}, {}, {}
+        gps_rec, ekf_rec = {}, {}                          # UAV-r1 round 2: OUR record of the fix / EKF (for I81)
+
+        def own_gps_ok(s, now):
+            g, e = gps_rec.get(s), ekf_rec.get(s)
+            return (g is not None and g[1] >= 3 and now - g[0] < 3.0 and e is not None and e[1] & 0x18 == 0x18 and
+                    now - e[0] < 3.0)
 
         def own_in_slot(s, now):
             ls = land_rec.get(s)
             if ls is None or ls[1] not in (1, 3) or now - ls[0] >= 2.0 or now - usb_hb.get(s, -1e9) >= 1.5:
+                return False
+            if ls[1] == 3 and now - ls[0] >= 1.0:
                 return False
             win = 2.0 if ls[1] == 1 else 4.0                 # ON_GROUND 2 s, TAKEOFF (did not climb) 4 s still
             hist = [h for h in alt_rec.get(s, []) if now - h[0] <= win]
@@ -558,7 +566,9 @@ def storm_uav_router(seed):
                             res("I82", ok, seed, "slot %d: flight mode %s sent" % (key[0], f.get("param2")))
                         if ok and c == 400 and int(f.get("param1", 0)) == 1:
                             arm_ok = hatch[0] is not None and now - hatch[0] <= 1.0 + 1e-6 and \
-                                f.get("param2", 0) == 0
+                                f.get("param2", 0) == 0 and own_gps_ok(key[0], now)     # UAV-r1: never without GPS
+                            if arm_ok:
+                                UAV_ARM_OUT[0] += 1
                             res("I81", arm_ok, seed, "slot %d: ARM without a fresh OPEN switch report" % key[0])
                         if ok and c == 21:
                             res("I82", key[0] in land_ok, seed, "slot %d: LAND not by the battery rule" % key[0])
@@ -611,8 +621,12 @@ def storm_uav_router(seed):
                         if rng.random() < 0.3:
                             msgs.append(("EXTENDED_SYS_STATE", {"landed_state": (rng.choice([1, 1, 3]) if d["armed"] else 1)
                                                                   if d["alt"] < 0.3 else rng.choice([2, 3])}))
+                        if rng.random() < 0.5:                 # UAV-r1 round 2: a GPS fix / EKF state
+                            msgs.append(("GPS_RAW_INT", {"fix_type": rng.choice([1, 3, 3, 3, 6]),
+                                                         "satellites_visible": 10}))
+                            msgs.append(("EKF_STATUS_REPORT", {"flags": rng.choice([0x07, 0x1F, 0x1F])}))
                         if rng.random() < 0.4:
-                            msgs.append(("MISSION_REQUEST_INT", {"seq": rng.randint(0, 6), "target_system": 255,
+                            msgs.append((rng.choice(["MISSION_REQUEST_INT", "MISSION_REQUEST"]), {"seq": rng.randint(0, 6), "target_system": 255,
                                                                  "mission_type": 0}))
                         if rng.random() < 0.2:
                             msgs.append(("COMMAND_ACK", {"command": rng.choice(UAV_TRY_CMDS), "result": 0}))
@@ -630,6 +644,10 @@ def storm_uav_router(seed):
                                         (now, ff["relative_alt"] / 1000.0, -ff["vz"] / 100.0)]
                                 elif nm == "EXTENDED_SYS_STATE":
                                     land_rec[s] = (now, ff["landed_state"])
+                                elif nm == "GPS_RAW_INT":
+                                    gps_rec[s] = (now, ff["fix_type"])
+                                elif nm == "EKF_STATUS_REPORT":
+                                    ekf_rec[s] = (now, ff["flags"])
                             if cb >= 0:
                                 last_a[s] = cb / 100.0
                             recent.setdefault(s, []).append((now, d["alt"], d["pct"], last_a.get(s)))
@@ -1047,16 +1065,13 @@ def storm_uav_static(seed):
 
 
 UAV_FORCED_OUT = [0]                                  # UAV-r1: force DISARMs that left the router (all seeds)
+UAV_ARM_OUT = [0]                                     # UAV-r1 round 2: ARMs that left the router (I81 with GPS)
 
 
 def storm_uav(seed):
     if seed == 1 or not RES.get("I80"):
         storm_uav_static(seed)
     storm_uav_router(seed)
-    if seed >= 20:
-        # review MED-2: the force DISARM branch must be reached at all (else I84's new rule could never fail)
-        res("I84", UAV_FORCED_OUT[0] > 0, seed, "no force DISARM ever left the router in %d episodes - the in-slot "
-            "branch is not exercised" % seed)
     storm_uav_pilot(seed)
     storm_uav_launch(seed)
 
@@ -1077,6 +1092,12 @@ def main():
         for k in range(n):
             PARTS[name](a.seed + k)
         print("%-9s %d episodes (seeds %d..%d)" % (name, n, a.seed, a.seed + n - 1), flush=True)
+        if name == "uav" and n >= 20:
+            # UAV-r1 review (round 1 MED-2, round 2 LOW-4): the force DISARM and the gated ARM branches must be
+            # REACHED (else I84's / I81's new rules could never fail) - checked once for the whole part
+            res("I84", UAV_FORCED_OUT[0] > 0, a.seed, "no force DISARM ever left the router in %d episodes" % n)
+            res("I81", UAV_ARM_OUT[0] > 0, a.seed, "no ARM ever left the router in %d episodes" % n)
+            print("uav       force DISARMs out %d, ARMs out %d" % (UAV_FORCED_OUT[0], UAV_ARM_OUT[0]), flush=True)
     names = {"I14": "avoidance / programs never over shallow water, never across a bow",
              "I15": "STARLINK never for sync, never switched to while a normal channel works",
              "I17": "a not fully synced (or open) saved event is never deleted",
@@ -1084,7 +1105,7 @@ def main():
              "I21": "vision crash / overload never releases an active cap by itself",
              "I26": "REMOTE MANUAL / MANEUVER never asked for a user without a manual licence",
              "I80": "UAV: nothing to the AURIX but the hatch relay (HELM station T_RELAY)",
-             "I81": "UAV: never ARM without the hatch OPEN switch",
+             "I81": "UAV: never ARM without the hatch OPEN switch + a GPS fix",
              "I82": "UAV: never LAND except the battery rule, never RTL / SmartRTL",
              "I83": "UAV: captain flies only in STANDBY, no GW_RJOY to the boat meanwhile",
              "I84": "UAV: only allow-listed MAVLink leaves the router"}

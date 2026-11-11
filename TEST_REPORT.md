@@ -999,24 +999,28 @@ gate unchanged 7 / 86 + 4 / 33).
 
 ## UAV-r1 - MISSION_REQUEST, no launch without GPS, the force DISARM in the slot (2026-11-11)
 
-Owner W139 + W138 (gateway/uav + tests + docs only; NO app / hal / AURIX change; docs/uav_design.md 15).
-SITL (ArduCopter V4.7.3-beta1, Windows, `python tools/run_sitl.py`): **18 passed, 0 failed, 0 N/A** (~9 min;
-log test_results/sitl/sitl_20261111-165045.log). SI3 / SI4 / SI5 / SI14b (the mission upload) now PASS; SI13 = no
-GPS = no launch (stopped "no GPS fix in 10 s with the hatch open", never armed, slot not launchable, PREPARE refused
-125); SI15a = a copter stuck armed on deck: normal DISARM -> MAV_RESULT 4, the launch's FORCED DISARM in the slot
--> disarmed; SI15b = in flight the force DISARM refused by the router (over ELRS, and over a still-heard USB link at
-20 m).
-SITL found two more real blockers beyond W139, fixed here: ArduCopter 4.7 DENIES MISSION_START with param1 /
-param2 != 0 (MAV_RESULT 2) -> the router now sends [0, 0] (a fresh mission starts at seq 1 = the take-off item; in
-flight MISSION_SET_CURRENT first), and it reads a DO_CHANGE_SPEED item back with frame 0 (mission.same accepts
-that for DO items only). Two test-harness bugs of X2 fixed (SI3 / SI14b compared a bool with "DONE"; SI14c now
-waits until the copters loiter at their last point before cutting the radio).
-Fast tests: gateway test_uav 49/49 (UA3 / UA16 / UA17 / UA34 updated, UA42 NEW with two mutations), storm
-`--part uav` 60 episodes I80-I84 PASS (I84 with its own in-slot record; the in_slot-always-True mutation = 60 I84
-fails), groundstation test_uavui 16/16, test_lang 6/6, academy AC1-AC21 / AC23-AC53 / AC56 PASS; AC22 / AC54
-(the tour does not cover the X1 ".tlog" export button, uav:tlog) and AC55 (the tour screenshots stale) FAIL -
-pre-existing since X1, not touched here. Assistant index rebuilt (the manuals changed), check / eval / floor gate
-pass (7 / 86 + 4 / 33).
+Owner W139 + W138 (gateway/uav + tests + docs only; NO app / hal / AURIX change; docs/uav_design.md 15). Serial
+safety review in 2 rounds (opus, tools/api_review.py: review_5f038f0.txt 1 HIGH / 3 MED, review_3451b68.txt 2 MED -
+all fixed, the notes in docs 15).
+SITL (ArduCopter V4.7.3-beta1, Windows, `python tools/run_sitl.py`, final code): **18 passed, 0 failed, 0 N/A**
+(log test_results/sitl/sitl_20261111-180313.log). SI3 / SI4 / SI5 / SI14b (the mission upload) PASS; SI13 = no GPS
+= no launch (stopped "no GPS fix in 10 s with the hatch open", never armed, slot not launchable, PREPARE refused
+125); SI15a = a copter stuck armed on deck (ALT_HOLD take-off accepted, no climb): it reports landed state TAKEOFF,
+the normal DISARM is refused by the allow-list ("not on the ground"), the launch's FORCED DISARM in the slot ->
+disarmed; SI15b = in flight the force DISARM refused by the router (over ELRS, and over a still-heard USB link at
+20 m). One SI5 failure on an intermediate run (MISSION_ACK 13 INVALID_SEQUENCE over the radio bridge) passed when
+re-run alone; the router now treats that ack as not fatal (ArduPilot goes on asking; the read-back still checks).
+SITL found further real blockers beyond W139, fixed here: ArduCopter 4.7 DENIES MISSION_START with param1 / param2 !=
+0 (MAV_RESULT 2) -> MISSION_SET_CURRENT then MISSION_START [0, 0] (+ MIS_RESTART 0 SAFETY if-present); a
+DO_CHANGE_SPEED item is read back with frame 0 (mission.same accepts that for DO items only); ArduCopter streams no
+EXTENDED_SYS_STATE (the router asks for it at 2 Hz on the slot cable). Two X2 test-harness bugs fixed (SI3 / SI14b
+compared a bool with "DONE"; SI14c now waits until the copters loiter at their last point).
+Fast tests: gateway test_uav 49/49 (UA3 / UA16 / UA17 / UA32 / UA34 updated, UA42 NEW with mutations), storm
+`--part uav` 60 episodes I80-I84 PASS (I84 with its own in-slot record, I81 with its own GPS record; 22 force
+DISARMs + 31 ARMs left the router; the in_slot-always-True mutation = I84 fails, the gps_ok-always-True mutation =
+16 I81 fails), groundstation test_uavui 16/16, test_lang 6/6; academy 53/56: AC22 / AC54 (the tour does not
+cover the X1 ".tlog" export button, uav:tlog) and AC55 (the tour screenshots stale) FAIL - pre-existing since X1, not
+touched here. Assistant index rebuilt (the manuals changed), check / eval / floor gate pass (7 / 86 + 4 / 33).
 
 ## AM7 - licence-clean language model + the scaled extract floor (2026-11-11)
 
