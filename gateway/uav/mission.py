@@ -22,7 +22,9 @@ from . import allow
 
 HOME, TAKEOFF, SPEED = 0, 1, 2
 FIRST_WP = 3
-START_LAUNCH = 1          # MISSION_START param1 after a launch (the take-off item)
+START_LAUNCH = 1          # the item a launch's MISSION_START begins at (the take-off item). UAV-r1: ArduCopter 4.7
+                          # DENIES MISSION_START with param1 / param2 != 0 - the router sends [0, 0], which starts a
+                          # freshly uploaded mission at seq 1 (= START_LAUNCH); in flight MISSION_SET_CURRENT first
 FLY_FROM = SPEED          # ... for a mission changed in flight
 MAX_WPS = 20
 F_REL = 3                 # MAV_FRAME_GLOBAL_RELATIVE_ALT
@@ -65,7 +67,10 @@ def same(sent, got):
     for a, b in zip(sent[1:], got[1:]):
         if b is None:
             return False, "read-back: item %d missing" % a["seq"]
-        if int(b.get("command", -1)) != a["command"] or int(b.get("frame", -1)) != a["frame"]:
+        # UAV-r1 (SITL, ArduCopter 4.7): a DO command is stored without a frame and read back as frame 0
+        # (MAV_FRAME_GLOBAL) - for DO_CHANGE_SPEED (no position) frame 0 or the uploaded MISSION frame 2
+        frames = (a["frame"], 0) if a["command"] == allow.CMD_DO_CHANGE_SPEED else (a["frame"],)
+        if int(b.get("command", -1)) != a["command"] or int(b.get("frame", -1)) not in frames:
             return False, "read-back: item %d is command %s frame %s (uploaded %d / %d)" % (
                 a["seq"], b.get("command"), b.get("frame"), a["command"], a["frame"])
         if int(b.get("x", 0)) != a["x"] or int(b.get("y", 0)) != a["y"]:

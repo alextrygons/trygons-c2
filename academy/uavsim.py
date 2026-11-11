@@ -346,9 +346,6 @@ class UavSim(object):
     def on_mission(self, n):
         pass
 
-    def catchup(self, n):
-        self.drones[n].mode = "AUTO"
-
     def hatch_cmd(self, on, cb):
         """The hatch relay (ON = open): the boat's ONLY UAV action, a T_RELAY of the HELM station on the real boat."""
         self.relay.append((round(self.t, 2), bool(on)))

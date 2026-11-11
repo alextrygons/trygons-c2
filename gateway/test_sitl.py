@@ -34,7 +34,12 @@ loaded with SITL's --defaults like the owner loads them with Mission Planner.
         the ground + disarmed); ArduPilot never landed by itself before
   SI11  the SITL-made .tlog read by pymavlink: every packet, timestamps in order, no denied command in it
   SI12  the gateway never wrote a parameter: every SAFETY parameter of the drone is the same after the flights
-  SI13  the no-GPS climb fallback (W59 / W68) measured: ALT_HOLD + TAKEOFF param3 = 1 with the RC receiver ignored
+  SI13  NO GPS = NO LAUNCH (owner W138, UAV-r1; the ALT_HOLD climb fallback is removed - X2 measured that it does
+        not climb with the RC receiver ignored): the hatch opens, no fix in gps_wait_s = STOP, never armed; with the
+        hatch open the slot is not launchable ("no GPS fix") and a PREPARE is refused
+  SI15  the FORCE DISARM (owner W138 b): (a) a copter stuck armed on deck refuses the normal DISARM - launch.py sends
+        it forced, allow.py lets it out only in the slot (in_slot) = disarmed; (b) in flight a force DISARM never
+        leaves the router (USB cable gone, and a "stuck" USB cable heard at 20 m)
   SI14  six copters: 5 good + 1 with a wrong FENCE_ACTION; registration (5 ok, 1 refused naming it); the launch of 5
         in series (gap >= gap_s between the ARMs, slot order); all 5 hold when every radio link is cut
 """
@@ -548,9 +553,8 @@ def cmd(w, s, via, command, params, timeout=8.0):
     return box[0] if box else ("no answer", "")
 
 
-UPLOAD_WHY = ("the mission upload needs ArduPilot's MISSION_REQUEST (id 40): ArduCopter answers MISSION_COUNT with "
-              "MISSION_REQUEST, never MISSION_REQUEST_INT (measured in SITL) - it is not on allow.py's FROM_DRONE list "
-              "nor in the router's codec: an allow.py change = a SERIAL safety review (W110), NOT done in X2")
+UPLOAD_WHY = ("REGRESSION of W139 (UAV-r1): ArduCopter answers MISSION_COUNT with MISSION_REQUEST (id 40) - it must "
+              "be on allow.py's FROM_DRONE list, in the codec and answered by the router like MISSION_REQUEST_INT")
 
 
 def upload_blocked(w):
@@ -629,7 +633,7 @@ def suite_one(exe):
         n0 = len(cop.sent)
         w.m.prepare_msg(cop, {"t": "uav_launch_prepare", "count": 1})
         t_launch = time.time()
-        done = w.run(150, lambda: w.m.seq.state in ("DONE", "STOPPED"))
+        done = w.run(150, lambda: w.m.seq.state if w.m.seq.state in ("DONE", "STOPPED") else None)
         hist = [h for h in w.m.seq.history][-14:] if hasattr(w.m.seq, "history") else []
         armed_at_open = w.arm_hatch.get(1)
         in_auto = until(lambda: b1.mode() == MODE["AUTO"], 20, pump=w.pump)
@@ -861,74 +865,119 @@ def check_tlogs(files, denied_cmds):
         len(files), n, bad_order, len(types), sorted(types)[:8], denied_seen, param_set)
 
 
-# ------------------------------------------------------------------------------------- the no-GPS fallback run ---
+# ------------------------------------------------------------- no GPS + the force DISARM in the slot (UAV-r1) ---
 
-def suite_fallback(exe):
-    w = World(exe, 1, launch={"gps_wait_s": 5.0}, prefix="sitlf_")
+def suite_ground(exe):
+    """UAV-r1 (owner W138, 2026-11-11): SI13 no GPS = no launch (the old ALT_HOLD climb fallback is removed);
+    SI15 a FORCE DISARM only for a drone on the ground in its slot, never in flight."""
+    w = World(exe, 1, launch={"gps_wait_s": 10.0}, prefix="sitlg_")
     try:
         ok = w.ready()
         b = w.copters[1].bench
         regs = w.register([1])
-        # "no sky in the hatch": the simulated GPS off after the registration (a real GPS in a closed magazine);
-        # the fallback's ARM then needs no position (FENCE_ENABLE 0 in docs/uav_params.param)
+        w.breakaway = False                      # the drone must not "leave" its slot cable while stuck on deck
+        # ---- SI13 no GPS = no launch ----------------------------------------------------------------------------
         gps_off = b.set_param("SIM_GPS1_ENABLE", 0)
-        nofix = w.run(30, lambda: (w.drone(1).get("gps_fix") or 0) < 3)
-        w.run(10)
+        nofix = w.run(40, lambda: (w.drone(1).get("gps_fix") or 0) < 3)
+        w.run(5)
         cop = w.gw.stations.copilot_st
         w.m.route_msg(cop, {"t": "uav_route", "target": 1, "wps": [wps_out(60.0, 0.0, 40.0)]})
+        n0 = len(cop.sent)
         w.m.prepare_msg(cop, {"t": "uav_launch_prepare", "count": 1})
         t0 = time.time()
-        end = w.run(90, lambda: w.m.seq.state in ("DONE", "STOPPED"))
-        how = "the launch sequence"
-        acks = None
-        if upload_blocked(w):
-            # the launch stops at the upload (the MISSION_REQUEST finding): the fallback's own commands through the
-            # real router + allow.py, exactly as launch.py sends them (ALT_HOLD, ARM with the hatch OPEN, TAKEOFF
-            # param3 = 1 to fallback_alt 15 m)
-            how = "the fallback's commands through the router (the launch stops at the mission upload)"
-            w.m.hatch_cmd(True, lambda ok, why: None)
+        end = w.run(120, lambda: w.m.seq.state if w.m.seq.state in ("DONE", "STOPPED") else None)
+        why1 = w.m.seq.why
+        armed_ever = any(a for t, _m, a in b.modes if t >= t0)
+        notes = [n["text"] for n in w.m.notices]
+        uploaded = w.m.loaded.get(1)
+        hatch_open = w.m.hatch.state
+        # the hatch now OPEN (stays open after the stop, W72): the slot reports "no GPS" and a new launch is refused
+        st1 = next((s for s in w.m.slot_status() if s["slot"] == 1), {})
+        n1 = len(cop.sent)
+        w.m.prepare_msg(cop, {"t": "uav_launch_prepare", "count": 1})
+        ref = ack(cop, "launch", n1)
+        report("SI13 NO GPS = NO LAUNCH (owner W138, UAV-r1; ArduCopter SITL with the GPS off): the mission is uploaded "
+               "(MISSION_REQUEST), the hatch opens, no fix within gps_wait_s = the sequence STOPS with the notice, the "
+               "drone is NEVER armed; with the hatch open the slot shows 'no GPS fix' (not launchable) and a new "
+               "PREPARE is refused (125) naming it",
+               bool(ok and gps_off and nofix and (regs.get(1) or {}).get("ok") and end == "STOPPED" and
+                    "no GPS fix" in (why1 or "") and not armed_ever and any("no GPS fix" in t for t in notes) and
+                    st1.get("launchable") is False and "no GPS" in (st1.get("why") or "") and
+                    st1.get("gps_ok") is False and ref is not None and ref.get("ok") is False and
+                    "no GPS" in (ref.get("text") or "")),
+               "ready %s, gps off %s, no fix %s, registered %s; sequence %s (%s); mission loaded %s; armed %s; hatch "
+               "%s; slot %s / %s / gps %s; second prepare %s; notices %s" % (
+                   bool(ok), gps_off, bool(nofix), (regs.get(1) or {}).get("ok"), end, why1, bool(uploaded),
+                   armed_ever, hatch_open, st1.get("launchable"), st1.get("why"), st1.get("gps_why"),
+                   ref and (ref.get("ok"), ref.get("text")), notes[-3:]))
+        _ = n0
+        # ---- SI15a the drone stuck ARMED in its slot (X2 SI13: an accepted ALT_HOLD take-off that does not climb):
+        #       the normal DISARM refused -> launch.py's DISARM sends it FORCED -> allow.py lets it out (in the slot)
+        if w.m.hatch.state != "OPEN":
+            w.m.hatch_cmd(True, lambda o, y: None)
             w.run(20, lambda: w.m.hatch.state == "OPEN")
-            t0 = time.time()
+
+        def stick_armed():
             acks = (cmd(w, 1, "usb", allow.CMD_DO_SET_MODE, [1, allow.COPTER_ALT_HOLD]),
                     cmd(w, 1, "usb", allow.CMD_COMPONENT_ARM_DISARM, [1, 0]),
                     cmd(w, 1, "usb", allow.CMD_NAV_TAKEOFF, [0, 0, 1, 0, 0, 0, 15.0]))
-            w.run(10)
-            motors = [getattr(b.servo, "servo%d_raw" % i, 0) for i in range(1, 5)] if b.servo else None
-            # launch.py's no-climb rule: DISARM on deck (never forced) - tried 4 times over ~15 s
-            for _k in range(4):
-                if not b.armed() or w.max_alt.get(1, 0.0) >= 2.0:
-                    break
-                acks = acks + (cmd(w, 1, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0]),)
-                w.run(3)
-            t_obs = time.time()
-            w.run(30, lambda: not b.armed())
-            disarm_t = next((round(t - t_obs, 1) for t, _m, a in b.modes if t >= t_obs and not a), None)
-            acks = acks + (("motors after 10 s", motors), ("disarmed by itself after the DISARMs (s)", disarm_t))
-        modes = modes_seen(b, t0)
-        armed_ever = any(a for _t, _m, a in b.modes if _t >= t0)
-        climbed = w.max_alt.get(1, 0.0) > 5.0
-        safe = not b.armed() and not climbed
-        report("SI13 the no-GPS climb fallback (W59 / W68) MEASURED with ArduCopter SITL (%s): no fix -> ALT_HOLD, ARM, "
-               "TAKEOFF param3 = 1 to 15 m with the RC receiver ignored; the drone ends safe (a drone that does not "
-               "climb is disarmed on deck; one that climbs hovers until GPS)" % how,
-               bool(ok and gps_off and nofix and (regs.get(1) or {}).get("ok") and armed_ever and
-                    (safe or climbed)),
-               "ready %s, gps off %s, no fix %s; registered %s; sequence %s (%s); acks %s; armed %s; climbed %s (max "
-               "alt %s); modes %s; notices %s" % (
-                   bool(ok), gps_off, bool(nofix), (regs.get(1) or {}).get("ok"), end, w.m.seq.why, acks,
-                   armed_ever, climbed, w.max_alt.get(1), modes, [n["text"] for n in w.m.notices][-3:]))
-        finding("W68 / W59 (no GPS at the launch, ArduCopter %s SITL): %s" % (
-            (w.m.reg.recs.get(1) or {}).get("fw"),
-            ("ALT_HOLD + MAV_CMD_NAV_TAKEOFF param3 = 1: acks %s - the copter does NOT climb with the RC receiver "
-             "ignored (ArduCopter's ALT_HOLD take-off needs pilot throttle); the launch's no-climb DISARM (never forced) "
-             "-> %s; armed at the end: %s - the climb fallback does not work: owner decision W138" % (
-                 [a[0] for a in acks] if acks else "-", [a[1] for a in acks[3:]] if acks else "-", b.armed())) if
-            armed_ever and not climbed else
-            ("the ALT_HOLD take-off climbs with the RC receiver ignored (max %.1f m)" % w.max_alt.get(1, 0.0)
-             if climbed else "the copter did not even ARM in ALT_HOLD without GPS (acks %s)" % (
-                 [a[0] for a in acks] if acks else "-"))))
-        finding("FENCE (SITL): an enabled fence refuses ARM without a GPS position (also FENCE_TYPE 1) - "
-                "docs/uav_params.param has FENCE_ENABLE 0 (the fence only reports with FENCE_ACTION 0)")
+            w.run(8)
+            return acks, b.armed() and (b.alt() or 0.0) < 1.0
+        acks1, stuck1 = stick_armed()
+        normal = cmd(w, 1, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, 0])
+        w.run(3)
+        still = b.armed()
+        ctx_slot = None
+        try:
+            ctx_slot = (w.m.worker.get("drones") or {}).get("1", {}).get("landed")
+        except Exception:
+            pass
+        nb = len(w.m.notices)
+        w.m.seq._disarm(1, "SITL test")                      # the launch's own DISARM (normal, then forced)
+        dis = w.run(25, lambda: not b.armed())
+        w.run(3)
+        notes_a = [n["text"] for n in w.m.notices[nb:]]
+        forced_note = any("FORCED" in t for t in notes_a)
+        # and the force DISARM sent alone (a second stuck drone)
+        acks2, stuck2 = stick_armed()
+        direct = cmd(w, 1, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC])
+        dis2 = w.run(10, lambda: not b.armed())
+        report("SI15a FORCE DISARM on the ground IN ITS SLOT (owner W138 b): a copter stuck ARMED on deck (ALT_HOLD take-"
+               "off accepted, no climb, X2) refuses the normal DISARM; launch.py's DISARM then sends it FORCED over the "
+               "slot cable and allow.py lets it out (fresh USB HEARTBEAT + fresh altitude < 0.5 m) - disarmed; the "
+               "force DISARM alone works the same: no drone stays armed in the hatch",
+               bool(stuck1 and dis and (forced_note or normal[0] == 0) and stuck2 and direct[0] == 0 and dis2),
+               "stuck %s (acks %s); normal DISARM %s (still armed %s, landed %s); launch DISARM -> disarmed %s, "
+               "notices %s; again stuck %s, force DISARM alone %s -> disarmed %s" % (
+                   stuck1, [a[0] for a in acks1], normal, still, ctx_slot, bool(dis), notes_a[-2:], stuck2, direct,
+                   bool(dis2)))
+        finding("W138 b (SITL ArduCopter %s): a copter stuck armed on deck after an ALT_HOLD take-off: the normal "
+                "DISARM -> %s; the FORCE DISARM (param2 21196, only in the slot) -> %s" % (
+                    (w.m.reg.recs.get(1) or {}).get("fw"), normal, direct))
+        # ---- SI15b IN FLIGHT a force DISARM never leaves the router (with the USB cable gone AND, as a stuck
+        #       cable, with the USB link still heard at altitude)
+        b.set_param("SIM_GPS1_ENABLE", 1)
+        fix = w.run(90, lambda: (w.drone(1).get("gps_fix") or 0) >= 3 and
+                    ((w.drone(1).get("ekf_flags") or 0) & 0x18) == 0x18)
+        w.breakaway = True
+        flown, rr = fly_cmds(w, 1, 20.0)
+        air1 = cmd(w, 1, "elrs", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC], 6.0)
+        w.run(2)
+        armed1 = b.armed()
+        w.breakaway = False
+        w.copters[1].usb.cut = False                         # a "stuck" cable: the USB link heard at 20 m
+        heard = w.run(10, lambda: (w.m.worker.get("links") or {}).get("1", {}).get("present"))
+        air2 = cmd(w, 1, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC], 6.0)
+        w.run(2)
+        armed2 = b.armed() and (b.alt() or 0.0) > 15.0
+        den = (w.m.worker.get("denied") or {}).get("out COMMAND_LONG", 0)
+        report("SI15b IN FLIGHT a FORCE DISARM never leaves the router (allow.py ctx in_slot False): with the USB "
+               "cable gone (over ELRS) and with the USB link still heard at 20 m (a stuck cable: the altitude rule) - "
+               "refused (result None), the copter keeps flying",
+               bool(fix and flown and air1[0] is None and armed1 and heard and air2[0] is None and armed2 and den >= 2),
+               "fix %s, flown %s (%s); over ELRS %s, armed %s; USB heard %s, over USB %s, armed + up %s (alt %s); "
+               "denied out COMMAND_LONG %s" % (bool(fix), flown, [r[0] for r in rr], air1, armed1, bool(heard), air2,
+                                               armed2, b.alt(), den))
     finally:
         w.close()
 
@@ -953,7 +1002,7 @@ def suite_six(exe):
                                 "wps": [wps_out(60.0 + 25.0 * s, -50.0 + 25.0 * s, 40.0 + 5.0 * s)]})
         w.m.prepare_msg(cop, {"t": "uav_launch_prepare", "count": 5})
         t0 = time.time()
-        end = w.run(420, lambda: w.m.seq.state in ("DONE", "STOPPED"))
+        end = w.run(420, lambda: w.m.seq.state if w.m.seq.state in ("DONE", "STOPPED") else None)
         arms = {}
         for s in range(1, 6):
             arms[s] = next((t for t, _m, a in w.copters[s].bench.modes if a and t >= t0), None)
@@ -976,6 +1025,14 @@ def suite_six(exe):
                 fly_cmds(w, s, 30.0 + 5.0 * (s - 1))
             w.m.hatch_cmd(False, lambda ok, why: None)
         w.run(20)
+        if not blocked:
+            # UAV-r1: the missions now fly - wait until every copter loiters at its last point (the link-loss test
+            # compares altitudes; a copter still climbing to its waypoint altitude is no "hold" failure)
+            tgt = {s: wps_out(60.0 + 25.0 * s, -50.0 + 25.0 * s, 40.0 + 5.0 * s) for s in range(1, 6)}
+            w.run(150, lambda: all(w.copters[s].bench.latlon() and
+                                   dist(w.copters[s].bench.latlon(), (tgt[s]["lat"], tgt[s]["lon"])) < 12.0 and
+                                   abs((w.copters[s].bench.alt() or 0) - tgt[s]["alt"]) < 2.0 for s in range(1, 6)))
+            w.run(5)
         up = [s for s in range(1, 6) if w.copters[s].bench.armed() and (w.copters[s].bench.alt() or 0) > 20]
         # every radio link cut 15 s: all hold
         alts0 = {s: w.copters[s].bench.alt() for s in up}
@@ -1004,7 +1061,8 @@ def na_all(why):
     for t in ("SI1 registration", "SI2 GPS warm start", "SI3 route + launch sequence", "SI4 mission flown",
               "SI5 in-flight mission change", "SI6 link loss = hold", "SI7 manual assisted flying + give back",
               "SI8 GPS lost in the air = ALT_HOLD", "SI9 allow-list vs a real ArduPilot", "SI10 battery minimum",
-              "SI11 SITL .tlog via pymavlink", "SI12 never a parameter write", "SI13 no-GPS climb fallback",
+              "SI11 SITL .tlog via pymavlink", "SI12 never a parameter write", "SI13 no GPS = no launch",
+              "SI15a force DISARM in the slot", "SI15b no force DISARM in flight",
               "SI14a six copters: registration", "SI14b six copters: launch in series", "SI14c six copters: hold"):
         report(t, NA, why)
 
@@ -1023,7 +1081,7 @@ def main():
         print("SITL TESTS: N/A (no pymavlink)")
         return 0
     print("SITL: %s" % exe, flush=True)
-    for name, fn in (("one", suite_one), ("fallback", suite_fallback), ("six", suite_six)):
+    for name, fn in (("one", suite_one), ("ground", suite_ground), ("six", suite_six)):
         if only and name not in only:
             continue
         t0 = time.time()

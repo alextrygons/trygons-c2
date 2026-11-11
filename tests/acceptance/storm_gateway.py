@@ -522,6 +522,15 @@ def storm_uav_router(seed):
             r.capacity[s] = rng.choice([1500, 2500, None])
             drone[s] = {"armed": False, "alt": 0.0, "pct": rng.randint(5, 100), "mode": 0, "seq": 0}
         parsers = {k: mavlink.Parser() for k in r.links}
+        # UAV-r1 (W138 b): OUR OWN record of "on the ground in its slot" (never the router's in_slot): the last
+        # HEARTBEAT of the right sysid on the slot's USB link, the last altitude / vertical speed / landed state
+        usb_hb, alt_rec, land_rec = {}, {}, {}
+
+        def own_in_slot(s, now):
+            a, ls = alt_rec.get(s), land_rec.get(s)
+            return (now - usb_hb.get(s, -1e9) < 3.0 and a is not None and now - a[0] < 2.0 and abs(a[1]) < 0.5 and
+                    abs(a[2]) < 0.3 and not (ls is not None and ls[1] in (2, 4) and now - ls[0] < 2.0))
+
         def drain(now):
             """Check every frame that went out since the last call (independent rules), at once: the hatch state of
             THAT moment."""
@@ -548,7 +557,10 @@ def storm_uav_router(seed):
                         if ok and c == 21:
                             res("I82", key[0] in land_ok, seed, "slot %d: LAND not by the battery rule" % key[0])
                         if ok and c == 400:
-                            ok, why = f.get("param2", 0) == 0, "force ARM / DISARM"
+                            p2, p1 = f.get("param2", 0), int(f.get("param1", 0))
+                            # UAV-r1: a force DISARM only on the ground in its slot (our own record); force ARM never
+                            ok = p2 == 0 or (p2 == allow.FORCE_MAGIC and p1 == 0 and own_in_slot(key[0], now))
+                            why = "force ARM / DISARM (in slot by our record: %s)" % own_in_slot(key[0], now)
                     if ok and m.name == "MISSION_ITEM_INT":
                         c = int(f.get("command", -1))
                         if c == 178:                       # DO_CHANGE_SPEED: frame MISSION, a sane speed
@@ -597,6 +609,13 @@ def storm_uav_router(seed):
                             msgs.append(("PARAM_SET", {"param_value": 1.0}))       # never allow-listed in
                         data = b"".join(mavlink.encode(n, f, d["seq"] + i, sysid, 1) for i, (n, f) in enumerate(msgs))
                         if sysid == 10 + s:
+                            if kind == "usb":
+                                usb_hb[s] = now
+                            gpi = msgs[1][1]
+                            alt_rec[s] = (now, gpi["relative_alt"] / 1000.0, -gpi["vz"] / 100.0)
+                            for nm, ff in msgs:
+                                if nm == "EXTENDED_SYS_STATE":
+                                    land_rec[s] = (now, ff["landed_state"])
                             if cb >= 0:
                                 last_a[s] = cb / 100.0
                             recent.setdefault(s, []).append((now, d["alt"], d["pct"], last_a.get(s)))

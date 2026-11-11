@@ -53,6 +53,10 @@ MESSAGES = {
                                       ("hdg", "H", 1)]),
     "SERVO_OUTPUT_RAW": (36, 222, [("time_usec", "I", 1)] + [("servo%d_raw" % i, "H", 1) for i in range(1, 9)] +
                          [("port", "B", 1)] + [("servo%d_raw" % i, "H", 1) for i in range(9, 17)]),
+    # UAV-r1 (W139): ArduCopter answers MISSION_COUNT with MISSION_REQUEST (40), never MISSION_REQUEST_INT -
+    # INBOUND only (allow.FROM_DRONE); the router never sends it (not in allow.TO_DRONE)
+    "MISSION_REQUEST": (40, 230, [("seq", "H", 1), ("target_system", "B", 1), ("target_component", "B", 1),
+                                  ("mission_type", "B", 1)]),
     "MISSION_SET_CURRENT": (41, 28, [("seq", "H", 1), ("target_system", "B", 1), ("target_component", "B", 1)]),
     "MISSION_CURRENT": (42, 28, [("seq", "H", 1), ("total", "H", 1), ("mission_state", "B", 1),
                                  ("mission_mode", "B", 1)]),

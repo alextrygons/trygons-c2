@@ -181,7 +181,7 @@ class UavManager:
         self.seq = launch.Launch(self, dict(self.cfg["launch"] or {}))
         self.routes = {}                         # slot -> [{"lat", "lon", "alt"}] (checked)
         self.loaded = {}                         # slot -> True: the mission is on the drone (read back)
-        self.flying = {}                         # slot -> {"phase": launching / catchup / mission, "home", "t"}
+        self.flying = {}                         # slot -> {"phase": launching / hold / mission, "home", "t"}
         self.cbs = {}                            # router request id -> callback
         self.notices = []                        # {"t", "text", "level"} (last 12)
         self.hs_on = False                       # W59: the HIGH SPEED notice was given for this crossing
@@ -786,6 +786,14 @@ class UavManager:
             return "armed in the slot"
         return None
 
+    def gps_why(self, n, d=None):
+        """UAV-r1 (owner W138): None = slot n's drone has a good GPS (a 3D fix + the EKF position), else "no GPS fix".
+        No launch without it (the old ALT_HOLD climb fallback is removed)."""
+        d = self.slot(n) if d is None else d
+        if (d.get("gps_fix") or 0) >= 3 and ((d.get("ekf_flags") or 0) & launch.EKF_POS) == launch.EKF_POS:
+            return None
+        return "no GPS fix (fix %s)" % d.get("gps_fix")
+
     def mission_items(self, n, pos, take_alt):
         wps = self.routes.get(n)
         if not wps:
@@ -857,10 +865,6 @@ class UavManager:
         if f is not None and f.get("phase") == "launching":
             f["phase"] = "hold"
 
-    def catchup(self, n):
-        if n in self.flying:
-            self.flying[n].update(phase="catchup", next_try=0.0)
-
     # --- U5 review MED-1: the pilot lock is exclusive ----------------------------------------------------------------
     def pilot_locked(self, n):
         """A pilot (the joystick) flies slot n's drone now: no mission / route / MISSION START for it."""
@@ -868,14 +872,10 @@ class UavManager:
 
     def pilot_block(self, n):
         """Why the joystick may NOT take slot n's drone now (None = it may): the launch sequence or its climb
-        fallback still owns it (a take's GUIDED + zero setpoint could stop the climb / the mission start)."""
+        owns it (a take's GUIDED + zero setpoint could stop the climb / the mission start). (UAV-r1: the climb
+        fallback's "catchup" phase is gone - no launch without GPS, W138.)"""
         if self.seq.busy() and self.seq.cur == n:
             return "UAV %d is being launched (%s) - wait until it flies its mission" % (n, self.seq.phase or "-")
-        ph = (self.flying.get(n) or {}).get("phase")
-        # U6 review MED-3: "launching" blocks only while the sequence still owns this drone (above); the climb
-        # fallback's catch-up keeps it until GPS + EKF are good
-        if ph == "catchup":
-            return "UAV %d is still climbing out (%s) - wait until it flies its mission" % (n, ph)
         return None
 
     def hatch_cmd(self, on, cb):
@@ -939,7 +939,7 @@ class UavManager:
             threading.Thread(target=self.airspace.reload, daemon=True).start()
         self.seq.tick(now)
         self.high_speed_tick()
-        self.catchup_tick(now)
+        self.pend_expire_tick()
 
     def _sim_sky(self, sky):
         try:
@@ -951,27 +951,6 @@ class UavManager:
                                     ("127.0.0.1", int(self.cfg["sim_base_port"]) + 30))
         except OSError:
             pass
-
-    def catchup_tick(self, now):
-        """A drone of the climb fallback hovers in ALT_HOLD until GPS + EKF are good, then its mission starts."""
-        self.pend_expire_tick()
-        for n, f in list(self.flying.items()):
-            if f.get("phase") != "catchup" or f.get("busy") or now < f.get("next_try", 0.0):
-                continue
-            if self.pilot_locked(n):                     # U5 review MED-1 (a take is refused in catchup anyway)
-                continue
-            d = self.slot(n)
-            if (d.get("gps_fix") or 0) >= 3 and ((d.get("ekf_flags") or 0) & launch.EKF_POS) == launch.EKF_POS:
-                f["busy"] = True
-
-                def go(result, why, n=n, f=f):
-                    f["busy"] = False
-                    if result == 0:
-                        f["phase"] = "mission"
-                        self.notice("UAV %d has GPS now - its mission started" % n)
-                    else:
-                        f["next_try"] = time.time() + 5.0
-                self.cmd(n, "elrs", allow.CMD_MISSION_START, [mission.START_LAUNCH, 0], go)
 
     # --- U4: the map / telemetry / notices / flight log --------------------------------------------------------------
     def drone_view(self, n, boat_pos=None):
@@ -1212,7 +1191,9 @@ class UavManager:
                 def cur(result, w):
                     if result != 0:
                         return go(result, w)
-                    self.cmd(slot, "elrs", allow.CMD_MISSION_START, [mission.FLY_FROM, 0], go)
+                    # UAV-r1 (SITL): ArduCopter 4.7 DENIES MISSION_START with param1 / param2 != 0 - [0, 0]
+                    # resumes at the item MISSION_SET_CURRENT just chose (FLY_FROM)
+                    self.cmd(slot, "elrs", allow.CMD_MISSION_START, [0, 0], go)
                 self.set_current(slot, mission.FLY_FROM, "elrs", cur)
 
             def apply_now():
@@ -1356,6 +1337,11 @@ class UavManager:
                 why.append("UAV %d: %s" % (n, w))
             if not self.routes.get(n):
                 why.append("UAV %d: no route" % n)
+            # UAV-r1 (W138): with the hatch OPEN the drone sees the sky - no GPS fix = no launch (with the hatch
+            # closed the sequence's GPS step checks it once the hatch is open: no fix in gps_wait_s = STOP)
+            g = self.gps_why(n)
+            if g and self.hatch.state == hatch.OPEN:
+                why.append("UAV %d: %s - no launch without GPS" % (n, g))
         return why
 
     def prepare_msg(self, st, m):
@@ -1457,6 +1443,9 @@ class UavManager:
             r = self.reg.recs.get(s)
             live = self.live(lk)
             ok, why = self.reg.launchable(s, live)
+            gps = self.gps_why(s) if live is not None else None
+            if ok and gps and self.hatch.state == hatch.OPEN:
+                ok, why = False, "%s - no launch without GPS" % gps      # UAV-r1 (W138)
             a = self.assist.get(s)
             out.append({"slot": s, "usb": bool(usb), "present": live is not None, "link_error": lk.get("error"),
                         "registered": r is not None, "name": (r or {}).get("name"), "sysid": (r or {}).get("sysid"),
@@ -1470,6 +1459,9 @@ class UavManager:
                         "flying": (self.flying.get(s) or {}).get("phase"),
                         "checked": (r or {}).get("checked"), "problems": (r or {}).get("problems", []),
                         "launchable": ok, "why": why,
+                        # UAV-r1 (W138): "no GPS" shown per slot; with the hatch closed it is checked at the launch
+                        # (the hatch open, gps_wait_s), with it open it makes the slot not launchable
+                        "gps_ok": live is not None and gps is None, "gps_why": gps or "",
                         "registering": any(ps == s for _sid, ps, _t in self.pending.values()),
                         "assist": None if not a else {"age_s": int(now - a["t"]), "what": a["what"], "ok": a["ok"],
                                                       "why": a["why"]}})

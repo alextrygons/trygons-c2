@@ -2775,12 +2775,19 @@ UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
   you can. It needs a trusted GPS, no boat WARNING alarm, the relay board
   answering, a station holding HELM, the hatch healthy. Then, strictly from
   the top slot: mission loaded and read back, the hatch opens (its OPEN
-  switch), GPS fix (no fix in 5 s: it climbs straight up to 15 m and waits
-  there for GPS, at any boat speed), ARM, climb to 30 m (+5 m per slot), clear of the boat at 10 m, the
-  next one at least 15 s later; after the last the hatch closes.
+  switch), GPS fix, ARM, climb to 30 m (+5 m per slot), clear of the boat at
+  10 m, the next one at least 15 s later; after the last the hatch closes.
+  NO GPS = NO LAUNCH (owner 2026-11-11): a drone without a GPS fix within
+  30 s of the hatch opening is NOT armed and the launch STOPS ("no GPS fix -
+  not launched"); with the hatch open a slot without a fix shows "no GPS fix"
+  (not launchable) and PREPARE LAUNCH is refused. (The old "climb straight up
+  to 15 m and wait for GPS" is gone: the ArduPilot simulator showed that it
+  does not climb.)
   ANY warning STOPS the launch: drones in the air go on with their missions,
   no further drone is armed, the hatch stays as it is. A drone that armed but
-  did not climb is disarmed at once and the hatch stays OPEN: check the
+  did not climb is disarmed at once (if it refuses, the DISARM is sent again
+  FORCED - only while it is on the ground in its slot, on its slot cable;
+  never in flight) and the hatch stays OPEN: check the
   magazine, then HATCH CLOSE (the captain's own button). STOP LAUNCH stops it
   from any crew station. The hatch relay is shown as a lamp only - no station
   can switch it. Without a station holding HELM nothing can switch it
@@ -2853,8 +2860,9 @@ UAV MAGAZINE - THE REQUIRED DRONE PARAMETERS + HOW TO RUN THE SITL TESTS (X2)
     2. python tools/get_sitl.py            (downloads it into tools/bin/sitl/;
        every file is checked against its pinned sha256 - a changed download
        is refused, nothing installed)
-    3. python tools/run_sitl.py            (about 10 minutes; one copter,
-       the no-GPS fallback, six copters; a 45 minute limit; the log goes to
+    3. python tools/run_sitl.py            (about 12 minutes; one copter,
+       no GPS = no launch + the forced DISARM in the slot, six copters; a 45
+       minute limit; the log goes to
        test_results/sitl/). python tools/run_sitl.py --bg starts it in the
        background and prints the log's name.
   The test needs pymavlink in that Python (pip install pymavlink). Without the

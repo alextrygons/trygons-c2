@@ -12,6 +12,9 @@ check_out(name, fields, ctx) -> (ok, why) before the router sends a frame to a d
   landed    on the ground: the drone's EXTENDED_SYS_STATE landed_state ON_GROUND, else a fresh relative altitude
             < 0.5 m (U2 review LOW-4: never "a USB link is up")
   hatch_open  the hatch OPEN switch (U3; never ARM without it - storm I81)
+  in_slot   UAV-r1 (W138 b): the drone is ON THE GROUND IN ITS SLOT - a fresh HEARTBEAT on the slot's USB cable
+            (the breakaway cable, W58: it parts when the drone leaves) AND a fresh relative altitude |alt| < 0.5 m
+            not moving vertically (|vz| < 0.3 m/s); no fallback for stale data. ONLY this allows a FORCE DISARM.
 ctx is built by the ROUTER from the state it holds (U2 review LOW-3), never taken from a caller.
   battery_land  the battery rule of docs/uav_design.md 6.2 asks for LAND (the ONLY landing - storm I82)
 check_in(name) -> (ok, why) for a frame from a drone.
@@ -23,6 +26,7 @@ FROM_DRONE = frozenset((
     "HEARTBEAT", "SYS_STATUS", "BATTERY_STATUS", "GLOBAL_POSITION_INT", "ATTITUDE", "VFR_HUD", "GPS_RAW_INT",
     "EKF_STATUS_REPORT", "STATUSTEXT", "HOME_POSITION", "MISSION_CURRENT", "MISSION_ITEM_REACHED",
     "MISSION_REQUEST_INT", "MISSION_ACK", "COMMAND_ACK", "PARAM_VALUE", "AUTOPILOT_VERSION", "TIMESYNC", "SYSTEM_TIME",
+    "MISSION_REQUEST",                            # UAV-r1 (W139): ArduCopter asks mission items with it - INBOUND only
     "RADIO_STATUS", "EXTENDED_SYS_STATE",         # landed_state = "on the ground" for DISARM (U2 review LOW-4)
     "MISSION_COUNT", "MISSION_ITEM_INT",          # the mission READ-BACK (U3: count + items compared with the upload)
 ))
@@ -58,7 +62,8 @@ MISSION_FRAMES_DO = frozenset((2,))                   # MAV_FRAME_MISSION for DO
 COPTER_ALT_HOLD, COPTER_AUTO, COPTER_GUIDED, COPTER_LOITER, COPTER_RTL, COPTER_LAND, COPTER_BRAKE, COPTER_SMART_RTL = (
     2, 3, 4, 5, 6, 9, 17, 21)
 MODES = frozenset((COPTER_GUIDED, COPTER_AUTO, COPTER_LOITER, COPTER_ALT_HOLD, COPTER_BRAKE))
-FORCE_MAGIC = 21196                                    # ARM_DISARM param2: force (skips the checks) - always refused
+FORCE_MAGIC = 21196                                    # ARM_DISARM param2: force (skips the checks): force ARM always
+                                                       # refused; force DISARM only in_slot (UAV-r1, W138 b)
 MAX_SPEED_MS = 20.0                                    # hard ceiling of DO_CHANGE_SPEED (the manager caps lower)
 # SET_POSITION_TARGET_LOCAL_NED: velocity + yaw rate only, body frame
 FRAMES_BODY = frozenset((8, 9))                        # MAV_FRAME_BODY_NED / BODY_OFFSET_NED
@@ -99,8 +104,14 @@ def _command(cmd, p, ctx):
     if ctx.get("battery_land") and (cmd in NOT_WHILE_LANDING or (cmd == CMD_COMPONENT_ARM_DISARM and p[0] == 1)):
         return False, "the drone lands for its battery: no mode / mission / take-off / speed / ARM"
     if cmd == CMD_COMPONENT_ARM_DISARM:
-        if int(round(p[1])) == FORCE_MAGIC or p[1] != 0:
-            return False, "force arm / disarm is never sent"
+        if p[0] == 0 and p[1] == FORCE_MAGIC:
+            # UAV-r1 (W138 b): a drone armed in its slot whose normal DISARM ArduPilot refuses (it thinks it is
+            # taking off) - forced ONLY on the ground in its slot, never in flight
+            if not ctx.get("in_slot"):
+                return False, "force DISARM only on the ground in its slot (never in flight)"
+            return True, ""
+        if p[1] != 0:
+            return False, "force arm is never sent"
         if p[0] == 1:
             if not ctx.get("hatch_open"):
                 return False, "ARM only with the hatch OPEN switch"

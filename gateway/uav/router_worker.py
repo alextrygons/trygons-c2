@@ -61,6 +61,7 @@ HB_LOST_S = 3.0
 HATCH_FRESH_S = 1.0          # the manager sends the hatch switch 4 x a second; older = NOT open
 ALT_FRESH_S = 2.0
 ON_GROUND = 1                # MAV_LANDED_STATE_ON_GROUND
+AIRBORNE = (2, 4)            # MAV_LANDED_STATE_IN_AIR / _LANDING (UAV-r1: never a force DISARM then)
 JOB_STEP_S = 1.5             # a mission step not answered -> asked again
 JOB_TRIES = 4
 JOB_TOTAL_S = 40.0
@@ -304,6 +305,7 @@ class Router:
         now = now_s() if now is None else now
         d = self.drone(link.slot)
         return {"port": link.kind, "armed": d.armed(), "landed": self.on_deck(link.slot, d, now),
+                "in_slot": self.in_slot(link.slot, d, now),
                 "hatch_open": bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S),
                 "battery_land": bool(self.battery_land.get(link.slot))}
 
@@ -319,6 +321,21 @@ class Router:
         # U4 review LOW: the fallback only for a drone whose LAST known altitude was on deck (or never known)
         low = d.rel_alt is None or abs(d.rel_alt) < 1.0
         return not fresh and low and lk is not None and lk.present(now)
+
+    def in_slot(self, slot, d, now):
+        """UAV-r1 (W138 b): ON THE GROUND IN ITS SLOT = the ONLY condition allow.py accepts for a FORCE DISARM. All of:
+        a fresh HEARTBEAT on the slot's USB cable (the breakaway cable parts when the drone leaves, W58), a FRESH
+        relative altitude |alt| < 0.5 m with a known vertical speed |vz| < 0.3 m/s, and the drone NOT saying it is in
+        the air / landing (EXTENDED_SYS_STATE IN_AIR / LANDING, when fresh). No fallback for stale / missing data
+        (unlike on_deck): unknown = NOT in the slot = no force."""
+        lk = self.link(slot, "usb")
+        if lk is None or not lk.present(now):
+            return False
+        if d.rel_alt is None or d.vz is None or now - d.alt_t >= ALT_FRESH_S:
+            return False
+        if d.landed_state in AIRBORNE and now - d.ext_t < ALT_FRESH_S:
+            return False
+        return abs(d.rel_alt) < 0.5 and abs(d.vz) < 0.3
 
     def tx(self, link, name, fields):
         ok, why = allow.check_out(name, fields, self.ctx(link))
@@ -452,7 +469,9 @@ class Router:
         j = self.jobs.get(link.slot)
         if j is not None and j.link is link and not j.done:
             f = m.fields
-            if j.phase == "upload" and m.name == "MISSION_REQUEST_INT":
+            # UAV-r1 (W139): ArduCopter asks with MISSION_REQUEST (40), never MISSION_REQUEST_INT - both answered
+            # with the same MISSION_ITEM_INT (the router never SENDS a MISSION_REQUEST: not in allow.TO_DRONE)
+            if j.phase == "upload" and m.name in ("MISSION_REQUEST_INT", "MISSION_REQUEST"):
                 s = int(f.get("seq", -1))
                 if 0 <= s < len(j.items):
                     if not self.tx(link, "MISSION_ITEM_INT", dict(j.items[s], **self.tgt_of(link.slot))):

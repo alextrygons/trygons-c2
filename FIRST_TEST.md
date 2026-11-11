@@ -457,8 +457,15 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
 - [ ] The USB u-blox on the gateway near the magazine (the assist receiver) has a fix ____ ; its MGA / ephemeris
       bytes reach a drone in the slot (UBX-MGA injection through ArduPilot: the drone's time to a 3D fix with
       assist ____ s, without ____ s). Fallback (a): telemetry time + position only ____ s.
-- [ ] ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) checked in SITL / tethered: it holds the altitude with the
-      RC ignored, then switches to the mission once GPS + EKF are good ____ .
+- [ ] NO GPS = NO LAUNCH (owner W138, step UAV-r1; the ALT_HOLD climb fallback is REMOVED - SITL showed it does
+      not climb): a drone in the slot with its GPS covered / unplugged: the hatch opens, after gps_wait_s (30 s)
+      the launch STOPS "no GPS fix - not launched", the drone is NEVER armed ____ ; with the hatch open the slot
+      shows "no GPS fix" and PREPARE LAUNCH is refused ____ . The time to a 3D fix with the hatch open (warm start)
+      ____ s - it must stay well under gps_wait_s (W143).
+- [ ] FORCE DISARM only in the slot (W138 b), props OFF: a drone armed in its slot whose normal DISARM is refused
+      is disarmed by the forced DISARM ("disarmed in the hatch - FORCED") ____ ; lifted 1 m out of the slot / with
+      its slot USB cable pulled, the forced DISARM is refused by the router (log "not sent: force DISARM only on
+      the ground in its slot") ____ .
 
 ### 6h. Video channels (W63)
 - [ ] Antennas (W63): the 2.4 GHz ELRS group and the 5.8 GHz video group at least 0.5 m apart ____ m, both clear

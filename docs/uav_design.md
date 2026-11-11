@@ -208,8 +208,9 @@ Per drone (slot n, n = the top one still in the magazine):
 1. health check (registry + live pre-arm, battery, EKF, sensors);
 2. mission upload + read back (count + items);
 3. hatch OPEN (first drone only): relay ON, wait for the OPEN switch within hatch_open_s (TO CONFIRM);
-4. GPS ready (4.4 / section 7): good fix + EKF position within uav_gps_wait_s (5 s); else the fallback "climb,
-   then catch up" at ANY boat mode / speed (owner W59);
+4. GPS ready (4.4 / section 7): good fix + EKF position within uav_gps_wait_s (30 s since UAV-r1); else the
+   sequence STOPS - NO launch without GPS (owner W138 2026-11-11; the "climb, then catch up" fallback is removed,
+   section 15);
 5. ARM (only with the hatch FULLY OPEN by its switch);
 6. vertical climb (TAKEOFF / AUTO) to its initial altitude (slot-staggered, default 30 + 5 m x (n-1));
 7. "clear of the boat": relative altitude >= uav_clear_alt_m (10 m) AND climbing as commanded within
@@ -230,7 +231,8 @@ COMMAND_ACKs), CLIMB (no climb in no_climb_s 6 s = DISARM), CLEAR (USB gone in u
 ELRS), GAP (gap_s from the previous ARM); every failure / warning = STOPPED (an armed drone still on the ground is
 disarmed). The router owns the ELRS links too (gateway.json slot "radio") and builds allow.py's ctx itself from its
 own state (hatch OPEN from the manager's 4 Hz op, stale after 1 s; landed from EXTENDED_SYS_STATE / the relative
-altitude). The fallback drone is handed to the manager's catch-up (MISSION START once GPS + EKF are good).
+altitude). (UAV-r1: no climb fallback / catch-up any more; a DISARM the drone refuses is sent once more FORCED,
+allowed by allow.py only on the ground in its slot - section 15.)
 
 ### 5.4 Hatch + limit switches (gateway/uav/hatch.py)
 - Relay: ONE on / off relay (ON = open) in the EXISTING boat-file relay table, group "extra", type
@@ -374,7 +376,8 @@ the boat's own cameras only.
   "assist receiver" (MGA-DBD / EPH dump, near the magazine) [recommended, with (a) as fallback];
   (c) u-blox AssistNow Online / Offline cached when the gateway has internet (a u-blox token).
 - Note: the magazine top must not be metal (the drone may even get its own fix in the slot).
-- FALLBACK "climb, then catch up" (any boat mode / speed: owner W59 2026-11-04): no good fix within uav_gps_wait_s -> ARM in
+- REMOVED in step UAV-r1 (owner W138 2026-11-11: no launch without GPS, section 15). The old text, kept for the
+  record: FALLBACK "climb, then catch up" (any boat mode / speed: owner W59 2026-11-04): no good fix within uav_gps_wait_s -> ARM in
   ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m - the climb is the allow-listed MAV_CMD_NAV_TAKEOFF in
   ALT_HOLD with param3 = 1 ("horizontal navigation by the pilot acceptable": ArduCopter's ALT_HOLD user takeoff
   without position), NEVER a throttle / RC input (none is on the allow-list; the RC receiver is ignored, W68);
@@ -482,8 +485,8 @@ are gateway-side only).
 | relay board reboot during launch (relay OFF = hatch closes) | FAULT seen by the switches, stop, remaining drones disarmed; 5.5 |
 | drone health / parameter / pre-arm fail | not launchable (122), the sequence stops at that drone |
 | mission upload / read-back fails | stop, the drone stays disarmed |
-| no GPS fix in uav_gps_wait_s | the fallback climb (ALT_HOLD 15 m, then catch up) at any boat speed (W59) |
-| armed but no climb (motor / prop) | DISARM at once, stop, hatch stays OPEN, notice |
+| no GPS fix in uav_gps_wait_s | the sequence STOPS, the drone never armed (UAV-r1, W138: no climb fallback) |
+| armed but no climb (motor / prop) | DISARM at once (refused = FORCED, only in its slot: UAV-r1), stop, hatch stays OPEN, notice |
 | boat WARNING / telemetry stale during the sequence (W59: the boat's mode / speed = the HIGH SPEED notice only) | stop; flying drones go on |
 | ELRS link lost to a drone | it holds / follows its mission, ends hovering; notice UAV n LINK LOST |
 | video lost | notice; nothing else changes |
@@ -663,3 +666,40 @@ Owner spec J (C:/trygons/private/step_sitl.txt, X2). NO app / hal / AURIX change
     list). The SITL-made .tlog read by pymavlink (SI11: ~2600 packets, in order, no denied command / PARAM_SET); every
     SAFETY parameter unchanged after the flights (SI12).
   - Warm start (SI2): GPS_RTCM_DATA delivered and taken; the forwarding to a real u-blox = still bench only.
+
+## 15. Step UAV-r1 AS BUILT: MISSION_REQUEST in, no launch without GPS, the force DISARM in the slot (2026-11-11)
+
+Owner decisions W139 + W138 (2026-11-11), binding. gateway/uav + tests + docs only: NO app / hal / AURIX change.
+allow.py changed = the SERIAL safety review (LOOP RULE 6(3), W110).
+
+- W139 MISSION_REQUEST (id 40, CRC extra 230, the same fields as MISSION_REQUEST_INT; checked against pymavlink in
+  UA2): in the codec (mavlink.py) and on allow.FROM_DRONE ONLY - the outbound list allow.TO_DRONE is UNCHANGED
+  (UA3 compares it with the exact list). The router answers it in the upload phase exactly like
+  MISSION_REQUEST_INT (the same MISSION_ITEM_INT, the same allow.check_out); the read-back stays
+  MISSION_REQUEST_LIST / MISSION_REQUEST_INT. SITL also showed: ArduCopter reads a DO item back with frame 0 -
+  mission.same accepts frame 0 for DO_CHANGE_SPEED only (never for a position item). simdrone now asks with
+  MISSION_REQUEST like ArduCopter (fault req_int = the INT form).
+- W138 (a) NO launch without GPS: the ALT_HOLD "climb, then catch up" fallback is REMOVED (launch.py, the
+  manager's catchup / catchup_tick, the pilot lock's "catchup" phase, gateway.json fallback_alt_m). The GPS step
+  waits gps_wait_s (now 30 s, TO CONFIRM W143) with the hatch OPEN; no 3D fix + EKF position = the sequence STOPS
+  ("no GPS fix in 30 s with the hatch open - not launched"), the drone is never armed, the hatch is switched by
+  nothing (W72). The slot reports it (gw_status uav slots[].gps_ok / gps_why); with the hatch OPEN a slot without a
+  fix is NOT launchable ("no GPS fix - no launch without GPS") and PREPARE is refused 125 naming it. With the hatch
+  CLOSED the drone usually has no sky (docs 7: the warm start), so the check is the GPS step after the opening -
+  owner to confirm this reading of "the slot reports no GPS" (W143).
+- W138 (b) the FORCE DISARM only on the ground in its slot: allow.py lets COMMAND_LONG / _INT ARM_DISARM param1 0
+  param2 21196 out ONLY with ctx in_slot; a force ARM and any other param2 stay refused. in_slot is built by the
+  ROUTER from its own data (Router.in_slot): a fresh HEARTBEAT on the slot's USB cable (the breakaway cable, W58)
+  AND a fresh relative altitude (< 2 s) |alt| < 0.5 m with a known |vz| < 0.3 m/s AND the drone not saying IN_AIR /
+  LANDING (fresh EXTENDED_SYS_STATE). No fallback for stale / missing data (unlike on_deck's DISARM fallback).
+  launch.py _disarm (no-climb, and a STOP with a drone armed on deck): the normal DISARM first; refused by the drone
+  and the drone still on its slot cable = once more FORCED over USB ("disarmed in the hatch - FORCED"); else the
+  notice "DISARM not confirmed - check the magazine". Never sent / never let out in flight.
+- Tests: UA3 (in_slot cases, force ARM, near-magic, NaN, the exact TO_DRONE list, MISSION_REQUEST inbound only),
+  UA16 (no GPS = STOPPED + never armed, in STANDBY and under way; the forced DISARM on the cable; none once the
+  cable parted), UA42 (the router: MISSION_REQUEST upload + read-back, force DISARM out only in the slot, refused in
+  flight / USB still heard at altitude / off the cable / IN_AIR / moving / stale; mutations: Router.in_slot always
+  True and allow.py without its in_slot test are both caught; the DO frame-0 read-back), storm I84 (its OWN in-slot
+  record: a force DISARM only then; the in_slot mutation fails I84), SITL SI13 (no GPS = no launch with ArduCopter)
+  + SI15a (a copter stuck armed on deck: forced DISARM in the slot) + SI15b (in flight refused, also with the USB
+  link heard at 20 m), and SI3 / SI4 / SI5 / SI14b (the mission upload) must now pass.

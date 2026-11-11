@@ -18,13 +18,16 @@ ignored like an unknown message - the gateway never sends it); REQUEST_MESSAGE /
 without a 3D fix in a GPS mode, never with motor_fail climbing), DISARM on the ground, modes GUIDED / AUTO / LOITER /
 ALT_HOLD / BRAKE / LAND / RTL (RTL only so a test can show the gateway never asks for it); TAKEOFF; the mission
 protocol (upload + read-back, items TAKEOFF / WAYPOINT / CHANGE_SPEED / LOITER_UNLIM); GUIDED velocity setpoints
-(stop after 3 s without a new one, like ArduPilot); EXTENDED_SYS_STATE landed_state 1 Hz; MISSION_START from param1 (seq 0 =
-HOME is never flown); a take-off in ALT_HOLD only with param3 = 1 (ArduCopter's user take-off without GPS); battery (capacity, hover current, critical -> LAND = the
+(stop after 3 s without a new one, like ArduPilot); EXTENDED_SYS_STATE landed_state 1 Hz; MISSION_START [0, 0] = from the current item / a fresh mission's seq 1 (param1 / param2 != 0 = DENIED like ArduCopter 4.7; seq 0 =
+HOME is never flown); a take-off in ALT_HOLD with param3 = 1 is ACCEPTED but does NOT climb and the normal DISARM is
+then REFUSED (= ArduCopter 4.7 SITL with the RC receiver ignored, step X2 SI13 / W138: only a FORCE DISARM ends it);
+the mission upload is asked with MISSION_REQUEST (40) like ArduCopter (UAV-r1, W139; fault req_int = MISSION_REQUEST_INT); battery (capacity, hover current, critical -> LAND = the
 BATT_FS_CRT_ACT backstop); GPS: no sky in the closed magazine, then a fix after ttf_cold / ttf_warm (MGA-INI time +
 position injected by GPS_RTCM_DATA) / ttf_hot (+ ephemeris); EKF failsafe without GPS in flight = ALT_HOLD (drifts).
 Faults: no_fix, motor_fail, link_loss (ELRS silent), silent (nothing at all), battery_low, bad_param (FS_GCS_ENABLE 1),
 extra_output (SERVO9_FUNCTION 28 = gripper), gpio_output (SERVO10_FUNCTION -1), rc_not_ignored (RC_OPTIONS 0),
-release_relay (RELAY1_FUNCTION 1), armed (armed in its slot), wrong_type (a plane), spam_denied (it also sends
+release_relay (RELAY1_FUNCTION 1), armed (armed in its slot), wrong_type (a plane), disarm_refused (every normal
+DISARM refused, a force DISARM taken), req_int (asks MISSION_REQUEST_INT), spam_denied (it also sends
 SERVO_OUTPUT_RAW / MOUNT_CONTROL - not on the allow-list: the router drops + counts them).
 """
 import argparse
@@ -106,6 +109,7 @@ class Drone:
         self.mission, self.up_count, self.up_items, self.cur = [], 0, {}, 0
         self.speed = 10.0
         self.target_alt = None
+        self.stuck = False             # an ALT_HOLD take-off accepted without a climb (W138): normal DISARM refused
         self.guided_v, self.guided_t = (0.0, 0.0, 0.0, 0.0), 0.0
         self.rtcm = {}
         self.got = []                  # names of the messages received (tests: the router's output)
@@ -134,6 +138,10 @@ class Drone:
                 self.used_mah = self.capacity * (0.9 if on else 0.0)
 
     # --- radio --------------------------------------------------------------------------------------------------
+    def req_name(self):
+        """ArduCopter asks for each mission item with MISSION_REQUEST (40) - UAV-r1 / W139; fault req_int = the INT form."""
+        return "MISSION_REQUEST_INT" if "req_int" in self.faults else "MISSION_REQUEST"
+
     def send(self, link, name, fields):
         if "silent" in self.faults or (link is self.elrs and "link_loss" in self.faults):
             return
@@ -194,7 +202,7 @@ class Drone:
         elif m.name == "MISSION_COUNT":
             self.up_count, self.up_items = int(f["count"]), {}
             if self.up_count:
-                self.send(link, "MISSION_REQUEST_INT", {"seq": 0, "target_system": 255, "target_component": 190})
+                self.send(link, self.req_name(), {"seq": 0, "target_system": 255, "target_component": 190})
             else:
                 self.mission = []
                 self.send(link, "MISSION_ACK", {"type": 0, "target_system": 255, "target_component": 190})
@@ -203,10 +211,12 @@ class Drone:
                 self.up_items[int(f["seq"])] = dict(f)
                 nxt = len(self.up_items)
                 if nxt < self.up_count:
-                    self.send(link, "MISSION_REQUEST_INT", {"seq": nxt, "target_system": 255, "target_component": 190})
+                    self.send(link, self.req_name(), {"seq": nxt, "target_system": 255, "target_component": 190})
                 else:
                     self.mission = [self.up_items[i] for i in range(self.up_count)]
                     self.up_count = 0
+                    if self.mode != M_AUTO:                  # a fresh mission starts at its first item (UAV-r1)
+                        self.cur = 0
                     self.send(link, "MISSION_ACK", {"type": 0, "target_system": 255, "target_component": 190})
         elif m.name == "MISSION_REQUEST_LIST":
             self.send(link, "MISSION_COUNT", {"count": len(self.mission), "target_system": 255,
@@ -267,9 +277,10 @@ class Drone:
                     self.armed, self.events = True, self.events + ["arm"]
                 self.ack(link, cmd, 0 if ok else 4)
             else:
-                ok = self.landed or p[1] == 21196
+                forced = p[1] == 21196
+                ok = forced or (self.landed and not self.stuck and "disarm_refused" not in self.faults)
                 if ok:
-                    self.armed = False
+                    self.armed, self.stuck = False, False
                     self.events.append("disarm")
                 self.ack(link, cmd, 0 if ok else 4)
         elif cmd == 176:                                     # DO_SET_MODE
@@ -284,15 +295,22 @@ class Drone:
         elif cmd == 22:                                      # TAKEOFF
             # ArduCopter: a user take-off in ALT_HOLD only with param3 = 1 ("horizontal navigation by the pilot
             # acceptable", docs/uav_design.md 7: the GPS fallback climb)
-            if self.armed and self.landed and (self.mode == M_GUIDED or (self.mode == M_ALT_HOLD and p[2] == 1)):
+            if self.armed and self.landed and self.mode == M_GUIDED:
                 self.target_alt = float(p[6])
+                self.ack(link, cmd, 0)
+            elif self.armed and self.landed and self.mode == M_ALT_HOLD and p[2] == 1:
+                # ArduCopter 4.7 SITL (X2 SI13): accepted, but the ALT_HOLD take-off needs pilot throttle (the RC
+                # receiver is ignored) - no climb, and the normal DISARM is refused afterwards
+                self.stuck = True
                 self.ack(link, cmd, 0)
             else:
                 self.ack(link, cmd, 4)
         elif cmd == 300:                                     # MISSION_START
-            if self.mission and self.armed and self.fix >= 3:
-                if self.mode != M_AUTO:                      # ArduPilot: param1 is ignored while AUTO already runs
-                    self.cur = max(1, int(p[0]))             # (U3 review M6) - seq 0 = HOME: never flown
+            if p[0] != 0 or p[1] != 0:
+                self.ack(link, cmd, 2)                       # ArduCopter 4.7 (SITL, UAV-r1): a first / last item = DENIED
+            elif self.mission and self.armed and self.fix >= 3:
+                if self.mode != M_AUTO:                      # [0, 0]: resume at the current item (MISSION_SET_CURRENT),
+                    self.cur = max(1, self.cur)              # a fresh mission at seq 1 - seq 0 = HOME: never flown
                 self.set_mode(M_AUTO)
                 self.ack(link, cmd, 0)
             else:

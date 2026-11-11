@@ -3,7 +3,7 @@
     python tools/run_sitl.py               run it now (foreground), log in test_results/sitl/, exit 0 / 1
     python tools/run_sitl.py --bg          start it in the background and return at once (prints the log's path);
                                            the result line is the last line of the log ("SITL TESTS: ...")
-    python tools/run_sitl.py one six       only these suites (one / fallback / six)
+    python tools/run_sitl.py one six       only these suites (one / ground / six)
     python tools/run_sitl.py --limit-min 45
 
 Without SITL installed (python tools/get_sitl.py) every test is N/A - never a PASS - and the exit code is 0.

@@ -71,8 +71,8 @@
     {
       "do_el": "Παρακολουθήστε την εκτόξευση μέχρι να κλείσει η καταπακτή.",
       "do_en": "Watch the launch until the hatch is closed.",
-      "hint_el": "Η σειρά: ανέβασμα αποστολής, άνοιγμα καταπακτής, GPS, ARM μόνο με τον διακόπτη ΑΝΟΙΧΤΟ, άνοδος, αποσύνδεση καλωδίου, κλείσιμο καταπακτής. Οποιαδήποτε προειδοποίηση τη σταματά.",
-      "hint_en": "The order: mission upload, hatch open, GPS, ARM only with the OPEN switch, climb, the cable breaks away, the hatch closes. Any warning stops it.",
+      "hint_el": "Η σειρά: ανέβασμα αποστολής, άνοιγμα καταπακτής, GPS (χωρίς σήμα GPS δεν γίνεται εκτόξευση), ARM μόνο με τον διακόπτη ΑΝΟΙΧΤΟ, άνοδος, αποσύνδεση καλωδίου, κλείσιμο καταπακτής. Οποιαδήποτε προειδοποίηση τη σταματά.",
+      "hint_en": "The order: mission upload, hatch open, GPS (no GPS fix = no launch), ARM only with the OPEN switch, climb, the cable breaks away, the hatch closes. Any warning stops it.",
       "check": [
         {
           "f": "launch",

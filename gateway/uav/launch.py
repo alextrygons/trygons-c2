@@ -9,22 +9,24 @@ the router process (mission upload, commands) or through uavlink (the hatch rela
              battery, sensors, its route still passes uavcheck from the boat's position now
      UPLOAD  the mission over the slot's USB + its read-back (router: count + every item compared)
      HATCH   (first drone) relay ON -> the OPEN switch (hatch.py; its travel time = FAULT)
-     GPS     a 3D fix + EKF position within gps_wait_s; else the fallback "climb, then catch up" at ANY boat mode /
-             speed (owner W59 2026-11-04) (ALT_HOLD + TAKEOFF param3 = 1 to fallback_alt; the manager switches it to
-             the mission once GPS + EKF are good - it hovers until then, never lands)
+     GPS     a 3D fix + EKF position within gps_wait_s (the hatch OPEN: the drone sees the sky); else the sequence
+             STOPS with the notice "no GPS fix - not launched": NO launch without GPS (owner W138 2026-11-11, step
+             UAV-r1 - the old ALT_HOLD "climb, then catch up" fallback is REMOVED: ArduCopter 4.7 SITL showed the
+             ALT_HOLD take-off does not climb with the RC receiver ignored and the drone then stays armed, X2 SI13)
      CMDS    GUIDED -> ARM (the router's allow-list refuses ARM unless the hatch OPEN switch) -> TAKEOFF to the
              slot's initial altitude (30 + 5 m x (slot - 1)), each with its COMMAND_ACK
      CLIMB   relative altitude >= clear_alt within clear_s; NO climb within no_climb_s = DISARM at once (it is on the
              ground: a motor / prop fault in the hatch), stop, the hatch STAYS OPEN + notice "did not leave the
-             hatch - check before closing" (the close is then the captain's own HATCH CLOSE)
-     CLEAR   the slot's USB cable gone (the breakaway, W58) within usb_gone_s, then MISSION_START (the fallback
-             drone: handed to the manager's catch-up)
+             hatch - check before closing" (the close is then the captain's own HATCH CLOSE); a DISARM the drone
+             REFUSES is sent again FORCED (UAV-r1, W138 b) - allow.py lets a force DISARM out ONLY while the router
+             sees the drone on the ground in its slot (ctx in_slot), never in flight: no drone stays armed in the hatch
+     CLEAR   the slot's USB cable gone (the breakaway, W58) within usb_gone_s, then MISSION_START
      GAP     the next drone not before gap_s after this one's ARM (and only once this one is clear)
   CLOSING   after the last drone: relay OFF -> the CLOSED switch -> DONE
   STOPPED   ANY warning (a check, the hatch FAULT, stale boat telemetry, a boat WARNING alarm, the relay board silent, HELM lost, the captain's station lost, a
              station's STOP; NOT the boat's mode / speed: owner W59 - a launch goes when the copilot says so, above
              5 kn a non-blocking notice): no further drone, no ARM; drones in the air go on; an armed drone still on the ground
-             is DISARMED; the hatch is switched by NOTHING (owner W72 2026-11-04: the captain's own HATCH CLOSE)
+             is DISARMED (forced if refused, only in its slot); the hatch is switched by NOTHING (owner W72 2026-11-04: the captain's own HATCH CLOSE)
 Nothing here sends to the AURIX but the hatch relay through io.hatch_relay (uavlink -> stations.py).
 """
 from . import allow, mission
@@ -34,8 +36,8 @@ EKF_POS = 0x08 | 0x10                     # EKF_STATUS_REPORT: horizontal positi
 
 DEFAULTS = {
     "high_speed_kn": 5.0,                 # W59 (owner 2026-11-04): above it a NON-blocking notice only, no speed limit
-    "gps_wait_s": 5.0,                    # W59
-    "fallback_alt_m": 15.0,               # W59
+    "gps_wait_s": 30.0,                   # UAV-r1 (W138): the hatch open, then no fix in this time = STOP (TO CONFIRM
+                                          # W143; was 5 s before the removed fallback climb)
     "clear_alt_m": 10.0,                  # W59
     "clear_s": 30.0,
     "no_climb_s": 6.0,
@@ -69,7 +71,6 @@ class Launch:
         self.cmdq = []
         self.t_arm = None
         self.t_clear = None
-        self.fallback = False
         self.armed_here = False           # the current drone was armed by this sequence (DISARM on a stop)
         self.keep_open = False            # a drone did not leave the hatch: the captain closes it himself
         self.history = []
@@ -116,18 +117,30 @@ class Launch:
                 self.io.cancel(n, allow.CMD_COMPONENT_ARM_DISARM)
             d = self.io.slot(n)
             if d.get("landed") or d.get("usb_present"):
-                self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], self._disarm_report(n, "the launch stopped"))
+                self._disarm(n, "the launch stopped")
         self.log(now, "STOPPED (%s): %s" % (was, why))
         self.io.notice("UAV launch stopped: %s" % why, "caution")
         return True
 
-    def _disarm_report(self, n, why):
-        def res(result, w):
+    def _disarm(self, n, why):
+        """DISARM the drone of slot n in the hatch; a DISARM the drone REFUSES (ArduCopter: "not landed" after an
+        accepted take-off that did not climb, X2 SI13) is sent once more FORCED (param2 21196, UAV-r1 / W138 b).
+        The router's allow.py lets the forced one out ONLY while the drone is on the ground in its slot (fresh USB
+        HEARTBEAT + a fresh altitude < 0.5 m, not moving, not "in air"): never a force DISARM in flight."""
+        def forced(result, w):
             if result == 0:
-                self.io.notice("UAV %d disarmed in the hatch (%s)" % (n, why), "caution")
+                self.io.notice("UAV %d disarmed in the hatch - FORCED (%s)" % (n, why), "caution")
             else:
-                self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result), "caution")
-        return res
+                self.io.notice("UAV %d: DISARM not confirmed, also forced (%s) - check the magazine" % (
+                    n, w or result), "caution")
+
+        def normal(result, w):
+            if result == 0:
+                return self.io.notice("UAV %d disarmed in the hatch (%s)" % (n, why), "caution")
+            if self.io.slot(n).get("usb_present"):
+                return self.io.cmd(n, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC], forced)
+            self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result), "caution")
+        self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], normal)
 
     def log(self, now, text):
         self.history.append((round(now, 1), text))
@@ -183,7 +196,7 @@ class Launch:
         if not left:
             return self._close(now)
         self.cur = left[0]
-        self.fallback = self.armed_here = False
+        self.armed_here = False
         self.t_arm = self.t_clear = None
         self._phase("CHECK", now)
 
@@ -280,14 +293,9 @@ class Launch:
                              ("TAKEOFF", allow.CMD_NAV_TAKEOFF, [0, 0, 0, 0, 0, 0, alt])]
                 self._phase("CMDS", now)
             elif now - self.t_phase > float(c["gps_wait_s"]):
-                self.fallback = True
-                self.io.notice("UAV %d: no GPS fix yet - climbs to %.0f m in ALT_HOLD and waits for GPS" % (
-                    n, float(c["fallback_alt_m"])), "info")
-                self.cmdq = [("mode ALT_HOLD", allow.CMD_DO_SET_MODE, [1, allow.COPTER_ALT_HOLD]),
-                             ("ARM", allow.CMD_COMPONENT_ARM_DISARM, [1, 0]),
-                             ("TAKEOFF (ALT_HOLD)", allow.CMD_NAV_TAKEOFF,
-                              [0, 0, 1, 0, 0, 0, float(c["fallback_alt_m"])])]
-                self._phase("CMDS", now)
+                # UAV-r1 (owner W138): NO launch without GPS - never armed, the sequence stops (the hatch: W72)
+                return self._fail("UAV %d: no GPS fix in %.0f s with the hatch open - not launched (no launch "
+                                  "without GPS)" % (n, float(c["gps_wait_s"])), now)
             return
         if ph == "CMDS":
             if hs != "OPEN":
@@ -319,7 +327,7 @@ class Launch:
                 self._phase("CLEAR", now)
             elif now - self.t_arm > float(c["no_climb_s"]) and (not fresh or alt < 1.0):
                 self.keep_open = True
-                self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], self._disarm_report(n, "it did not climb"))
+                self._disarm(n, "it did not climb")
                 self.armed_here = False
                 self.io.notice("UAV %d did not leave the hatch - check before closing (HATCH CLOSE = the captain's "
                                "button)" % n, "caution")
@@ -333,9 +341,6 @@ class Launch:
                 if now - self.t_phase > float(c["usb_gone_s"]):
                     return self._fail("UAV %d is clear but its slot USB cable is still there" % n, now)
                 return
-            if self.fallback:
-                self.io.catchup(n)
-                return self._done_drone(now)
             locked = getattr(self.io, "pilot_locked", None)
             if locked is not None and locked(n):
                 # U5 review MED-1: a pilot flies it (a take is refused during a launch - defence in depth): no
@@ -351,7 +356,10 @@ class Launch:
                     return self._fail("UAV %d: MISSION START refused (%s)" % (n, why or result), self.io.now())
                 self.io.on_mission(n)
                 self._done_drone(self.io.now())
-            self.io.cmd(n, "elrs", allow.CMD_MISSION_START, [mission.START_LAUNCH, 0], wrap(go))
+            # UAV-r1 (SITL, ArduCopter 4.7): MISSION_START with a first / last item (param1 / param2 != 0) is
+            # DENIED (MAV_RESULT 2) - [0, 0] starts a freshly uploaded mission at its first item after HOME = seq 1
+            # = the take-off item (mission.START_LAUNCH)
+            self.io.cmd(n, "elrs", allow.CMD_MISSION_START, [0, 0], wrap(go))
             return
         if ph == "GAP":
             if now - self.t_phase >= 0:
@@ -359,7 +367,7 @@ class Launch:
 
     def _done_drone(self, now):
         self.launched.append(self.cur)
-        self.log(now, "UAV %d launched%s" % (self.cur, " (climb fallback)" if self.fallback else ""))
+        self.log(now, "UAV %d launched" % self.cur)
         left = [s for s in self.slots if s not in self.launched]
         if not left:
             return self._close(now)
@@ -368,5 +376,5 @@ class Launch:
 
     def status(self, now):
         return {"state": self.state, "why": self.why, "slots": self.slots, "launched": self.launched,
-                "cur": self.cur, "phase": self.phase, "fallback": self.fallback, "keep_open": self.keep_open,
+                "cur": self.cur, "phase": self.phase, "keep_open": self.keep_open,
                 "by": self.by, "captain": self.captain, "history": [t for _n, t in self.history[-6:]]}

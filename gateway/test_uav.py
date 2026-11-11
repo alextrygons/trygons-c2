@@ -311,6 +311,16 @@ def ua3_allow():
             if ok:
                 allowed_cmds.append(cmd)
     allowed_cmds = sorted(set(allowed_cmds))
+    # UAV-r1: MISSION_REQUEST (40) is INBOUND only - the outbound list is unchanged (exactly these names)
+    if allow.TO_DRONE != frozenset(("HEARTBEAT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_CLEAR_ALL",
+                                    "MISSION_SET_CURRENT", "MISSION_REQUEST_LIST", "MISSION_REQUEST_INT",
+                                    "MISSION_ACK", "PARAM_REQUEST_READ", "PARAM_REQUEST_LIST",
+                                    "SET_POSITION_TARGET_LOCAL_NED", "TIMESYNC", "SYSTEM_TIME", "GPS_RTCM_DATA",
+                                    "GPS_INJECT_DATA", "COMMAND_LONG", "COMMAND_INT")):
+        bad.append("TO_DRONE changed")
+    if "MISSION_REQUEST" in allow.TO_DRONE or not allow.check_in("MISSION_REQUEST")[0]:
+        bad.append("MISSION_REQUEST direction")
+    want(False, "MISSION_REQUEST", {"seq": 0, "target_system": 11}, {}, "MISSION_REQUEST out")
     if not set(allowed_cmds) <= allow.COMMANDS:
         bad.append("commands %s" % allowed_cmds)
     # every mission item command
@@ -336,6 +346,20 @@ def ua3_allow():
     want(True, "COMMAND_LONG", {"command": 400, "param1": 1.0}, {"hatch_open": True})
     want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0, "param2": 21196.0}, {"hatch_open": True}, "force arm")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"landed": True}, "force disarm")
+    # UAV-r1 (W138 b): a force DISARM ONLY with ctx in_slot (the router: on the ground in its slot), never in flight;
+    # a force ARM never (also in the slot), any other param2 never
+    want(True, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": True})
+    want(True, "COMMAND_INT", {"command": 400, "param1": 0.0, "param2": 21196.0, "target_system": 11},
+         {"in_slot": True})
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0},
+         {"landed": True, "armed": True, "hatch_open": True, "port": "usb"}, "force disarm in flight / not in slot")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": False, "landed": True},
+         "force disarm in_slot False")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 1.0, "param2": 21196.0},
+         {"in_slot": True, "hatch_open": True, "landed": True}, "force arm in the slot")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.5}, {"in_slot": True}, "near-magic")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 1.0}, {"in_slot": True}, "param2 1")
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": float("nan")}, {"in_slot": True}, "nan p2")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0}, {"landed": False}, "disarm flying")
     want(True, "COMMAND_LONG", {"command": 400, "param1": 0.0}, {"landed": True})
     want(False, "COMMAND_LONG", {"command": 21}, {}, "land without the battery rule")
@@ -374,7 +398,7 @@ def ua3_allow():
         want(False, nm, {}, {"port": "usb", "armed": True}, nm + " armed")
     report("UA3 ALLOW-list: every other message refused both ways (PARAM_SET, SET_MODE, mount, servo, RC override), "
            "only the listed MAV_CMDs (all 65536 tried), mission items only TAKEOFF / WAYPOINT / CHANGE_SPEED / "
-           "LOITER_UNLIM, never RTL / SmartRTL / LAND mode, no force arm / disarm, ARM only with the hatch OPEN, "
+           "LOITER_UNLIM, never RTL / SmartRTL / LAND mode, no force ARM, a force DISARM only in_slot (UAV-r1), ARM only with the hatch OPEN, "
            "DISARM only landed, LAND only by the battery rule, body-frame velocity setpoints only, GPS injection only "
            "on USB before ARM, non-finite numbers refused", not bad,
            "commands that pass: %s; mission commands %s; wrong: %s" % (allowed_cmds, m_ok, bad[:6]))
@@ -1170,6 +1194,7 @@ class FakeIo:
         self.relay = []
         self.notices = []
         self.upload_ok = True
+        self.disarm_ok = True              # UAV-r1: False = the drone refuses a NORMAL DISARM (ArduCopter, X2 SI13)
         self.captain = True
         self.sky = False
         self.q = []
@@ -1216,7 +1241,8 @@ class FakeIo:
 
     def cmd(self, n, via, command, params, cb):
         params = list(params) + [0] * 7
-        name = {176: "mode %d" % params[1], 400: "arm" if params[0] == 1 else "disarm", 22: "takeoff %g/%g" % (
+        name = {176: "mode %d" % params[1], 400: "arm" if params[0] == 1 else (
+            "force disarm" if params[1] == 21196 else "disarm"), 22: "takeoff %g/%g" % (
             params[2], params[6]), 300: "start"}.get(command, str(command))
         self.sent.append((self.t, n, name))
         d = self.drones[n]
@@ -1226,7 +1252,11 @@ class FakeIo:
             if res == 0:
                 d["armed"] = True
         elif command == 400:
-            d["armed"] = False
+            forced = params[1] == 21196
+            # the router's allow-list: a force DISARM only on the ground in the slot (here: on its USB cable)
+            res = (0 if d["usb_present"] else None) if forced else (0 if self.disarm_ok else 4)
+            if res == 0:
+                d["armed"] = False
         self.q.append(lambda: cb(res, ""))
 
     def armed(self, n):
@@ -1234,9 +1264,6 @@ class FakeIo:
 
     def on_mission(self, n):
         pass
-
-    def catchup(self, n):
-        self.sent.append((self.t, n, "catchup"))
 
     def hatch_cmd(self, on, cb):
         self.relay.append((self.t, on))
@@ -1327,21 +1354,53 @@ def ua16_launch():
     nc = [w for _t, n, w in io4.sent if n == 1]
     nc_ok = (seq4.state == "STOPPED" and "did not leave the hatch" in seq4.why and "disarm" in nc and seq4.keep_open
              and io4.relay == [(io4.relay[0][0], True)] and not any(n == 2 and w == "arm" for _t, n, w in io4.sent))
-    # 5) no GPS: the climb fallback (ALT_HOLD + TAKEOFF param3 1, 15 m) -> catch-up - in STANDBY AND under way (W59)
+    # 4b) UAV-r1 (W138 b): the drone REFUSES the normal DISARM (ArduCopter after an accepted take-off that did not
+    #     climb) -> the DISARM sent again FORCED over the slot's USB cable -> disarmed, never left armed in the hatch
+    io4b = FakeIo(1, climb=False)
+    io4b.disarm_ok = False
+    seq4b = launch.Launch(io4b)
+    seq4b.prepare([1], 5, 0.0)
+    seq4b.approved(True, 7, 0.0)
+    run_seq(io4b, seq4b, 60.0)
+    nb = [w for _t, n, w in io4b.sent if n == 1]
+    fd_ok = (seq4b.state == "STOPPED" and nb[-2:] == ["disarm", "force disarm"] and not io4b.drones[1]["armed"] and
+             any("FORCED" in t for t in io4b.notices))
+    # 4c) ... the cable parted after the ARM (not in its slot any more): no force DISARM is even asked (the router's
+    #     allow.py would refuse it: in_slot needs the fresh USB HEARTBEAT)
+    io4c = FakeIo(1, climb=False)
+    io4c.disarm_ok = False
+    seq4c = launch.Launch(io4c)
+    seq4c.prepare([1], 5, 0.0)
+    seq4c.approved(True, 7, 0.0)
+    while io4c.t < 60.0 and seq4c.state not in ("DONE", "STOPPED"):
+        if any(w == "arm" for _t, _n, w in io4c.sent):
+            io4c.drones[1]["usb_present"] = False
+        seq4c.tick(io4c.t)
+        while io4c.q:
+            io4c.q.pop(0)()
+        io4c.world(0.25)
+        io4c.t += 0.25
+    while io4c.q:
+        io4c.q.pop(0)()
+    n4c = [w for _t, n, w in io4c.sent if n == 1]
+    nf_ok = "disarm" in n4c and "force disarm" not in n4c and any("not confirmed" in t for t in io4c.notices)
+    # 5) no GPS (UAV-r1, owner W138: the ALT_HOLD climb fallback is REMOVED): the hatch opens, no fix within
+    #    gps_wait_s = STOP with the notice, NEVER armed, no mode / take-off sent - in STANDBY AND under way
     io5 = FakeIo(1, gps=False)
     seq5 = launch.Launch(io5)
     seq5.prepare([1], 5, 0.0)
     seq5.approved(True, 7, 0.0)
     run_seq(io5, seq5, 80.0)
     fb = [w for _t, n, w in io5.sent]
-    fb_ok = seq5.state == "DONE" and "mode 2" in fb and "takeoff 1/15" in fb and "catchup" in fb and "start" not in fb
+    fb_ok = (seq5.state == "STOPPED" and "no GPS fix" in seq5.why and "not launched" in seq5.why and
+             fb == ["upload usb"] and any("no GPS fix" in t for t in io5.notices))
     io6 = FakeIo(1, gps=False, standby=False)
     seq6 = launch.Launch(io6)
     seq6.prepare([1], 5, 0.0)
     seq6.approved(True, 7, 0.0)
     run_seq(io6, seq6, 60.0)
     fb6 = [w for _t, n, w in io6.sent]
-    dp_ok = seq6.state == "DONE" and "mode 2" in fb6 and "takeoff 1/15" in fb6 and "catchup" in fb6
+    dp_ok = seq6.state == "STOPPED" and "no GPS fix" in seq6.why and not any(w == "arm" for w in fb6)
     # 6) the read-back differs: stop, never armed; 7) the captain's station lost; 8) slot mismatch; 9) NO / no answer
     io7 = FakeIo(1)
     io7.upload_ok = False
@@ -1387,14 +1446,16 @@ def ua16_launch():
            "last, GUIDED -> ARM -> TAKEOFF to the slot altitude, >= 15 s between ARMs; ANY warning stops it (the boat's "
            "GPS lost, a hatch FAULT, the captain's station lost, a slot mismatch, a bad read-back, NO / no "
            "answer) with no further drone and the hatch not switched; armed without a climb = DISARM + the hatch "
-           "stays OPEN; no GPS = the ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) + catch-up, in STANDBY and "
-           "under way (W59); a STOP with a drone armed on deck disarms it",
-           seq_ok and stop_ok and hf_ok and nc_ok and fb_ok and dp_ok and rb_ok and cap_ok and mm_ok and no_ok and
-           deck_ok,
-           "normal %s (order %s, gaps %s, relay %s); boat leaves %s (%s); hatch fault %s; no climb %s (%s); fallback "
-           "%s (%s); under way %s; read-back %s; captain lost %s; mismatch %s; NO / timeout %s; deck stop %s (%s)" % (
-               seq_ok, order, [round(g) for g in gaps], io.relay, stop_ok, seq2.why, hf_ok, nc_ok, nc, fb_ok, fb,
-               dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck))
+           "stays OPEN, a DISARM the drone refuses sent again FORCED only while it is on its slot cable (UAV-r1, "
+           "W138 b), never once the cable parted; NO GPS = the sequence STOPS, never armed (UAV-r1, W138: no climb "
+           "fallback), in STANDBY and under way; a STOP with a drone armed on deck disarms it",
+           seq_ok and stop_ok and hf_ok and nc_ok and fd_ok and nf_ok and fb_ok and dp_ok and rb_ok and cap_ok and
+           mm_ok and no_ok and deck_ok,
+           "normal %s (order %s, gaps %s, relay %s); boat leaves %s (%s); hatch fault %s; no climb %s (%s); forced "
+           "%s (%s); cable gone %s (%s); no GPS %s (%s: %s); under way %s; read-back %s; captain lost %s; mismatch "
+           "%s; NO / timeout %s; deck stop %s (%s)" % (
+               seq_ok, order, [round(g) for g in gaps], io.relay, stop_ok, seq2.why, hf_ok, nc_ok, nc, fd_ok, nb,
+               nf_ok, n4c, fb_ok, fb, seq5.why, dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck))
 
 
 def ua17_router_flight():
@@ -1436,7 +1497,7 @@ def ua17_router_flight():
         st = w.find(lambda e: e.get("ev") == "status" and not e["links"].get("1", {}).get("present") and
                     (e["drones"].get("1") or {}).get("rel_alt", 0) > 10, 10)
         disarm_air = req("cmd", slot=1, via="auto", command=400, params=[0, 0])
-        start = req("cmd", slot=1, via="elrs", command=300, params=[1, 0])
+        start = req("cmd", slot=1, via="elrs", command=300, params=[0, 0])     # UAV-r1: [0, 0] (ArduCopter 4.7)
         cur = fl.drones[0].cur
         # the hatch op goes stale (the manager gone quiet) = ARM refused again
         time.sleep(1.3)
@@ -3483,22 +3544,22 @@ def ua34_review_u5():
     P.hover(1)
     modes = [c[3][1] for c in mgr.cmds[n0c:] if c[2] == allow.CMD_DO_SET_MODE]
     res["hover_nogps"] = modes == [allow.COPTER_ALT_HOLD] and 1 not in P.loiter
-    # --- MED-1 in the manager: route refused for a flown drone, pilot_block, catchup skipped
+    # --- MED-1 in the manager: route refused for a flown drone, pilot_block (UAV-r1: no climb-fallback "catchup")
     m = object.__new__(manager.UavManager)
     m.gw, m.enabled, m.n, m.ccfg = _G(), True, 6, dict(uavcheck.DEFAULTS)
     m.pilots = type("PL", (), {"locks": {2: pilot.Lock(9, "anna", time.time())}})()
     io_seq = type("Q", (), {"busy": lambda _s: True, "cur": 3, "phase": "CLIMB"})()
     m.seq = io_seq
-    m.flying = {2: {"phase": "catchup", "next_try": 0.0}, 4: {"phase": "launching"}, 5: {"phase": "mission"}}
+    m.flying = {2: {"phase": "hold"}, 4: {"phase": "launching"}, 5: {"phase": "mission"}}
     m.slot = lambda n: {"gps_fix": 3, "ekf_flags": 0x1F}
     sent = []
     m.cmd = lambda n, via, c, p, cb: sent.append((n, c))
     st = _St(6)
     m.route_msg(st, {"target": 2, "wps": [{"lat": 37.83, "lon": 23.61, "alt": 50}]})
     r = st.sent[-1]
-    m.catchup_tick(time.time())
     res["med1_mgr"] = (r.get("code") == pilot.ERR_PILOT and "by hand" in r.get("text", "") and not sent and
-                       m.pilot_block(3) and m.pilot_block(4) is None and m.pilot_block(2) and m.pilot_block(5) is None)
+                       m.pilot_block(3) and m.pilot_block(4) is None and m.pilot_block(2) is None and
+                       m.pilot_block(5) is None and not hasattr(m, "catchup_tick"))
     # (U6 review MED-3: "launching" blocks only while the sequence owns that drone - slot 4 is not seq.cur)
     # MED-1 in the launch: CLEAR with a pilot on the drone = no MISSION START
     io = FakeIo(1)
@@ -3968,6 +4029,159 @@ def ua41_x2_param_file():
            all(res.values()), "%s; disagree %s; probes %s" % (res, dis, {k: v[:1] for k, v in probe.items()}))
 
 
+# ---------------------------------------------------------------------------------------------- UA42 (UAV-r1) ---
+
+def ua42_uavr1_force_disarm_mission_request():
+    """UAV-r1 (owner W139 + W138 b), at the ROUTER in this process (fake links, a fake drone): ArduCopter's
+    MISSION_REQUEST (40) answered like MISSION_REQUEST_INT (upload + read-back done); a FORCE DISARM leaves the router
+    ONLY while the drone is on the ground in its slot (fresh USB HEARTBEAT + fresh altitude < 0.5 m, still, not
+    "in air"); refused in flight / cable gone / stale data / IN_AIR; force ARM never. Mutations: the router's
+    in_slot always True, and allow.py without its in_slot test, each let an IN-FLIGHT force DISARM out (caught)."""
+    import importlib.util
+    from uav import mission, router_worker as rw
+    clock = [1000.0]
+    real_now, real_out = rw.now_s, rw.out
+    events = []
+    rw.now_s = lambda: clock[0]
+    rw.out = lambda obj: events.append(obj)
+    hb = ("HEARTBEAT", {"type": 2, "autopilot": 3, "base_mode": 0x80, "custom_mode": 4, "system_status": 4,
+                        "mavlink_version": 3})
+
+    def link(r, kind):
+        lk = rw.Link(1, kind, "test", rw.queue.Queue())
+        lk.up, lk.frames = True, []
+        lk.write = lambda frame, lk=lk: lk.frames.append(frame) or True
+        lk.open = lambda now: None
+        lk.close = lambda why: None
+        r.links[(1, kind)] = lk
+        return lk
+
+    seq = [0]
+
+    def feed(r, lk, msgs):
+        data = b"".join(mavlink.encode(n, f, (seq[0] + i) & 0xFF, 11, 1) for i, (n, f) in enumerate(msgs))
+        seq[0] += len(msgs)
+        r.rx(lk, data, clock[0])
+
+    def world(alt=0.0, vz=0.0, usb=True, landed_state=1):
+        r = rw.Router()
+        r.expect[1] = 11
+        u, e = link(r, "usb"), link(r, "elrs")
+        feed(r, e, [hb])
+        if usb:
+            feed(r, u, [hb])
+        feed(r, e, [("GLOBAL_POSITION_INT", {"relative_alt": int(alt * 1000), "vz": int(-vz * 100),
+                                             "lat": 378200000, "lon": 236000000})] +
+             ([("EXTENDED_SYS_STATE", {"landed_state": landed_state})] if landed_state is not None else []))
+        return r, u, e
+
+    def sent_400(r):
+        found = []
+        for lk in r.links.values():
+            for m in mavlink.Parser().feed(b"".join(lk.frames)):
+                if m.name == "COMMAND_LONG" and int(m.fields["command"]) == 400:
+                    found.append((lk.kind, m.fields["param1"], m.fields["param2"]))
+            lk.frames = []
+        return found
+
+    def try_cmd(r, params, via="usb"):
+        events.clear()
+        r.command({"op": "cmd", "slot": 1, "id": 1, "via": via, "command": 400, "params": params}, clock[0])
+        return sent_400(r)
+    res = {}
+    try:
+        force = [0, allow.FORCE_MAGIC]
+        r, u, e = world(0.1, 0.0)
+        res["slot_force_ctx"] = r.ctx(u)["in_slot"] is True
+        res["slot_force_out"] = try_cmd(r, force) == [("usb", 0.0, 21196.0)]
+        r, u, e = world(0.1, 0.0)
+        res["force_arm_never"] = try_cmd(r, [1, allow.FORCE_MAGIC]) == []
+        r, u, e = world(30.0, 0.0, landed_state=2)
+        res["flight_refused"] = try_cmd(r, force, "auto") == [] and r.ctx(e)["in_slot"] is False
+        r, u, e = world(30.0, 0.0, landed_state=None)                # in the air, the USB still heard (stuck cable)
+        res["flight_usb_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.0, usb=False)                          # on the deck but NOT on its slot cable
+        res["no_usb_refused"] = try_cmd(r, force, "auto") == []
+        r, u, e = world(0.1, 0.0, landed_state=2)                     # low but the drone says IN_AIR
+        res["in_air_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.6)                                     # moving vertically
+        res["moving_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.0)
+        clock[0] += 2.5                                               # the altitude data goes stale (> 2 s)
+        feed(r, u, [hb])
+        res["stale_refused"] = try_cmd(r, force) == []
+        # mutation 1: the router's in_slot always True -> an in-flight force DISARM leaves (caught by the cases above)
+        real_in = rw.Router.in_slot
+        rw.Router.in_slot = lambda self, slot, d, now: True
+        try:
+            r, u, e = world(30.0, 0.0, landed_state=2)
+            res["mut_router_caught"] = try_cmd(r, force, "auto") != []
+        finally:
+            rw.Router.in_slot = real_in
+        # mutation 2: allow.py without its in_slot test
+        src = open(allow.__file__, encoding="utf-8").read()
+        spec = importlib.util.spec_from_loader("uav.allow_mut", loader=None)
+        mut = importlib.util.module_from_spec(spec)
+        mut.__package__ = "uav"
+        flight = {"command": 400, "param1": 0.0, "param2": 21196.0, "target_system": 11}
+        fctx = {"landed": True, "in_slot": False, "armed": True}
+        res["mut_allow_present"] = 'if not ctx.get("in_slot"):' in src
+        exec(compile(src.replace('if not ctx.get("in_slot"):', 'if False:'), "allow_mut", "exec"), mut.__dict__)
+        res["mut_allow_caught"] = (mut.check_out("COMMAND_LONG", flight, fctx)[0] is True and
+                                   allow.check_out("COMMAND_LONG", flight, fctx)[0] is False)
+        # W139: a mission upload answered to MISSION_REQUEST (40), then the read-back
+        r, u, e = world(0.0, 0.0)
+        items = mission.build([{"lat": 37.8205, "lon": 23.6005, "alt": 40.0}], (37.82, 23.60), 30.0, 8.0)
+        events.clear()
+        r.command({"op": "mission", "slot": 1, "id": 7, "via": "usb", "items": items}, clock[0])
+        got = []
+
+        def drone_rx():
+            for m in mavlink.Parser().feed(b"".join(u.frames)):
+                got.append((m.name, dict(m.fields)))
+            u.frames = []
+
+        def say(name, f):
+            feed(r, u, [(name, dict(f, target_system=255, target_component=190))])
+        drone_rx()
+        n = next((f["count"] for nm, f in got if nm == "MISSION_COUNT"), 0)
+        stored = []
+        for i in range(n):
+            say("MISSION_REQUEST", {"seq": i, "mission_type": 0})
+            drone_rx()
+            it = [f for nm, f in got if nm == "MISSION_ITEM_INT" and f["seq"] == i]
+            stored.append(it[-1] if it else None)
+        say("MISSION_ACK", {"type": 0, "mission_type": 0})
+        drone_rx()
+        say("MISSION_COUNT", {"count": n, "mission_type": 0})
+        for i in range(n):
+            drone_rx()
+            if stored[i] is not None:
+                say("MISSION_ITEM_INT", dict(stored[i]))
+        drone_rx()
+        done = [ev for ev in events if ev.get("ev") == "mission" and ev.get("id") == 7]
+        res["mission_request_upload"] = bool(n == len(items) and all(stored) and done and done[-1]["ok"] is True)
+        res["no_mission_request_out"] = not any(nm == "MISSION_REQUEST" for nm, _f in got)
+        res["mission_request_in"] = r.stats["denied_in"] == 0 and "in MISSION_REQUEST" not in r.denied
+        # SITL: ArduCopter reads a DO item back with frame 0 - accepted for DO_CHANGE_SPEED only, never for a position
+        rb = [dict(i) for i in items]
+        rb[mission.SPEED]["frame"] = 0
+        res["readback_do_frame0"] = mission.same(items, rb)[0] is True
+        rb2 = [dict(i) for i in items]
+        rb2[mission.TAKEOFF]["frame"] = 0
+        rb3 = [dict(i) for i in items]
+        rb3[mission.SPEED]["frame"] = 3
+        res["readback_pos_frame0_refused"] = mission.same(items, rb2)[0] is False and mission.same(items, rb3)[0] is False
+    finally:
+        rw.now_s, rw.out = real_now, real_out
+    report("UA42 UAV-r1 at the router: MISSION_REQUEST (40, ArduCopter) answered like MISSION_REQUEST_INT - upload + "
+           "read-back done, never sent by the router; a FORCE DISARM out ONLY on the ground in the slot (fresh USB "
+           "HEARTBEAT + fresh altitude < 0.5 m, still, not IN_AIR) - refused in flight (also with the USB still "
+           "heard), off the cable, IN_AIR, moving, stale data; force ARM never; mutations (router in_slot always "
+           "True, allow.py without the in_slot test) let an in-flight force DISARM out = caught",
+           all(res.values()), "%s" % res)
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3977,7 +4191,7 @@ def main():
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
              ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races, ua40_x1_tlog,
-             ua41_x2_param_file]
+             ua41_x2_param_file, ua42_uavr1_force_disarm_mission_request]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:
