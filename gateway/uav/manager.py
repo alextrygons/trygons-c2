@@ -424,10 +424,11 @@ class UavManager:
 
     def _config(self):
         lst = self.cfg["slots"] or []
-        return {"op": "config", "battery": dict(self.ccfg),
+        return {"op": "config", "battery": dict(self.ccfg), "tlog_dir": self.flog.folder,
                 "slots": [{"slot": s, "usb": usb, "sysid": (self.reg.recs.get(s) or {}).get("sysid")
                            if (self.reg.recs.get(s) or {}).get("ok") else None,
                            "capacity_mah": (self.reg.recs.get(s) or {}).get("capacity_mah"),
+                           "name": (self.reg.recs.get(s) or {}).get("name") or "UAV %d" % s,
                            "elrs": ((lst[s - 1] if s - 1 < len(lst) else {}) or {}).get("radio") or ""}
                           for s, usb, _v, _e in self.specs]}
 
@@ -1125,7 +1126,7 @@ class UavManager:
         (self.telem_subs.add if m.get("on", True) else self.telem_subs.discard)(st.id)
 
     def logs_msg(self, st, m):
-        """{"t": "uav_logs"} -> the list; {"t": "uav_log", "name", "file", "fmt": "csv" | "gpx"} -> the text. Read in
+        """{"t": "uav_logs"} -> the list; {"t": "uav_log", "name", "file", "fmt": "csv" | "gpx" | "tlog"} -> the text (tlog: base64). Read in
         a helper thread (never file work on the event loop)."""
         loop = self.loop
 
@@ -1139,7 +1140,7 @@ class UavManager:
             if m.get("t") == "uav_logs":
                 reply({"t": "uav_logs", "logs": self.flog.list()})
             else:
-                fmt = m.get("fmt") if m.get("fmt") in ("csv", "gpx") else "csv"
+                fmt = m.get("fmt") if m.get("fmt") in ("csv", "gpx", "tlog") else "csv"
                 ok, text = self.flog.read(m.get("name"), m.get("file"), fmt)
                 reply({"t": "uav_log", "ok": ok, "name": m.get("name"), "file": m.get("file"), "fmt": fmt,
                        "data": text if ok else "", "text": "" if ok else text})

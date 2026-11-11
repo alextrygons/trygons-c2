@@ -36,6 +36,8 @@ Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid", "capacity_
                                                  frame, pilot.py clipped it); refused while landing for the battery;
                                                  a moving one not renewed in 0.5 s = the router's own zero setpoint
           {"op": "stop"}
+          (step X1) config also carries "tlog_dir" (the flight-log folder) + per slot "name": the router then writes
+          <tlog_dir>/<name>/<UTC of the ARM>.tlog per flight (see tlog.py); denied messages are never written
 Events:   {"ev": "status", "links": {slot: usb link}, "radio": {slot: elrs link}, "drones": {slot: state},
           "stats": {...}} once a second (twice while a job runs), {"ev": "log", "text"}
 """
@@ -51,7 +53,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from uav import allow, battery, gpsassist, mavlink, mission, usbslots  # noqa: E402
+from uav import allow, battery, flightlog, gpsassist, mavlink, mission, tlog, usbslots  # noqa: E402
 
 TICK_S = 0.05
 RECONNECT_S = 2.0
@@ -284,6 +286,8 @@ class Router:
         self.next_hb = 0.0
         self.ctl_t, self.ctl_moving = {}, {}               # step U5: the last manual setpoint per slot
         self.setcur = {}                                   # slot -> a MISSION_SET_CURRENT waiting for MISSION_CURRENT
+        self.tlog = tlog.TlogWriter(None)                  # step X1: the per-flight .tlog (config "tlog_dir")
+        self.names = {}                                    # slot -> the drone's name (the .tlog folder = the CSV's)
 
     def link(self, slot, kind):
         return self.links.get((slot, kind))
@@ -327,8 +331,24 @@ class Router:
         frame = mavlink.encode(name, fields, link.seq, self.gcs[0], self.gcs[1])
         if link.write(frame):
             self.stats["tx"] += 1
+            self.tlog_packet(link.slot, frame)             # X1: only what passed allow.check_out and was sent
             return True
         return False
+
+    def tlog_packet(self, slot, raw, now=None):
+        """Step X1: one received / sent packet into the slot's flight .tlog (only while the drone is armed: one file
+        per flight, opened at the ARM, closed with the packet that shows the DISARM). Never raises."""
+        try:
+            armed = self.drone(slot).armed()
+            if armed and not self.tlog.is_open(slot):
+                self.tlog.begin(slot, flightlog.safe_name(self.names.get(slot), slot), now)
+            if self.tlog.is_open(slot):
+                self.tlog.write(slot, raw, now)
+                if not armed:
+                    self.tlog.end(slot)
+        except Exception as e:                             # a log problem never touches the flight
+            self.tlog.errors += 1
+            out({"ev": "log", "text": "tlog: %s" % str(e)[:80]})
 
     def tgt_of(self, slot):
         exp = self.expect.get(slot)
@@ -424,6 +444,7 @@ class Router:
             if pr is not None:
                 pr[0].feed(m)
             self.job_rx(link, m, now)
+            self.tlog_packet(link.slot, m.raw)             # X1: accepted packets only (CRC, allow-list, sysid)
         for k in ("crc", "unknown"):
             self.stats[k] += link.parser.n[k] - n0.get(k, 0)
 
@@ -491,6 +512,9 @@ class Router:
             self.gcs = tuple(c.get("gcs") or self.gcs)
             if c.get("battery") is not None:
                 self.bcfg = battery.cfg_of(c.get("battery"))
+            if "tlog_dir" in c and c.get("tlog_dir") != self.tlog.folder:
+                self.tlog.close()
+                self.tlog = tlog.TlogWriter(c.get("tlog_dir") or None)
             want = {}
             for s in c.get("slots", []):
                 for kind in ("usb", "elrs"):
@@ -498,6 +522,7 @@ class Router:
                         want[(int(s["slot"]), kind)] = s[kind]
                 self.expect[int(s["slot"])] = s.get("sysid")
                 self.capacity[int(s["slot"])] = s.get("capacity_mah")
+                self.names[int(s["slot"])] = s.get("name")
             for key in list(self.links):
                 if key not in want or want[key] != self.links[key].spec:
                     self.links.pop(key).close("removed")

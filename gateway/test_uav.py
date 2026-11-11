@@ -3755,6 +3755,114 @@ def ua37_helm_forward():
            "%s (refusal %r / without the grant %r)" % (res, r_new, r_old))
 
 
+def ua40_x1_tlog():
+    """Step X1: the router's per-flight .tlog (8-byte big-endian microsecond timestamp + raw MAVLink 2 packet): the
+    packets it RECEIVED (accepted ones only) and the commands it SENT after allow.py; a refused command and a refused
+    incoming message are NOT written; one file per flight (opened at the ARM, closed with the DISARM, named like the
+    CSV flight log); the file is read back with pymavlink (N/A when it is not installed: the own parser then checks
+    it, the pymavlink part is NOT counted as passed); the export (list + fmt tlog, base64) returns the same bytes."""
+    from uav import flightlog, mavlink, router_worker as rw, tlog
+    tmp = tempfile.mkdtemp(prefix="uavtest_x1_")
+    events = []
+    old_out = rw.out
+    rw.out = lambda obj: events.append(obj)
+    try:
+        r = rw.Router()
+        r.tlog = tlog.TlogWriter(tmp)
+        r.names[1] = "Alpha 1"
+        r.expect[1] = 11
+        lk = _FakeLink(1, "usb")
+        lk.parser = mavlink.Parser()
+        lk.hbs, lk.hb, lk.info, lk.radio, lk.foreign, lk.sysid = rw.collections.deque(maxlen=20), {}, {}, {}, None, None
+        r.links[(1, "usb")] = lk
+        seq = [0]
+
+        def feed(name, **f):
+            seq[0] += 1
+            fr = mavlink.encode(name, f, seq[0], 11, 1)
+            r.rx(lk, fr, rw.now_s())
+            return fr
+        hb = dict(type=2, autopilot=3, base_mode=1, custom_mode=5, system_status=3, mavlink_version=3)
+        feed("HEARTBEAT", **hb)                                           # disarmed: not a flight, not written
+        r.tlog.flush()
+        before = os.path.isdir(os.path.join(tmp, "Alpha-1"))
+        sent = []
+        sent.append(feed("HEARTBEAT", **dict(hb, base_mode=0x81)))        # the ARM
+        sent.append(feed("GLOBAL_POSITION_INT", time_boot_ms=1, lat=378200000, lon=236000000, alt=50000,
+                         relative_alt=30000, vx=100, vy=0, vz=0, hdg=9000))
+        rd_denied = r.stats["denied_in"]
+        feed("SERVO_OUTPUT_RAW", time_usec=1, servo1_raw=1500)            # not allow-listed: dropped, NOT written
+        denied_in = r.stats["denied_in"] - rd_denied
+        ok1 = r.tx(lk, "COMMAND_LONG", dict(target_system=11, target_component=1, command=allow.CMD_DO_SET_MODE,
+                                            confirmation=0, param1=1, param2=allow.COPTER_GUIDED, param3=0, param4=0,
+                                            param5=0, param6=0, param7=0))
+        n_frames = len(lk.frames)
+        ok2 = r.tx(lk, "PARAM_SET", dict(target_system=11, target_component=1, param_id="RTL_ALT", param_value=0.0,
+                                         param_type=9))                    # refused by allow.py: NOT written
+        denied_out = r.stats["denied_out"]
+        sent.append(lk.frames[0] if lk.frames else b"")
+        sent.append(feed("HEARTBEAT", **dict(hb, base_mode=0x01)))         # the DISARM: written, then the file closes
+        closed = not r.tlog.is_open(1)
+        feed("HEARTBEAT", **dict(hb, base_mode=0x01))                      # after the flight: not written
+        time.sleep(1.1)
+        sent2 = [feed("HEARTBEAT", **dict(hb, base_mode=0x81))]            # a second flight = a second file
+        r.tlog.flush()
+        d = os.path.join(tmp, "Alpha-1")
+        files = sorted(f for f in os.listdir(d)) if os.path.isdir(d) else []
+        name_ok = len(files) == 2 and all(re.match(r"^\d{8}-\d{6}\.tlog$", f) for f in files)
+        data = open(os.path.join(d, files[0]), "rb").read() if files else b""
+        recs = tlog.parse(data) if data else []
+        want = sent
+        content_ok = [p for _t, p in recs] == want
+        ts = [t for t, _p in recs]
+        order_ok = ts == sorted(ts) and all(abs(t / 1e6 - time.time()) < 60 for t in ts) and len(ts) == len(want)
+        names = [mavlink.Parser().feed(p)[0].name for _t, p in recs] if recs else []
+        # the export (as the station asks): list + fmt tlog, base64, the same bytes
+        fl = flightlog.FlightLogs(tmp)
+        base = files[0][:-5] if files else "x"
+        open(os.path.join(d, base + ".csv"), "w").write("utc\n")
+        lst = [x for x in fl.list() if x["file"] == base + ".csv"]
+        ok_r, b64 = fl.read("Alpha-1", base + ".csv", "tlog")
+        import base64
+        export_ok = ok_r and base64.b64decode(b64) == data and bool(lst) and lst[0].get("tlog") == len(data)
+        # pymavlink: every packet, timestamps in order
+        pym = "N/A"
+        try:
+            from pymavlink import mavutil
+            m = mavutil.mavlink_connection(os.path.join(d, files[0]))
+            got, stamps = [], []
+            while True:
+                x = m.recv_match(blocking=False)
+                if x is None:
+                    break
+                if x.get_type() == "BAD_DATA":
+                    continue
+                got.append(x.get_type())
+                stamps.append(x._timestamp)
+            pym = got == names and stamps == sorted(stamps) and len(stamps) == len(names)
+            pym_detail = "%s vs %s" % (got, names)
+        except ImportError:
+            pym_detail = "pymavlink not installed"
+        report("UA40 X1 per-flight .tlog: accepted received packets + sent commands only, a refused command / "
+               "incoming message not written, one file per flight named like the CSV, own parser + export base64 "
+               "round trip", not before and denied_in == 1 and ok1 and not ok2 and denied_out == 1 and
+               n_frames == 1 and closed and name_ok and content_ok and order_ok and export_ok and
+               names == ["HEARTBEAT", "GLOBAL_POSITION_INT", "COMMAND_LONG", "HEARTBEAT"],
+               "names %s, before %s, denied in/out %s/%s, files %s, content %s, order %s, export %s" % (
+                   names, before, denied_in, denied_out, files, content_ok, order_ok, export_ok))
+        if pym == "N/A":
+            report("UA40b pymavlink reads the .tlog (every packet, timestamps in order)", NA, pym_detail)
+        else:
+            report("UA40b pymavlink reads the .tlog (every packet, timestamps in order)", pym is True, pym_detail)
+    finally:
+        rw.out = old_out
+        try:
+            r.tlog.close()
+        except Exception:
+            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3763,7 +3871,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races, ua40_x1_tlog]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

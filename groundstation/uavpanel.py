@@ -184,7 +184,10 @@ class Page:
         self.b_csv.pack(side="left", padx=(0, 6))
         self.b_gpx = tk.Button(bf, command=lambda: self.export("gpx"), **theme.button_opts())
         i18n.bind(self.b_gpx, "uav.export_gpx")
-        self.b_gpx.pack(side="left")
+        self.b_gpx.pack(side="left", padx=(0, 6))
+        self.b_tlog = tk.Button(bf, command=lambda: self.export("tlog"), **theme.button_opts())   # step X1
+        i18n.bind(self.b_tlog, "uav.export_tlog")
+        self.b_tlog.pack(side="left")
         # manual control (step U5): «ΧΕΙΡΙΣΜΟΣ UAV n» for every flying UAV, «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» (the gateway's
         # pilot lock decides: one pilot per drone, the captain only with the boat in STANDBY)
         ff = tk.Frame(lf, bg=BG)

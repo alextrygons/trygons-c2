@@ -2019,6 +2019,7 @@ uav.cv_button = UAV {n}
 uav.flightlogs = ΑΡΧΕΙΑ ΠΤΗΣΗΣ
 uav.export_csv = ΕΞΑΓΩΓΗ CSV
 uav.export_gpx = ΕΞΑΓΩΓΗ GPX
+uav.export_tlog = ΕΞΑΓΩΓΗ .tlog (Mission Planner)
 uav.no_logs = δεν υπάρχουν ακόμα αρχεία πτήσης στον υπολογιστή του σκάφους
 uav.pick_log = επιλέξτε πρώτα ένα αρχείο πτήσης στη λίστα
 uav.log_line = {name}   {when} UTC   {kb} kB

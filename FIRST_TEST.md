@@ -476,3 +476,12 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
       the mic is muted while anyone talks (no echo) ____ ; the amplifier trimmer set so 80 % is safe for a swimmer
       close by ____ ; the captain's TALK takes the horn at once from a copilot talking (W54) ____ ; the AUDIO track
       is in a SAVE ____ .
+
+### 6k. Flight logs (.tlog) and the service tool (step X1)
+- [ ] After a bench flight (props off or tethered, ARM in the slot) the gateway data folder uav_logs/<drone>/ holds
+      <UTC>.csv AND <UTC>.tlog ____ ; EXPORT .tlog (Mission Planner) on the Tools page saves it ____ ; Mission
+      Planner (Telemetry Logs / Flight Data - Load log) or MAVExplorer.py opens it, the flight shows in the right
+      order, the C2's commands are in it and no refused command is ____ .
+- [ ] Mission Planner / QGroundControl are used ONLY on the bench, over the drone's own USB cable with the drone
+      NOT in the magazine slot and NOT under the gateway / router (firmware, calibration, parameters, logs); they
+      are never connected to the gateway, the router or the ELRS link during an operation ____ .

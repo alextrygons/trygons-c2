@@ -6791,9 +6791,14 @@ class App:
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                f.write(d.get("data") or "")
-        except OSError as e:
+            if d.get("fmt") == "tlog":                  # step X1: the binary .tlog comes base64 in the JSON
+                import base64
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(d.get("data") or ""))
+            else:
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(d.get("data") or "")
+        except (OSError, ValueError) as e:
             return self.say(T("uav.log_failed", why=str(e)), RED)
         self.say(T("uav.log_saved", path=path))
         self.event(T("uav.log_saved", path=path))

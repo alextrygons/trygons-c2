@@ -7,6 +7,7 @@ Written by a helper thread (a queue; never file work on the gateway's event loop
 Export: CSV as it is, or GPX 1.1 (a track with the altitude + time) - station messages uav_logs (the list) and
 uav_log {name, file, fmt} (the text, at most MAX_BYTES), answered from a helper thread too.
 """
+import base64
 import csv
 import io
 import os
@@ -16,11 +17,14 @@ import threading
 import time
 from xml.sax.saxutils import escape
 
+from . import tlog
+
 FIELDS = ("utc", "slot", "sysid", "lat", "lon", "alt_m", "hdg", "gs_ms", "climb_ms", "batt_pct", "batt_v", "batt_a",
           "used_mah", "mode", "armed", "lq_pct", "land_eta_s", "landing", "phase")
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 FILE_RE = re.compile(r"^\d{8}-\d{6}(-\d+)?\.csv$")
 MAX_BYTES = 4 * 1024 * 1024
+MAX_TLOG_BYTES = 6 * 1024 * 1024               # a .tlog sent to a station (base64 in JSON); bigger: copy it by hand
 
 
 def safe_name(text, slot):
@@ -105,7 +109,8 @@ class FlightLogs:
                 if FILE_RE.match(fn):
                     p = os.path.join(d, fn)
                     try:
-                        out.append({"name": nm, "file": fn, "bytes": os.path.getsize(p), "t": os.path.getmtime(p)})
+                        out.append({"name": nm, "file": fn, "bytes": os.path.getsize(p), "t": os.path.getmtime(p),
+                                    "tlog": sum(os.path.getsize(q) for q in tlog.parts_of(self.folder, nm, fn[:15]))})
                     except OSError:
                         pass
         return out
@@ -120,6 +125,17 @@ class FlightLogs:
         p = self.path(name, file)
         if p is None:
             return False, "no such flight log"
+        if fmt == "tlog":
+            parts = tlog.parts_of(self.folder, name, file[:15])
+            if not parts:
+                return False, "no .tlog for this flight"
+            try:
+                if sum(os.path.getsize(q) for q in parts) > MAX_TLOG_BYTES:
+                    return False, "telemetry log too big to send: copy it from the gateway PC"
+                data = b"".join(open(q, "rb").read() for q in parts)
+            except OSError as e:
+                return False, "telemetry log not readable: %s" % e
+            return True, base64.b64encode(data).decode("ascii")
         try:
             if os.path.getsize(p) > MAX_BYTES:
                 return False, "flight log too big to send (%d bytes): copy it from the gateway PC" % os.path.getsize(p)
@@ -130,7 +146,7 @@ class FlightLogs:
         if fmt == "gpx":
             return True, to_gpx(text, "%s %s" % (name, file[:-4]))
         if fmt != "csv":
-            return False, "format csv or gpx"
+            return False, "format csv, gpx or tlog"
         return True, text
 
 

@@ -2015,6 +2015,7 @@ uav.cv_button = UAV {n}
 uav.flightlogs = FLIGHT LOGS
 uav.export_csv = EXPORT CSV
 uav.export_gpx = EXPORT GPX
+uav.export_tlog = EXPORT .tlog (Mission Planner)
 uav.no_logs = no flight logs on the gateway yet
 uav.pick_log = choose a flight log in the list first
 uav.log_line = {name}   {when} UTC   {kb} kB

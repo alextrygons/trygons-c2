@@ -2818,6 +2818,22 @@ UAV MAGAZINE - MAP, TELEMETRY, VIDEO, AI (step U4)
   position, altitude, speed, battery, link, mode). Tools - UAV magazine -
   FLIGHT LOGS, choose one, EXPORT CSV (a spreadsheet) or EXPORT GPX (Google
   Earth, OpenCPN).
+  Telemetry log (.tlog): beside each flight log the router also writes the
+  drone's MAVLink telemetry of that flight (what it received from the drone
+  and the commands it sent, never a command the allow-list refused) in the
+  standard .tlog format, in the same folder under the same name (the time of
+  the ARM) with the ending .tlog. A very long flight continues in a second
+  file; the files are size-limited (the oldest are deleted first) and are
+  NEVER uploaded by themselves. EXPORT .tlog (Mission Planner) saves it on
+  this PC (up to about 6 MB; a bigger one: copy it from the gateway PC). To
+  open it: Mission Planner - Telemetry Logs - Tlog>Kml or Graph, or "Load log"
+  on the Flight Data screen (replay); or MAVExplorer.py offline (open the
+  file); or the UAV Log Viewer web page in a browser.
+  Mission Planner and QGroundControl are the WORKSHOP tools for the drones
+  only: firmware, calibration, parameters and log analysis, on the bench over
+  USB. They are NEVER connected to the gateway or the router while the boat is
+  in operation: a second ground station would bypass the allow-list and the
+  one-pilot rule.
 
 UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
   Who: the COPILOT may fly a UAV from his own station at any time (his joystick
