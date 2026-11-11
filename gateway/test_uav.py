@@ -348,9 +348,11 @@ def ua3_allow():
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"landed": True}, "force disarm")
     # UAV-r1 (W138 b): a force DISARM ONLY with ctx in_slot (the router: on the ground in its slot), never in flight;
     # a force ARM never (also in the slot), any other param2 never
-    want(True, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": True})
+    want(True, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": True, "port": "usb"})
     want(True, "COMMAND_INT", {"command": 400, "param1": 0.0, "param2": 21196.0, "target_system": 11},
-         {"in_slot": True})
+         {"in_slot": True, "port": "usb"})
+    want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": True, "port": "elrs"},
+         "force disarm over ELRS")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0},
          {"landed": True, "armed": True, "hatch_open": True, "port": "usb"}, "force disarm in flight / not in slot")
     want(False, "COMMAND_LONG", {"command": 400, "param1": 0.0, "param2": 21196.0}, {"in_slot": False, "landed": True},
@@ -1254,9 +1256,13 @@ class FakeIo:
         elif command == 400:
             forced = params[1] == 21196
             # the router's allow-list: a force DISARM only on the ground in the slot (here: on its USB cable)
-            res = (0 if d["usb_present"] else None) if forced else (0 if self.disarm_ok else 4)
+            res = (0 if d["usb_present"] else None) if forced else (0 if self.disarm_ok else (
+                None if self.disarm_ok is None else 4))
             if res == 0:
                 d["armed"] = False
+            # disarm_ok None = the router's allow-list refused the normal DISARM (SITL: the drone said TAKEOFF)
+            why = "refused by the allow-list" if res is None else ""
+            return self.q.append(lambda: cb(res, why))
         self.q.append(lambda: cb(res, ""))
 
     def armed(self, n):
@@ -1264,6 +1270,11 @@ class FakeIo:
 
     def on_mission(self, n):
         pass
+
+    def set_current(self, n, seq, via, cb):
+        """UAV-r1 review MED-1: the launch pins its first item before MISSION_START [0, 0]."""
+        self.sent.append((self.t, n, "setcur %d" % seq))
+        self.q.append(lambda: cb(0, ""))
 
     def hatch_cmd(self, on, cb):
         self.relay.append((self.t, on))
@@ -1321,7 +1332,8 @@ def ua16_launch():
     closed_after = io.relay[-1][1] is False and io.relay[-1][0] > arm_t[-1]
     seq_ok = (seq.state == "DONE" and order == [1, 2, 3] and min(gaps) >= 15.0 and up_first and opened_before_arm and
               closed_after and len(io.relay) == 2 and [w for _t, n, w in io.sent if n == 1][:4] ==
-              ["upload usb", "mode 4", "arm", "takeoff 0/30"])
+              ["upload usb", "mode 4", "arm", "takeoff 0/30"] and
+              [w for _t, n, w in io.sent if n == 1 and w in ("setcur 1", "start")] == ["setcur 1", "start"])
     # 2) the boat's GPS is lost after the first drone: stop, no further drone, the hatch not switched (W59: the boat's
     #    mode / speed is NOT a launch condition any more - a launch goes when the copilot says so)
     io2 = FakeIo(3)
@@ -1384,6 +1396,15 @@ def ua16_launch():
         io4c.q.pop(0)()
     n4c = [w for _t, n, w in io4c.sent if n == 1]
     nf_ok = "disarm" in n4c and "force disarm" not in n4c and any("not confirmed" in t for t in io4c.notices)
+    # 4d) the router's allow-list refuses the normal DISARM (SITL: a stuck take-off says TAKEOFF) = forced too
+    io4d = FakeIo(1, climb=False)
+    io4d.disarm_ok = None
+    seq4d = launch.Launch(io4d)
+    seq4d.prepare([1], 5, 0.0)
+    seq4d.approved(True, 7, 0.0)
+    run_seq(io4d, seq4d, 60.0)
+    n4d = [w for _t, n, w in io4d.sent if n == 1]
+    nf_ok = nf_ok and n4d[-2:] == ["disarm", "force disarm"] and not io4d.drones[1]["armed"]
     # 5) no GPS (UAV-r1, owner W138: the ALT_HOLD climb fallback is REMOVED): the hatch opens, no fix within
     #    gps_wait_s = STOP with the notice, NEVER armed, no mode / take-off sent - in STANDBY AND under way
     io5 = FakeIo(1, gps=False)
@@ -1441,6 +1462,55 @@ def ua16_launch():
     run_seq(io12, seq12, 30.0, [(4.5, lambda: seq12.stop("STOP by test", io12.t))])
     deck = [w for _t, n, w in io12.sent]
     deck_ok = seq12.state == "STOPPED" and "arm" in deck and deck[-1] == "disarm" and "STOP by test" in seq12.why
+    # 10b) UAV-r1 review HIGH-1: a STOP during the climb-out (TAKEOFF sent, before the no-climb judgement) and the
+    #      drone refuses the DISARM -> NO forced retry (it may be lifting off); the same STOP in the ARM stage (no
+    #      TAKEOFF sent yet) -> forced
+    io13 = FakeIo(1, climb=False)
+    io13.disarm_ok = False
+    seq13 = launch.Launch(io13)
+    seq13.prepare([1], 5, 0.0)
+    seq13.approved(True, 7, 0.0)
+    ph13 = []
+
+    def stop13():
+        ph13.append(seq13.phase)
+        seq13.stop("STOP by test", io13.t)
+    t_tko = [None]
+    while io13.t < 30.0 and seq13.state not in ("DONE", "STOPPED"):
+        if t_tko[0] is None and any(w.startswith("takeoff") for _t, _n, w in io13.sent):
+            t_tko[0] = io13.t
+        if t_tko[0] is not None and io13.t >= t_tko[0] + 1.0:
+            stop13()
+        seq13.tick(io13.t)
+        while io13.q:
+            io13.q.pop(0)()
+        io13.world(0.25)
+        io13.t += 0.25
+    while io13.q:
+        io13.q.pop(0)()
+    climb_stop = [w for _t, n, w in io13.sent]
+    io14 = FakeIo(1, climb=False)
+    io14.disarm_ok = False
+    seq14 = launch.Launch(io14)
+    seq14.prepare([1], 5, 0.0)
+    seq14.approved(True, 7, 0.0)
+    ph14 = []
+    while io14.t < 30.0 and seq14.state not in ("DONE", "STOPPED"):
+        seq14.tick(io14.t)
+        while io14.q:
+            io14.q.pop(0)()
+            if any(w == "arm" for _t, _n, w in io14.sent) and seq14.state == "RUN" and not ph14:
+                ph14.append(seq14.phase)
+                seq14.stop("STOP by test", io14.t)
+        io14.world(0.25)
+        io14.t += 0.25
+    while io14.q:
+        io14.q.pop(0)()
+    arm_stop = [w for _t, n, w in io14.sent]
+    grounded_ok = ("disarm" in climb_stop and "force disarm" not in climb_stop and ph13 == ["CLIMB"] and
+                   "force disarm" in arm_stop and not any(w.startswith("takeoff") for w in arm_stop) and
+                   ph14 == ["CMDS"])
+    deck_ok = deck_ok and grounded_ok
     report("UA16 the launch sequence (state machine, scripted magazine): top slot first, strictly in series, the "
            "mission uploaded + read back BEFORE the hatch, the hatch opened before the first ARM and closed after the "
            "last, GUIDED -> ARM -> TAKEOFF to the slot altitude, >= 15 s between ARMs; ANY warning stops it (the boat's "
@@ -1453,9 +1523,10 @@ def ua16_launch():
            mm_ok and no_ok and deck_ok,
            "normal %s (order %s, gaps %s, relay %s); boat leaves %s (%s); hatch fault %s; no climb %s (%s); forced "
            "%s (%s); cable gone %s (%s); no GPS %s (%s: %s); under way %s; read-back %s; captain lost %s; mismatch "
-           "%s; NO / timeout %s; deck stop %s (%s)" % (
+           "%s; NO / timeout %s; deck stop %s (%s; climb-out stop %s %s, ARM-stage stop %s %s)" % (
                seq_ok, order, [round(g) for g in gaps], io.relay, stop_ok, seq2.why, hf_ok, nc_ok, nc, fd_ok, nb,
-               nf_ok, n4c, fb_ok, fb, seq5.why, dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck))
+               nf_ok, n4c, fb_ok, fb, seq5.why, dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck, ph13, climb_stop,
+               ph14, arm_stop))
 
 
 def ua17_router_flight():
@@ -4063,16 +4134,25 @@ def ua42_uavr1_force_disarm_mission_request():
         seq[0] += len(msgs)
         r.rx(lk, data, clock[0])
 
-    def world(alt=0.0, vz=0.0, usb=True, landed_state=1):
+    def gpi(alt, vz):
+        return ("GLOBAL_POSITION_INT", {"relative_alt": int(alt * 1000), "vz": int(-vz * 100), "lat": 378200000,
+                                        "lon": 236000000})
+
+    def world(alt=0.0, vz=0.0, usb=True, landed_state=1, before=None, n=4):
+        """The drone's last 2 s at 2 Hz (alt / vz; `before` = the earlier samples' altitude, default the same), then
+        a HEARTBEAT on the cable (usb) + the landed state."""
         r = rw.Router()
         r.expect[1] = 11
         u, e = link(r, "usb"), link(r, "elrs")
-        feed(r, e, [hb])
+        for k in range(n):
+            a = alt if (before is None or k == n - 1) else before
+            feed(r, e, [hb, gpi(a, vz)])
+            if k < n - 1:
+                clock[0] += 0.5
         if usb:
             feed(r, u, [hb])
-        feed(r, e, [("GLOBAL_POSITION_INT", {"relative_alt": int(alt * 1000), "vz": int(-vz * 100),
-                                             "lat": 378200000, "lon": 236000000})] +
-             ([("EXTENDED_SYS_STATE", {"landed_state": landed_state})] if landed_state is not None else []))
+        if landed_state is not None:
+            feed(r, e, [("EXTENDED_SYS_STATE", {"landed_state": landed_state})])
         return r, u, e
 
     def sent_400(r):
@@ -4106,9 +4186,40 @@ def ua42_uavr1_force_disarm_mission_request():
         res["in_air_refused"] = try_cmd(r, force) == []
         r, u, e = world(0.1, 0.6)                                     # moving vertically
         res["moving_refused"] = try_cmd(r, force) == []
+        # review HIGH-1 / M2: the drone itself must say ON_GROUND; a lift-off in the window; an old cable HEARTBEAT
+        r, u, e = world(0.1, 0.0, landed_state=None)                  # no EXTENDED_SYS_STATE at all
+        res["no_ess_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.0, landed_state=3)                     # TAKEOFF, still only 1.5 s
+        res["takeoff_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.0, landed_state=3, n=10)               # TAKEOFF but still on deck 4.5 s (SITL: stuck)
+        res["takeoff_stuck_ok"] = try_cmd(r, force) == [("usb", 0.0, 21196.0)]
+        r, u, e = world(0.1, 0.0, landed_state=3, n=10, before=0.0)
+        r.drone(1).alt_hist[-3] = (r.drone(1).alt_hist[-3][0], 0.7, 0.0)   # a 0.7 m hop inside the 4 s window
+        res["takeoff_hop_refused"] = try_cmd(r, force) == []
+        # SITL: ArduCopter streams no EXTENDED_SYS_STATE - the router asks for it on a registered slot cable
+        r, u, e = world(0.0, 0.0, landed_state=None)
+        r.next_hb, r.n_hb = 0.0, 0
+        asked = []
+        for _k in range(4):
+            clock[0] += 1.0
+            feed(r, u, [hb])
+            r.step(clock[0])
+            for m in mavlink.Parser().feed(b"".join(u.frames)):
+                if m.name == "COMMAND_LONG" and int(m.fields["command"]) == allow.CMD_SET_MESSAGE_INTERVAL:
+                    asked.append(int(m.fields["param1"]))
+            u.frames = []
+        res["ess_asked"] = 245 in asked
+        r, u, e = world(0.1, 0.0, before=0.9)                         # 0.9 m a moment ago (heave / a hop)
+        res["window_refused"] = try_cmd(r, force) == []
         r, u, e = world(0.1, 0.0)
-        clock[0] += 2.5                                               # the altitude data goes stale (> 2 s)
-        feed(r, u, [hb])
+        res["elrs_refused"] = try_cmd(r, force, "elrs") == []
+        r, u, e = world(0.1, 0.0)
+        clock[0] += 1.6                                               # the cable's HEARTBEAT 1.6 s old
+        feed(r, e, [hb, gpi(0.1, 0.0), ("EXTENDED_SYS_STATE", {"landed_state": 1})])
+        res["old_hb_refused"] = try_cmd(r, force) == []
+        r, u, e = world(0.1, 0.0)
+        clock[0] += 1.2                                               # the altitude sample older than 1 s
+        feed(r, u, [hb, ("EXTENDED_SYS_STATE", {"landed_state": 1})])
         res["stale_refused"] = try_cmd(r, force) == []
         # mutation 1: the router's in_slot always True -> an in-flight force DISARM leaves (caught by the cases above)
         real_in = rw.Router.in_slot
@@ -4125,8 +4236,8 @@ def ua42_uavr1_force_disarm_mission_request():
         mut.__package__ = "uav"
         flight = {"command": 400, "param1": 0.0, "param2": 21196.0, "target_system": 11}
         fctx = {"landed": True, "in_slot": False, "armed": True}
-        res["mut_allow_present"] = 'if not ctx.get("in_slot"):' in src
-        exec(compile(src.replace('if not ctx.get("in_slot"):', 'if False:'), "allow_mut", "exec"), mut.__dict__)
+        res["mut_allow_present"] = 'if not ctx.get("in_slot") or ctx.get("port") != "usb":' in src
+        exec(compile(src.replace('if not ctx.get("in_slot") or ctx.get("port") != "usb":', 'if False:'), "allow_mut", "exec"), mut.__dict__)
         res["mut_allow_caught"] = (mut.check_out("COMMAND_LONG", flight, fctx)[0] is True and
                                    allow.check_out("COMMAND_LONG", flight, fctx)[0] is False)
         # W139: a mission upload answered to MISSION_REQUEST (40), then the read-back

@@ -72,10 +72,13 @@ ARMING_RUDDER,0        # SAFETY if-present never arm / disarm with the sticks
 
 # ---- manual flight (step U5): a GUIDED velocity setpoint not renewed = the drone stops (hold) ----------------------
 GUID_TIMEOUT,3         # SAFETY max seconds (the router itself sends a zero setpoint after 0.5 s)
+# UAV-r1 review MED-1: MISSION_START [0, 0] (ArduCopter 4.7 denies a first item) must RESUME at the item the router
+# chose with MISSION_SET_CURRENT - MIS_RESTART 1 would restart every mission from its first item
+MIS_RESTART,0          # SAFETY if-present
 
 # ---- limits matching the C2 checks (gateway/uav/uavcheck.py; the fence only REPORTS) ------------------------------
 # FENCE_ENABLE 0: measured in SITL (step X2) - an ENABLED fence refuses to ARM without a GPS position ("PreArm: Fence
-# requires position", also with FENCE_TYPE 1 altitude only), which would block the no-GPS climb fallback (W59 / W68);
+# requires position", also with FENCE_TYPE 1 altitude only) (it blocked the no-GPS climb fallback, removed in UAV-r1);
 # with FENCE_ACTION 0 it only reports anyway. The values below are what the drone reports against if the owner
 # enables it (they match the gateway's own checks, which are the real limits).
 FENCE_ENABLE,0         # ADVICE

@@ -31,6 +31,7 @@ Nothing here sends to the AURIX but the hatch relay through io.hatch_relay (uavl
 """
 from . import allow, mission
 
+REFUSED_BY_LIST = "refused by the allow-list"   # the router's answer when allow.check_out refused a command
 IDLE, ASK, RUN, CLOSING, DONE, STOPPED = "IDLE", "ASK", "RUN", "CLOSING", "DONE", "STOPPED"
 EKF_POS = 0x08 | 0x10                     # EKF_STATUS_REPORT: horizontal position relative + absolute
 
@@ -105,6 +106,7 @@ class Launch:
         # router and the drone is DISARMED like one armed here; the result is reported, never assumed
         arm_out = (self.wait == "cmd" and bool(self.cmdq) and self.cmdq[0][1] == allow.CMD_COMPONENT_ARM_DISARM and
                    self.cmdq[0][2][0] == 1)
+        was_q = (list(self.cmdq), self.wait, self.phase)
         self.gen += 1                      # every answer still on its way is ignored
         was, self.state, self.why = self.state, STOPPED, why
         self.wait, self.cmdq = None, []
@@ -117,12 +119,28 @@ class Launch:
                 self.io.cancel(n, allow.CMD_COMPONENT_ARM_DISARM)
             d = self.io.slot(n)
             if d.get("landed") or d.get("usb_present"):
-                self._disarm(n, "the launch stopped")
+                # review HIGH-1: a FORCED retry only while the drone cannot be lifting off - its TAKEOFF not sent yet
+                # (an ARM / GUIDED stage) or the sequence's own no-climb judgement; a STOP during a climb-out = the
+                # normal DISARM only (the drone refuses it in the air - as it should)
+                self._disarm(n, "the launch stopped", force_ok=self._grounded(n, now, was_q))
         self.log(now, "STOPPED (%s): %s" % (was, why))
         self.io.notice("UAV launch stopped: %s" % why, "caution")
         return True
 
-    def _disarm(self, n, why):
+    def _grounded(self, n, now, was):
+        """review HIGH-1: True = the sequence knows slot n's drone cannot be lifting off: its TAKEOFF was never sent
+        (still queued and not the command on its way), or the CLIMB phase's own no-climb judgement holds (no_climb_s
+        after the ARM and a fresh altitude below 1 m)."""
+        q, wait, phase = was
+        if phase == "CMDS":
+            tko = [i for i, c in enumerate(q) if c[1] == allow.CMD_NAV_TAKEOFF]
+            return bool(tko) and not (wait == "cmd" and tko[0] == 0)
+        if phase == "CLIMB" and self.t_arm is not None and now - self.t_arm > float(self.cfg["no_climb_s"]):
+            d = self.io.slot(n)
+            return d.get("alt_age") is not None and d["alt_age"] < 2.0 and (d.get("rel_alt") or 0.0) < 1.0
+        return False
+
+    def _disarm(self, n, why, force_ok=True):
         """DISARM the drone of slot n in the hatch; a DISARM the drone REFUSES (ArduCopter: "not landed" after an
         accepted take-off that did not climb, X2 SI13) is sent once more FORCED (param2 21196, UAV-r1 / W138 b).
         The router's allow.py lets the forced one out ONLY while the drone is on the ground in its slot (fresh USB
@@ -137,7 +155,12 @@ class Launch:
         def normal(result, w):
             if result == 0:
                 return self.io.notice("UAV %d disarmed in the hatch (%s)" % (n, why), "caution")
-            if self.io.slot(n).get("usb_present"):
+            # review M3 / LOW-1: forced only on a REFUSAL - the drone's MAV_RESULT, or allow.py's own (SITL: a stuck
+            # take-off reports TAKEOFF, so the router refuses the normal DISARM as "not on the ground") - never on a
+            # timeout / "replaced" / "cancelled" (maybe a lost link in the air); only while the sequence knows the
+            # drone is not lifting off
+            refused = result is not None or (w or "") == REFUSED_BY_LIST     # the drone's / allow.py's refusal
+            if refused and force_ok and self.io.slot(n).get("usb_present"):
                 return self.io.cmd(n, "usb", allow.CMD_COMPONENT_ARM_DISARM, [0, allow.FORCE_MAGIC], forced)
             self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result), "caution")
         self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], normal)
@@ -359,7 +382,16 @@ class Launch:
             # UAV-r1 (SITL, ArduCopter 4.7): MISSION_START with a first / last item (param1 / param2 != 0) is
             # DENIED (MAV_RESULT 2) - [0, 0] starts a freshly uploaded mission at its first item after HOME = seq 1
             # = the take-off item (mission.START_LAUNCH)
-            self.io.cmd(n, "elrs", allow.CMD_MISSION_START, [0, 0], wrap(go))
+            sc = getattr(self.io, "set_current", None)
+            if sc is None:
+                self.io.cmd(n, "elrs", allow.CMD_MISSION_START, [0, 0], wrap(go))
+            else:
+                # review MED-1: the first item pinned (a resume index left on the FC from the bench is never used)
+                def cur(result, why):
+                    if result != 0:
+                        return go(result, "MISSION_SET_CURRENT: %s" % (why or result))
+                    self.io.cmd(n, "elrs", allow.CMD_MISSION_START, [0, 0], wrap(go))
+                sc(n, mission.START_LAUNCH, "elrs", wrap(cur))
             return
         if ph == "GAP":
             if now - self.t_phase >= 0:

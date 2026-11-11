@@ -522,14 +522,20 @@ def storm_uav_router(seed):
             r.capacity[s] = rng.choice([1500, 2500, None])
             drone[s] = {"armed": False, "alt": 0.0, "pct": rng.randint(5, 100), "mode": 0, "seq": 0}
         parsers = {k: mavlink.Parser() for k in r.links}
-        # UAV-r1 (W138 b): OUR OWN record of "on the ground in its slot" (never the router's in_slot): the last
-        # HEARTBEAT of the right sysid on the slot's USB link, the last altitude / vertical speed / landed state
+        # UAV-r1 (W138 b + review HIGH-1): OUR OWN record of "on the ground in its slot" (never the router's
+        # in_slot / its constants): the last HEARTBEAT of the right sysid on the slot's USB link (< 1.5 s), the drone's
+        # own ON_GROUND (< 2 s), the newest altitude sample (< 1 s) and EVERY sample of the last 2 s (>= 2 over >= 1 s)
+        # on the ground (< 0.5 m) and still (< 0.3 m/s)
         usb_hb, alt_rec, land_rec = {}, {}, {}
 
         def own_in_slot(s, now):
-            a, ls = alt_rec.get(s), land_rec.get(s)
-            return (now - usb_hb.get(s, -1e9) < 3.0 and a is not None and now - a[0] < 2.0 and abs(a[1]) < 0.5 and
-                    abs(a[2]) < 0.3 and not (ls is not None and ls[1] in (2, 4) and now - ls[0] < 2.0))
+            ls = land_rec.get(s)
+            if ls is None or ls[1] not in (1, 3) or now - ls[0] >= 2.0 or now - usb_hb.get(s, -1e9) >= 1.5:
+                return False
+            win = 2.0 if ls[1] == 1 else 4.0                 # ON_GROUND 2 s, TAKEOFF (did not climb) 4 s still
+            hist = [h for h in alt_rec.get(s, []) if now - h[0] <= win]
+            return (len(hist) >= 2 and now - hist[-1][0] < 1.0 and hist[-1][0] - hist[0][0] >= win / 2.0 and
+                    all(abs(a) < 0.5 and abs(v) < 0.3 for _t, a, v in hist))
 
         def drain(now):
             """Check every frame that went out since the last call (independent rules), at once: the hatch state of
@@ -559,8 +565,12 @@ def storm_uav_router(seed):
                         if ok and c == 400:
                             p2, p1 = f.get("param2", 0), int(f.get("param1", 0))
                             # UAV-r1: a force DISARM only on the ground in its slot (our own record); force ARM never
-                            ok = p2 == 0 or (p2 == allow.FORCE_MAGIC and p1 == 0 and own_in_slot(key[0], now))
-                            why = "force ARM / DISARM (in slot by our record: %s)" % own_in_slot(key[0], now)
+                            forced = p2 == allow.FORCE_MAGIC and p1 == 0
+                            ok = p2 == 0 or (forced and key[1] == "usb" and own_in_slot(key[0], now))
+                            why = "force ARM / DISARM (%s, in slot by our record: %s)" % (key[1],
+                                                                                       own_in_slot(key[0], now))
+                            if ok and forced:
+                                UAV_FORCED_OUT[0] += 1     # the new branch IS exercised (checked after the part)
                     if ok and m.name == "MISSION_ITEM_INT":
                         c = int(f.get("command", -1))
                         if c == 178:                       # DO_CHANGE_SPEED: frame MISSION, a sane speed
@@ -593,11 +603,14 @@ def storm_uav_router(seed):
                         msgs = [("HEARTBEAT", {"type": 2, "autopilot": 3, "base_mode": 0x80 if d["armed"] else 0,
                                                "custom_mode": d["mode"], "system_status": 4, "mavlink_version": 3}),
                                 ("GLOBAL_POSITION_INT", {"relative_alt": int(d["alt"] * 1000), "lat": 378200000,
-                                                         "lon": 236000000, "vz": rng.randint(-50, 50)}),
+                                                         "lon": 236000000,
+                                                         "vz": rng.randint(-50, 50) if d["armed"] or rng.random() < 0.2
+                                                         else 0}),
                                 ("SYS_STATUS", {"battery_remaining": d["pct"], "voltage_battery": 15000,
                                                 "current_battery": cb})]
                         if rng.random() < 0.3:
-                            msgs.append(("EXTENDED_SYS_STATE", {"landed_state": 1 if d["alt"] < 0.3 else 2}))
+                            msgs.append(("EXTENDED_SYS_STATE", {"landed_state": (rng.choice([1, 1, 3]) if d["armed"] else 1)
+                                                                  if d["alt"] < 0.3 else rng.choice([2, 3])}))
                         if rng.random() < 0.4:
                             msgs.append(("MISSION_REQUEST_INT", {"seq": rng.randint(0, 6), "target_system": 255,
                                                                  "mission_type": 0}))
@@ -609,12 +622,13 @@ def storm_uav_router(seed):
                             msgs.append(("PARAM_SET", {"param_value": 1.0}))       # never allow-listed in
                         data = b"".join(mavlink.encode(n, f, d["seq"] + i, sysid, 1) for i, (n, f) in enumerate(msgs))
                         if sysid == 10 + s:
-                            if kind == "usb":
-                                usb_hb[s] = now
-                            gpi = msgs[1][1]
-                            alt_rec[s] = (now, gpi["relative_alt"] / 1000.0, -gpi["vz"] / 100.0)
-                            for nm, ff in msgs:
-                                if nm == "EXTENDED_SYS_STATE":
+                            for nm, ff in msgs:                    # by NAME (review MED-2)
+                                if nm == "HEARTBEAT" and kind == "usb":
+                                    usb_hb[s] = now
+                                elif nm == "GLOBAL_POSITION_INT":
+                                    alt_rec[s] = [h for h in alt_rec.get(s, []) if now - h[0] <= 5.0] + [
+                                        (now, ff["relative_alt"] / 1000.0, -ff["vz"] / 100.0)]
+                                elif nm == "EXTENDED_SYS_STATE":
                                     land_rec[s] = (now, ff["landed_state"])
                             if cb >= 0:
                                 last_a[s] = cb / 100.0
@@ -1032,10 +1046,17 @@ def storm_uav_static(seed):
                 "router_worker: mavlink.encode outside tx() / without allow.check_out")
 
 
+UAV_FORCED_OUT = [0]                                  # UAV-r1: force DISARMs that left the router (all seeds)
+
+
 def storm_uav(seed):
     if seed == 1 or not RES.get("I80"):
         storm_uav_static(seed)
     storm_uav_router(seed)
+    if seed >= 20:
+        # review MED-2: the force DISARM branch must be reached at all (else I84's new rule could never fail)
+        res("I84", UAV_FORCED_OUT[0] > 0, seed, "no force DISARM ever left the router in %d episodes - the in-slot "
+            "branch is not exercised" % seed)
     storm_uav_pilot(seed)
     storm_uav_launch(seed)
 

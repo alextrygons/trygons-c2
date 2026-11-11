@@ -703,3 +703,21 @@ allow.py changed = the SERIAL safety review (LOOP RULE 6(3), W110).
   record: a force DISARM only then; the in_slot mutation fails I84), SITL SI13 (no GPS = no launch with ArduCopter)
   + SI15a (a copter stuck armed on deck: forced DISARM in the slot) + SI15b (in flight refused, also with the USB
   link heard at 20 m), and SI3 / SI4 / SI5 / SI14b (the mission upload) must now pass.
+- Serial safety review of 5f038f0 (opus, tools/api_review.py; C:/trygons/private/reviews/review_5f038f0.txt) - fixed:
+  HIGH-1 a force DISARM on telemetry up to 2 s old during a lift-off: Router.in_slot now needs the cable HEARTBEAT
+  < 1.5 s, the drone's OWN fresh landed state ON_GROUND or TAKEOFF (missing / IN_AIR / LANDING = not in the slot),
+  the newest altitude sample < 1 s and every sample of the last 2 s (ON_GROUND) / 4 s (TAKEOFF) on the ground and
+  still (>= 2 samples over >= half the window). MEASURED in SITL: ArduCopter 4.7 streams NO EXTENDED_SYS_STATE by
+  itself - the router now asks for it (SET_MESSAGE_INTERVAL 245, 2 Hz, allow-listed) on a registered slot cable
+  while it is not heard; and the stuck drone (an accepted ALT_HOLD take-off that does not climb) reports TAKEOFF
+  (3), hence the longer still-window for TAKEOFF. And launch.py
+  forces only on a REFUSAL - the drone's MAV_RESULT or allow.py's own "refused by the allow-list" (SITL: the stuck
+  drone's TAKEOFF state makes the router refuse the normal DISARM) - never a timeout / "replaced" (LOW-1) while the sequence knows the drone cannot
+  be lifting off (its TAKEOFF not sent yet, or the no-climb judgement) - a STOP during the climb-out = the normal
+  DISARM only (UA16 10b). M3 the force DISARM also needs port "usb" (never over ELRS). MED-1 the launch's
+  MISSION_START [0, 0] follows a MISSION_SET_CURRENT(1) (the first item pinned) and docs/uav_params.param requires
+  MIS_RESTART 0 (SAFETY if-present: resume at the chosen item). MED-2 storm I84: its own stricter in-slot record
+  (HEARTBEAT / GLOBAL_POSITION_INT by name, the window rule), the force DISARM branch must be reached (9 forced
+  frames in 60 episodes; the in_slot-always-True mutation = 60 I84 fails). L1 CLAUDE.md's stale U3 / WA lines.
+  Not changed: LOW-2 vz has the altitude's timestamp (both come only from GLOBAL_POSITION_INT); the academy uavsim
+  has no "no GPS" fault (the lesson never needed the fallback); AC22 / AC54 / AC55 pre-existing since X1.

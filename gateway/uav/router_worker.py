@@ -62,6 +62,14 @@ HATCH_FRESH_S = 1.0          # the manager sends the hatch switch 4 x a second; 
 ALT_FRESH_S = 2.0
 ON_GROUND = 1                # MAV_LANDED_STATE_ON_GROUND
 AIRBORNE = (2, 4)            # MAV_LANDED_STATE_IN_AIR / _LANDING (UAV-r1: never a force DISARM then)
+# UAV-r1 review HIGH-1: "on the ground in its slot" for a FORCE DISARM - stricter freshness than for anything else
+SLOT_HB_S = 1.5              # the slot cable's HEARTBEAT (ArduPilot 1 Hz)
+SLOT_ALT_S = 1.0             # the newest altitude sample (MAV1_POSITION >= 2 Hz, docs/uav_params.param)
+ESS_ASK_S = 3.0              # no EXTENDED_SYS_STATE heard this long on a registered slot cable = asked for (2 Hz)
+SLOT_STILL_S = 2.0           # every altitude sample of this window on the ground and still (>= 2 samples, >= 1 s)
+SLOT_STUCK_S = 4.0           # ... the window when the drone says TAKEOFF (SITL: ArduCopter reports TAKEOFF while it
+                             # sits armed after an accepted take-off that does not climb - the case W138 b is for)
+TAKEOFF = 3                  # MAV_LANDED_STATE_TAKEOFF
 JOB_STEP_S = 1.5             # a mission step not answered -> asked again
 JOB_TRIES = 4
 JOB_TOTAL_S = 40.0
@@ -196,6 +204,7 @@ class Drone:
         self.compid = 1
         self.rel_alt = self.vz = self.lat = self.lon = None
         self.alt_t = 0.0
+        self.alt_hist = []                                 # UAV-r1: [(t, rel_alt, vz)] of the last SLOT_STILL_S + 1 s
         self.landed_state, self.ext_t = None, 0.0
         self.fix = self.sats = None
         self.ekf_flags = None
@@ -323,19 +332,25 @@ class Router:
         return not fresh and low and lk is not None and lk.present(now)
 
     def in_slot(self, slot, d, now):
-        """UAV-r1 (W138 b): ON THE GROUND IN ITS SLOT = the ONLY condition allow.py accepts for a FORCE DISARM. All of:
-        a fresh HEARTBEAT on the slot's USB cable (the breakaway cable parts when the drone leaves, W58), a FRESH
-        relative altitude |alt| < 0.5 m with a known vertical speed |vz| < 0.3 m/s, and the drone NOT saying it is in
-        the air / landing (EXTENDED_SYS_STATE IN_AIR / LANDING, when fresh). No fallback for stale / missing data
-        (unlike on_deck): unknown = NOT in the slot = no force."""
+        """UAV-r1 (W138 b; review HIGH-1 / M2): ON THE GROUND IN ITS SLOT = the ONLY condition allow.py accepts for a
+        FORCE DISARM. ALL of: a HEARTBEAT on the slot's USB cable younger than SLOT_HB_S (the breakaway cable parts
+        when the drone leaves, W58); the drone ITSELF saying ON_GROUND or TAKEOFF in a fresh EXTENDED_SYS_STATE (the
+        router asks for it: ArduCopter does not stream it; missing / stale / IN_AIR / LANDING = not in the slot); the
+        newest altitude sample younger than SLOT_ALT_S with |alt| < 0.5 m and |vz| < 0.3 m/s; and EVERY sample of the
+        last SLOT_STILL_S (ON_GROUND) / SLOT_STUCK_S (TAKEOFF: a take-off that did not climb) the same (>= 2 samples
+        over >= half the window): a drone lifting off is never "in the slot". No fallback for stale / missing data."""
         lk = self.link(slot, "usb")
-        if lk is None or not lk.present(now):
+        if lk is None or not lk.present(now) or now - lk.hb_t >= SLOT_HB_S:
             return False
-        if d.rel_alt is None or d.vz is None or now - d.alt_t >= ALT_FRESH_S:
+        if d.landed_state not in (ON_GROUND, TAKEOFF) or now - d.ext_t >= ALT_FRESH_S:
             return False
-        if d.landed_state in AIRBORNE and now - d.ext_t < ALT_FRESH_S:
+        span = SLOT_STILL_S if d.landed_state == ON_GROUND else SLOT_STUCK_S
+        if d.rel_alt is None or d.vz is None or now - d.alt_t >= SLOT_ALT_S:
             return False
-        return abs(d.rel_alt) < 0.5 and abs(d.vz) < 0.3
+        win = [h for h in d.alt_hist if now - h[0] <= span]
+        if len(win) < 2 or win[-1][0] - win[0][0] < span / 2.0:
+            return False
+        return all(abs(a) < 0.5 and abs(v) < 0.3 for _t, a, v in win)
 
     def tx(self, link, name, fields):
         ok, why = allow.check_out(name, fields, self.ctx(link))
@@ -429,6 +444,7 @@ class Router:
                 d.fix, d.sats = f.get("fix_type"), f.get("satellites_visible")
             elif m.name == "GLOBAL_POSITION_INT":
                 d.rel_alt, d.vz, d.alt_t = f.get("relative_alt", 0) / 1000.0, -f.get("vz", 0) / 100.0, now
+                d.alt_hist = [h for h in d.alt_hist if now - h[0] <= SLOT_STUCK_S + 1.0] + [(now, d.rel_alt, d.vz)]
                 d.lat, d.lon = f.get("lat", 0) / 1e7, f.get("lon", 0) / 1e7
                 d.gs = math.hypot(f.get("vx", 0), f.get("vy", 0)) / 100.0
                 # U6 review L2: the course over ground from the velocity (the pilot moves an old position along it)
@@ -752,6 +768,14 @@ class Router:
                     # U2 review MED-1: the live UID every 10 s (an unknown drone with the registered sysid)
                     self.tx(link, "COMMAND_LONG", dict(self.tgt_of(link.slot), command=allow.CMD_REQUEST_MESSAGE,
                                                        param1=float(mavlink.MESSAGES["AUTOPILOT_VERSION"][0])))
+                d = self.drone(link.slot)
+                if (link.present(now) and link.slot not in self.probes and self.expect.get(link.slot) is not None and
+                        now - d.ext_t > ESS_ASK_S and self.n_hb % 3 == 1):
+                    # UAV-r1 review (SITL): ArduCopter 4.7 streams NO EXTENDED_SYS_STATE by itself - in_slot needs the
+                    # drone's own ON_GROUND, so the router asks for it (2 Hz) on the slot cable while it is not heard
+                    self.tx(link, "COMMAND_LONG", dict(self.tgt_of(link.slot), command=allow.CMD_SET_MESSAGE_INTERVAL,
+                                                       param1=float(mavlink.MESSAGES["EXTENDED_SYS_STATE"][0]),
+                                                       param2=500000.0))
         if now >= self.next_status:
             self.next_status = now + 0.5
             self.status(now)

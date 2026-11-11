@@ -13,8 +13,9 @@ check_out(name, fields, ctx) -> (ok, why) before the router sends a frame to a d
             < 0.5 m (U2 review LOW-4: never "a USB link is up")
   hatch_open  the hatch OPEN switch (U3; never ARM without it - storm I81)
   in_slot   UAV-r1 (W138 b): the drone is ON THE GROUND IN ITS SLOT - a fresh HEARTBEAT on the slot's USB cable
-            (the breakaway cable, W58: it parts when the drone leaves) AND a fresh relative altitude |alt| < 0.5 m
-            not moving vertically (|vz| < 0.3 m/s); no fallback for stale data. ONLY this allows a FORCE DISARM.
+            (the breakaway cable, W58: it parts when the drone leaves), the drone's own ON_GROUND and a fresh, still
+            relative altitude |alt| < 0.5 m (router_worker.Router.in_slot); no fallback for stale data. ONLY this
+            (and port "usb") allows a FORCE DISARM.
 ctx is built by the ROUTER from the state it holds (U2 review LOW-3), never taken from a caller.
   battery_land  the battery rule of docs/uav_design.md 6.2 asks for LAND (the ONLY landing - storm I82)
 check_in(name) -> (ok, why) for a frame from a drone.
@@ -107,8 +108,8 @@ def _command(cmd, p, ctx):
         if p[0] == 0 and p[1] == FORCE_MAGIC:
             # UAV-r1 (W138 b): a drone armed in its slot whose normal DISARM ArduPilot refuses (it thinks it is
             # taking off) - forced ONLY on the ground in its slot, never in flight
-            if not ctx.get("in_slot"):
-                return False, "force DISARM only on the ground in its slot (never in flight)"
+            if not ctx.get("in_slot") or ctx.get("port") != "usb":
+                return False, "force DISARM only on the ground in its slot, over its slot cable (never in flight)"
             return True, ""
         if p[1] != 0:
             return False, "force arm is never sent"
