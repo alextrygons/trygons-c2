@@ -996,3 +996,35 @@ Note: tools/check.sh's Python (MSYS2 ucrt64) has no pymavlink, so in the gate th
 SITL installed; the run above used the Python that has pymavlink (`python tools/run_sitl.py`). Fast tests after
 the change: test_uav 48/48, test_uavui 16/16, test_lang 6/6, strays selftest OK, assistant index rebuilt (floor
 gate unchanged 7 / 86 + 4 / 33).
+
+## AM7 - licence-clean language model + the scaled extract floor (2026-11-11)
+
+Station / tools / tests / docs only (no app / hal / gateway logic change; docs/assistant_design.md 5n, docs/licences.md).
+Measured on the owner's laptop (RTX A1000 6 GB, nothing else on the GPU), the real worker with Whisper loaded first, answer
+mode extract, the fewshot prompt, the post-check, the scaled floor (7.40 el / 7.33 en). Tuning part (el 96 + 7, en 34 + 4):
+
+| model (licence) | el correct / precision | en correct / precision | el median ms | worker GPU MB |
+|---|---|---|---|---|
+| llama3.2-3b (Llama 3.2 Community, RESTRICTED - the old default) | 44 % / 50 % | 53 % / 55 % | 571 | 3651 |
+| **qwen3-4b (Apache-2.0) - CHOSEN** | **47 % / 64 %** | **59 % / 65 %** | 1315 | 4225 |
+| ministral3-3b (Apache-2.0) | 46 % / 59 % | 62 % / 68 % | 628 | 3729 |
+| phi4-mini (MIT) | 8 % / 29 % (writes text, no pick) | 53 % / 58 % | 739 | 4273 |
+| phi3.5-mini (MIT) | 29 % / 40 % | 50 % / 55 % | 1645 | 4721 |
+| qwen2.5-1.5b (Apache-2.0) | 7 % / 39 % | 47 % / 52 % | 699 | 2435 |
+| eurollm-1.7b (Apache-2.0) | no output (0 tokens; retrieval fallback) | - | - | 2511 |
+| meltemi-7b (Apache-2.0, 24 of 32 layers) | 19 % / 38 % | 44 % / 50 % | 2200 | 4691 |
+| qwen2.5-7b (Apache-2.0, 21 of 28 layers) | 38 % / 49 % | 59 % / 65 % | 6450 | 4623 |
+
+Can't find right 7/7 + 4/4 for every model. FRESH set ONCE (qwen3-4b): el correct 30/68 = 44 %, answered 74 %, precision 60 %,
+can't find right 7/8, 1455 ms median; en correct 5/25 = 20 %, answered 40 %, precision 50 %, can't find right 6/6. WORSE THAN
+BEFORE in English (AM6 llama3.2-3b with the old default prompt: 52 %): 7 English + 6 Greek answers were a lone "2" = the fewshot
+worked example echoed = refused as no pick (safe: «can't find» + the passage) - not tuned after seeing the fresh set (W142). e2e
+(10 spoken Greek questions): release -> answer text median 2.5 s, max 3.3 s.
+
+The floor: BM25 scores creep with the passage count (Greek median +3.1 % for N 540 -> 615 over 8 manual versions, el016 +2.8 %).
+MIN_SCORE 3.0 and the extract floor 7.2 are now in the units of the corpus they were tuned on (N 540 / 810) and multiplied by
+idf(df 5, N) / idf(df 5, N_ref) >= 1: today 7.40 / 7.33 (higher than the hand-raised 7.3) and MIN_SCORE 3.085 / 3.054. Backtest:
+el016 refused at all 8 versions, 0 in-manual tuning questions lost; the main list's retrieval and the fresh set's retrieval
+unchanged except AS17's Greek can't-find 7 -> 8 of 10 (el140 refused again) - AS17 PASSES (it measures typed retrieval; it never
+needed the W84 recordings). Gate `assistant_index.py floor`: el 7 off-manual under / 86 in-manual over, en 4 / 33 = PASS.
+Tests run alone: AS14, AS16-AS25, AS29 PASS (AS24 = the real qwen3-4b with the network blocked), test_lang 6/6.

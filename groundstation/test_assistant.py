@@ -2464,7 +2464,7 @@ def as21():
     out["extract floor: a score at the floor picks"] = r["src"] == "extract"
     r = A.Answerer(A.StubLlm("1"), terms, mode="extract", extract_floor=0).answer("πού κλείνω την καταπακτή;", "el", low)
     out["extract floor 0 = no floor"] = r["src"] == "extract"
-    out["the default floor is the measured one (client + answer agree)"] = A.EXTRACT_FLOOR == 7.3 and \
+    out["the default floor is the measured one (client + answer agree)"] = A.EXTRACT_FLOOR == 7.2 and \
         __import__("assistant.client", fromlist=["x"]).DEFAULT_EXTRACT_FLOOR == A.EXTRACT_FLOOR
     r = A.Answerer(A.StubLlm("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."), terms, extract_floor=7.2).answer(
         "πού κλείνω την καταπακτή;", "el", low)
@@ -2958,6 +2958,18 @@ def as23():
     out["the owner's candidates (Qwen2.5-7B, Meltemi, Krikri, Llama-3.1-8B, a 3B)"] = {
         "qwen2.5-7b", "meltemi-7b", "krikri-8b", "llama3.1-8b", "qwen2.5-3b", "llama3.2-3b"} <= set(gl.MODELS)
     out["the chosen model = the station's default"] = gl.CHOSEN == paths.LLM_DEFAULT and gl.CHOSEN in gl.MODELS
+    # AM7 (owner W135): the default is licence-clean (MIT / Apache-2.0); Llama Community / Qwen Research never; a
+    # restricted model is downloaded only with --allow-restricted (the plain run and --all skip it)
+    out["AM7 the default is licence-clean, the restricted ones are marked"] = gl.licence_clean(gl.CHOSEN) and \
+        not any(gl.licence_clean(n) for n in ("llama3.1-8b", "llama3.2-3b", "krikri-8b", "qwen2.5-3b")) and \
+        all(gl.licence_clean(n) for n in ("qwen2.5-7b", "meltemi-7b", "phi4-mini", "phi3.5-mini", "qwen2.5-1.5b"))
+    import contextlib
+    import io as _io
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = gl.main(["--models-only", "--model", "llama3.2-3b"])
+    out["AM7 get_llm.py refuses a restricted model without --allow-restricted (downloads nothing)"] = \
+        rc == 2 and "REFUSED" in buf.getvalue() and "--allow-restricted" in buf.getvalue()
     # AM4-r LOW-2: the worker verifies the model file's sha256 against paths.LLM_PINNED = exactly get_llm's table
     out["paths.LLM_PINNED = get_llm.MODELS (file -> size, sha256)"] = paths.LLM_PINNED == {
         fn: (size, sha) for repo, rev, fn, size, sha, lic, note in gl.MODELS.values()}
@@ -3529,6 +3541,23 @@ def as29():
         not bl["el"] and not bl["en"] and (low["el"] or low["en"]) and all(
             s >= A.EXTRACT_FLOOR - 2.0 for lg in ("el", "en") for _i, s in low[lg])
     out["floor.json records 'off_manual_over' = [] (nothing forced)"] = frozen.get("off_manual_over") == []
+    # AM7 (W135 item 4): the thresholds in REFERENCE-corpus units (index.corpus_scale) - the creep fix
+    from assistant import index as IX
+    m6 = json.loads(json.dumps(frozen))
+    m6["scale_ref_n"] = {"el": 615, "en": 886}                   # a silent re-reference (= a re-tune)
+    ok6, l6 = ai.floor_check(m6)
+    out["AM7 mutation: another corpus-scale reference in floor.json = FAIL"] = not ok6 and any(
+        "reference" in x for x in l6)
+    out["AM7 corpus_scale: 1.0 at / below the reference, > 1 above it, grows with N"] =         IX.corpus_scale(IX.SCALE_REF_N["el"], "el") == 1.0 and IX.corpus_scale(10, "el") == 1.0 and         IX.corpus_scale(5000, "xx") == 1.0 and 1.0 < IX.corpus_scale(615, "el") < IX.corpus_scale(700, "el")
+    sc = {lg: IX.Searcher(IX.load(lg)).scale for lg in ("el", "en")}
+    out["AM7 today's scale el ~1.028 / en ~1.018 (= the floor 7.40 / 7.33, MIN_SCORE 3.09 / 3.05)"] =         abs(sc["el"] - 1.0283) < 0.002 and abs(sc["en"] - 1.0179) < 0.002 and         IX.Searcher(IX.load("el")).search("σε ποια λειτουργία είμαι τώρα;")["scale"] == sc["el"]
+    st = A.Answerer(A.StubLlm("1"), mode="extract")
+    hit = [{"id": "el:1", "ch": "9", "chapter": "X", "heading": "", "term": "", "text": "Μία πρόταση εδώ.",
+            "score": 7.3, "cover": 0.9, "after": []}]
+    r_lo = st.answer("ερώτηση", "el", {"hits": hit, "cant_find": False, "scale": 1.03})
+    r_1 = st.answer("ερώτηση", "el", {"hits": hit, "cant_find": False})
+    out["AM7 the extract floor x the search's scale (7.3 < 7.2 x 1.03 = can't find; no scale = 1.0)"] =         r_lo["src"] == "cant_find" and abs(r_lo.get("floor", 0) - 7.416) < 0.01 and r_1["src"] != "cant_find"
+    out["AM7 scale_of: missing / garbage / < 1 / NaN = 1.0 (a bad value never lowers the floor)"] =         A.scale_of(None) == 1.0 and A.scale_of({"scale": "x"}) == 1.0 and A.scale_of({"scale": 0.5}) == 1.0 and         A.scale_of({"scale": float("nan")}) == 1.0 and A.scale_of({"scale": 1.02}) == 1.02
     out["LOW-2: ONE floor for both languages (no per-language floor in the file)"] = isinstance(
         frozen["floor"], (int, float)) and not any(isinstance(frozen[lg].get("floor"), (int, float))
                                                     for lg in ("el", "en"))

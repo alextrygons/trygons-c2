@@ -8679,8 +8679,8 @@
 "id": "en:668",
 "kind": "manual",
 "lines": [
-4214,
-4219
+4234,
+4239
 ],
 "term": "",
 "text": "If someone falls overboard, press MOB (or the key M) at once. What it is: one button that marks the place where a person went into the water, raises the alarm, saves the video and offers the next steps. It only creates a marker, a warning and REQUESTS. It never drives the boat by itself: a route to the person is an ordinary AUTO route (all the normal checks) and a UAV over the point follows the normal launch rules."
@@ -8692,8 +8692,8 @@
 "id": "en:669",
 "kind": "manual",
 "lines": [
-4221,
-4224
+4241,
+4244
 ],
 "term": "",
 "text": "How to press it: * The framed MOB button: on screen 2 at the end of the mode bar at the top (always drawn), on screen 1 in the bottom bar beside the REC group. Captain, copilot and single operator may press it; it needs no ACCEPT because it changes no driving."
@@ -8705,8 +8705,8 @@
 "id": "en:670",
 "kind": "manual",
 "lines": [
-4225,
-4228
+4245,
+4248
 ],
 "term": "",
 "text": "* The key M of the station (setting mob_key). It does nothing while you type into a text field, and it is never a joystick button. A held key (the keyboard repeating) is ONE press: release it to press again. Two presses within 2 seconds (a double click, a bounce) also make only ONE MOB."
@@ -8718,8 +8718,8 @@
 "id": "en:671",
 "kind": "manual",
 "lines": [
-4230,
-4235
+4250,
+4255
 ],
 "term": "",
 "text": "What happens at once: 1. The marker MOB n is put at the boat position of the moment of the press (the newest position sample - a later sample never moves it). A position older than 2 seconds is shown as POSITION UNCERTAIN: the circle grows with the age and the speed. With no position at all the alarm and the SAVE still happen, only no marker is made."
@@ -8731,8 +8731,8 @@
 "id": "en:672",
 "kind": "manual",
 "lines": [
-4236,
-4239
+4256,
+4259
 ],
 "term": "",
 "text": "2. A red WARNING \"MAN OVERBOARD\" with the voice callout \"Man overboard\" on this station. The same warning appears on every other station when the marker reaches it. ACK silences this PC; the marker stays. 3. SAVE: the cameras and both screens are kept like the SAVE button does."
@@ -8744,8 +8744,8 @@
 "id": "en:673",
 "kind": "manual",
 "lines": [
-4240,
-4243
+4260,
+4263
 ],
 "term": "",
 "text": "4. The MOB line (top of the notices on screen 1, a banner on screen 2): MOB number, distance, bearing and the time since the press. 5. Without a gateway the marker, the alarm and the sound still work; the marker goes to the gateway when it is back."
@@ -8757,8 +8757,8 @@
 "id": "en:674",
 "kind": "manual",
 "lines": [
-4245,
-4248
+4265,
+4268
 ],
 "term": "",
 "text": "Drift estimate: only when the boat has learned a trustworthy sea current, the screen draws a dashed line and circle marked ESTIMATE - not for navigation. There is NO wind data on the boat, so the wind is not included; the screen says \"no wind\". Without a trusted current it says \"no drift estimate\"."
@@ -8770,8 +8770,8 @@
 "id": "en:675",
 "kind": "manual",
 "lines": [
-4250,
-4256
+4270,
+4276
 ],
 "term": "",
 "text": "Offers (one vertical YES / NO box at a time, the captain answers): * RETURN TO THE MOB: a route of two points that ENDS 30 m before the person (never at the person), at most 5 kn, final action STOP (idle, neutral and STANDBY at the end). On the down-current side when the current is known, else on the line from the boat. It goes through the normal route upload: shallow water and geofence checks, a copilot's route waits for the captain's ACCEPT, AUTO START needs the joystick CONFIRM as always."
@@ -8783,8 +8783,8 @@
 "id": "en:676",
 "kind": "manual",
 "lines": [
-4257,
-4260
+4277,
+4280
 ],
 "term": "",
 "text": "* UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m altitude through the normal UAV route checks and launch approval. * SEARCH PATTERN: opens the search pattern panel with the MOB as the datum (see SEARCH PATTERNS below)."
@@ -8796,8 +8796,8 @@
 "id": "en:677",
 "kind": "manual",
 "lines": [
-4261,
-4266
+4281,
+4286
 ],
 "term": "",
 "text": "No answer means nothing happens. While another question is open on screen 1 the offer waits. DANGER FROM THE PROPELLER - the final approach to a person is always by hand, with the engine in neutral near the person. Inside the safe distance (30 m) no route is made at all; the screen says so."
@@ -8809,8 +8809,8 @@
 "id": "en:678",
 "kind": "manual",
 "lines": [
-4268,
-4275
+4288,
+4295
 ],
 "term": "",
 "text": "FOUND: when the person is recovered press FOUND (the button at the end of the mode bar on screen 2, shown while a MOB is open; or the key F of the station, setting mob_found_key). A vertical YES / NO asks \"MOB n: FOUND?\"; the captain or the copilot may answer it, no ACCEPT is needed. YES closes the newest open MOB: the time stays in the log, the red button, the map cross and the MOB line clear and the alarm clears on every station; a closed MOB is never opened again, not by a restart and not by the gateway's list. NO changes nothing. With several open MOBs press FOUND once for each."
@@ -8822,8 +8822,8 @@
 "id": "en:679",
 "kind": "manual",
 "lines": [
-4280,
-4283
+4300,
+4303
 ],
 "term": "",
 "text": "Panel \"SEARCH PATTERNS\": opens from the MOB offer \"SEARCH PATTERN\" (the MOB is the datum) or from the map's right-click menu \"Search pattern here\" (the clicked point is the datum). The datum can also be set by a click on the map, the MOB point or the boat position. Patterns (IAMSAR Volume II):"
@@ -8835,8 +8835,8 @@
 "id": "en:680",
 "kind": "manual",
 "lines": [
-4284,
-4287
+4304,
+4307
 ],
 "term": "",
 "text": "* Expanding square (SS): the first leg has length S, then S, 2S, 2S, 3S, 3S ...; every turn is 90 degrees to starboard. Size = the half side. * Sector (VS): nine legs of the radius R with 120 degree turns, three arms through the datum."
@@ -8848,8 +8848,8 @@
 "id": "en:681",
 "kind": "manual",
 "lines": [
-4288,
-4291
+4308,
+4311
 ],
 "term": "",
 "text": "* Parallel track (PS): a rectangle of width W and length Lg along the first course, the datum at the corner, tracks spaced S, the first S/2 inside. * Creeping line (CS): like PS, but the tracks run across the direction of advance."
@@ -8861,8 +8861,8 @@
 "id": "en:682",
 "kind": "manual",
 "lines": [
-4292,
-4301
+4312,
+4321
 ],
 "term": "",
 "text": "Inputs: track spacing S, first leg course, size, speed, UAV altitude (default 50 m), turns to starboard or port. The pattern is DRAWN on the map before anything is sent, in the caution colour with the note PREVIEW - not sent: numbered legs, and on the panel the number of waypoints and legs, the total length, the time at the chosen speed and the area covered (length x spacing). SEND asks for the target (the same box as \"Send route\": BOAT / NEXT UAV / a UAV) and then for a YES in the vertical YES / NO box: the captain on screen 1, or the single operator. Nothing is sent without that YES."
@@ -8874,8 +8874,8 @@
 "id": "en:683",
 "kind": "manual",
 "lines": [
-4301,
-4302
+4321,
+4322
 ],
 "term": "",
 "text": "A copilot prepares the pattern; for the boat the captain's ACCEPT is still asked by the gateway as for every route, and a UAV mission is only stored"
@@ -8887,8 +8887,8 @@
 "id": "en:684",
 "kind": "manual",
 "lines": [
-4303,
-4311
+4323,
+4331
 ],
 "term": "",
 "text": "- the launch needs its own approval. * BOAT: the pattern becomes a normal route through the normal route upload (shallow water and geofence checks, speed limit) with the final action STOP: at the last waypoint the boat arrives and STOPS (idle, neutral, STANDBY) - the YES question says so. A leg shorter than 10 m is refused before the YES (use a larger spacing). The boat takes at most 50 waypoints. A pattern with more is REFUSED with a message that says the number; nothing is cut by itself. Split the pattern (a smaller size or a larger spacing) or press CUT AT 50: the route then ends on leg 49. AUTO START follows the normal rules."
@@ -8900,8 +8900,8 @@
 "id": "en:685",
 "kind": "manual",
 "lines": [
-4312,
-4318
+4332,
+4338
 ],
 "term": "",
 "text": "* UAV: a mission with the altitude on every waypoint; it passes the UAV route checks (energy, range, altitude, no-fly zones) and ends in a hover over the last point. A UAV takes at most 20 waypoints: the panel shows the count and the limit and refuses before the YES. The search pattern is a tool to plan a search. It is no guarantee that the person is found: wind and current move the datum, and the screen does not know the wind."
@@ -8913,8 +8913,8 @@
 "id": "en:686",
 "kind": "manual",
 "lines": [
-4323,
-4327
+4343,
+4347
 ],
 "term": "",
 "text": "What it is: you see something on the water in a camera picture (a person, a float, a boat) and want to put it on the map. Click on it. The station works out where it is from the camera and makes a marker \"POINT n\". The marker is an ESTIMATE - not for navigation: it is drawn with a dashed circle that shows how sure the position is. It only makes a marker; it never moves the boat or a UAV."
@@ -8926,8 +8926,8 @@
 "id": "en:687",
 "kind": "manual",
 "lines": [
-4329,
-4334
+4349,
+4354
 ],
 "term": "",
 "text": "How to mark: * Click on the picture: on screen 1 on the free video (not on a button or a box of the HUD), on screen 2 in the camera view (also a UAV video). * Or move the mouse over the picture and press the key K (setting mark_key). The key does nothing while you type into a text field, and it is never a joystick button."
@@ -8939,8 +8939,8 @@
 "id": "en:688",
 "kind": "manual",
 "lines": [
-4335,
-4340
+4355,
+4360
 ],
 "term": "",
 "text": "* Which cameras: the calibrated front camera of the boat (FRONT-1 / FRONT-2, the same calibration as the AR overlays) and the camera of a UAV. The rear cameras have no calibration and are refused. * It needs the boat's roll, pitch and heading not older than 1 second (for a UAV: its own attitude and height above the water) and a position. If anything is missing the screen says which and NO marker is made."
@@ -8952,8 +8952,8 @@
 "id": "en:689",
 "kind": "manual",
 "lines": [
-4342,
-4345
+4362,
+4365
 ],
 "term": "",
 "text": "How the place is worked out: the picture point gives an angle below the horizon; with the height of the camera above the water that gives the distance, and the direction comes from the heading plus the sideways angle in the picture. The boat's roll and pitch are taken into account."
@@ -8965,8 +8965,8 @@
 "id": "en:690",
 "kind": "manual",
 "lines": [
-4347,
-4352
+4367,
+4372
 ],
 "term": "",
 "text": "The uncertainty circle grows with the range. It includes the attitude error (boat 1 degree, UAV 2 degrees; the roll error also counts by how far the click is from the centre of the picture, sideways AND up / down), the calibration (0.5 degree), the heading (2 degrees), 1.5 pixels of the click and the position error of the boat or the UAV. Its radius is 4 x the 1-sigma error: set so that, IN THE MODEL, the true place is inside the circle about 95 % of the time."
@@ -8978,8 +8978,8 @@
 "id": "en:691",
 "kind": "manual",
 "lines": [
-4352,
-4354
+4372,
+4374
 ],
 "term": "",
 "text": "These numbers are from a MODEL with these assumed errors (12000 trials over the whole picture, the bands are the estimated range) - NOT measured on a real lens or a real boat:"
@@ -8991,8 +8991,8 @@
 "id": "en:692",
 "kind": "manual",
 "lines": [
-4355,
-4355
+4375,
+4375
 ],
 "term": "boat camera",
 "text": "boat camera 10-20 m: typical error 2 m, circle 11 m, true place inside 100 %"
@@ -9004,8 +9004,8 @@
 "id": "en:693",
 "kind": "manual",
 "lines": [
-4356,
-4356
+4376,
+4376
 ],
 "term": "boat camera",
 "text": "boat camera 20-35 m: typical error 5 m, circle 24 m, inside 98 %"
@@ -9017,8 +9017,8 @@
 "id": "en:694",
 "kind": "manual",
 "lines": [
-4357,
-4357
+4377,
+4377
 ],
 "term": "boat camera",
 "text": "boat camera 35-50 m: typical error 8 m, circle 49 m, inside 99 %"
@@ -9030,8 +9030,8 @@
 "id": "en:695",
 "kind": "manual",
 "lines": [
-4358,
-4358
+4378,
+4378
 ],
 "term": "UAV at 50 m",
 "text": "UAV at 50 m 50-150 m: typical error 9 m, circle 49 m, inside 100 %"
@@ -9043,8 +9043,8 @@
 "id": "en:696",
 "kind": "manual",
 "lines": [
-4359,
-4359
+4379,
+4379
 ],
 "term": "UAV at 50 m",
 "text": "UAV at 50 m 150-300 m: typical error 34 m, circle 193 m, inside 97 %"
@@ -9056,8 +9056,8 @@
 "id": "en:697",
 "kind": "manual",
 "lines": [
-4360,
-4360
+4380,
+4380
 ],
 "term": "UAV at 50 m",
 "text": "UAV at 50 m 300-900 m: typical error 82 m, circle 414 m, inside 93 %"
@@ -9069,8 +9069,8 @@
 "id": "en:698",
 "kind": "manual",
 "lines": [
-4361,
-4368
+4381,
+4388
 ],
 "term": "",
 "text": "A real camera lens, a wrong calibration or a moving boat can be worse: treat the circle as a guide, not a guarantee. Timing: the attitude used is the newest one when you CLICK (its age at this PC counted: telemetry age + attitude age, or the UAV record's age + its attitude age, must be under 1 second). The VIDEO itself reaches the screen later (typically 0.2-0.5 s, more on a slow link) and that delay is not known to the station: in a rolling sea the picture you click shows the boat / UAV as it was a moment before. Click when the picture is steady; mark again if in doubt."
@@ -9082,8 +9082,8 @@
 "id": "en:699",
 "kind": "manual",
 "lines": [
-4369,
-4370
+4389,
+4390
 ],
 "term": "",
 "text": "The further the point, the less sure: a boat camera is low on the water, so it gives a useful position only to about 50 m. For anything further use a UAV."
@@ -9095,8 +9095,8 @@
 "id": "en:700",
 "kind": "manual",
 "lines": [
-4372,
-4375
+4392,
+4395
 ],
 "term": "",
 "text": "When the click is REFUSED (with the reason on the screen, nothing is made): * at or above the horizon - click on the water; * too far (boat 1000 m, UAV 1500 m) or too uncertain at that distance (the error would be more than a third of the distance);"
@@ -9108,8 +9108,8 @@
 "id": "en:701",
 "kind": "manual",
 "lines": [
-4376,
-4383
+4396,
+4403
 ],
 "term": "",
 "text": "* no calibration, no fresh attitude, no position, a UAV too low (below 5 m). The marker: the name POINT n, the dashed circle, the text ESTIMATE - not for navigation, the time, the camera, and a small still image (160 x 120 pixels around the click) kept for the debrief. All stations see it (through the gateway); without a gateway it stays on this PC and goes to the gateway later. It is in the station log, the gateway audit log and in the event of a SAVE that is open at that moment."
@@ -9121,8 +9121,8 @@
 "id": "en:702",
 "kind": "manual",
 "lines": [
-4385,
-4390
+4405,
+4410
 ],
 "term": "",
 "text": "Click on the marker on the map for its menu: * Go there: a route through the normal route upload (all checks). Every action first asks a vertical YES / NO; nothing moves without the captain. If you set the marker as \"Person in the water\", the route ENDS 30 m before it with the final action STOP (idle, neutral, STANDBY) and the final approach is by hand: DANGER FROM THE PROPELLER."
@@ -9134,8 +9134,8 @@
 "id": "en:703",
 "kind": "manual",
 "lines": [
-4391,
-4395
+4411,
+4415
 ],
 "term": "",
 "text": "* UAV there: the next UAV flies over the point at 30 m (normal checks and launch approval). * Search pattern here: the point is the datum of the search pattern panel. * Person in the water / Not a person, Rename, Delete the marker (all stations). The estimate is no guarantee: the thing may have moved since the picture."
@@ -9147,8 +9147,8 @@
 "id": "en:704",
 "kind": "manual",
 "lines": [
-4401,
-4406
+4421,
+4426
 ],
 "term": "",
 "text": "With a 1090 MHz receiver (RTL-SDR dongle) on the gateway PC, the map shows manned aircraft that transmit ADS-B near the boat and the UAVs: a small plane symbol turned with its track, a short track, and a label with the callsign, altitude (ft) and speed (kn). Only aircraft below 3000 ft and within 20 km are shown (gateway.json \"adsb\": max_alt_ft, max_km). The receiver only LISTENS - it sends nothing, to nobody, and it never touches the boat."
@@ -9160,8 +9160,8 @@
 "id": "en:705",
 "kind": "manual",
 "lines": [
-4410,
-4414
+4430,
+4434
 ],
 "term": "",
 "text": "and the procedures of your UAV authorisation always come first. NO RECEIVER / NO DATA. While a UAV is in the air and the receiver is missing, off, not configured or silent, the map says \"ADS-B: no receiver\" or \"ADS-B: no data\" (and the event log says it once). That is never shown as a clear sky."
@@ -9173,8 +9173,8 @@
 "id": "en:706",
 "kind": "manual",
 "lines": [
-4416,
-4419
+4436,
+4439
 ],
 "term": "",
 "text": "WARNINGS. For every UAV that is in the air the gateway works out the closest point of approach with each aircraft, horizontally and vertically: * CAUTION: closer than 1000 m horizontally AND 150 m vertically within 120 s. Voice: \"Aircraft near UAV 3\"."
@@ -9186,8 +9186,8 @@
 "id": "en:707",
 "kind": "manual",
 "lines": [
-4420,
-4427
+4440,
+4447
 ],
 "term": "",
 "text": "* WARNING: closer than 500 m AND 100 m within 60 s (red, voice again). An aircraft without an altitude is taken as being AT THE UAV'S HEIGHT: the horizontal distance alone gives the CAUTION or WARNING, and the text says \"altitude unknown\". The same for a UAV whose own height is not known (no fresh height, a lost link): \"ADS-B: UAV n altitude unknown\" says so. An aircraft that was reported on the ground is watched again as soon as it reports flying. A UAV in the air WITHOUT a usable position is not judged at all: the notice \"ADS-B: UAV n position unknown - no ADS-B judgement for it\" says so."
@@ -9199,8 +9199,8 @@
 "id": "en:708",
 "kind": "manual",
 "lines": [
-4427,
-4430
+4447,
+4450
 ],
 "term": "",
 "text": "The warnings are notices on THIS station only (like the UAV battery notices). They are never a boat alarm, never go to the autopilot and never change a mode or the throttle."
@@ -9212,8 +9212,8 @@
 "id": "en:709",
 "kind": "manual",
 "lines": [
-4432,
-4439
+4452,
+4459
 ],
 "term": "",
 "text": "PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box (a UAV flown by hand: only its pilot): HOLD the UAV where it is, or DESCEND it to 30 m over its position (when the aircraft is above it and the UAV is high, also with a height unknown; DESCEND REPLACES its observation mission - it then hovers there). NOTHING happens by itself: without your YES nothing is sent. YES sends the normal UAV command (hold, or a route change - a copilot's route change for a flying UAV still waits for the captain's YES, and a UAV flown by someone else is refused as always)."
@@ -9225,8 +9225,8 @@
 "id": "en:710",
 "kind": "manual",
 "lines": [
-4439,
-4446
+4459,
+4466
 ],
 "term": "",
 "text": "A proposal that no longer stands (the aircraft is gone) sends nothing. Altitude of the aircraft is barometric, the UAV's is above its launch point: near the sea level the difference is small and the limits carry it. DEMO. The demo shows a simulated helicopter at 400 ft crossing the area. A real receiver needs a decoder (readsb or dump1090) and an antenna: see PARTS.md."
@@ -9238,8 +9238,8 @@
 "id": "en:711",
 "kind": "manual",
 "lines": [
-4452,
-4457
+4472,
+4477
 ],
 "term": "",
 "text": "What it is: a presentation of the search-and-rescue tools (chapters 23 and 24) and the UAV magazine on ONE PC with no boat and no hardware. Start it with DEMO_SAR.bat (next to START_DEMO.bat); STOP_DEMO.bat stops everything. It is the normal demo plus a small always-on-top window, the PRESENTER'S GUIDE (Greek / English button), that shows the next step and ticks it off when it sees it happen. It starts the same two ground stations as the normal demo."
@@ -9251,8 +9251,8 @@
 "id": "en:712",
 "kind": "manual",
 "lines": [
-4459,
-4464
+4479,
+4484
 ],
 "term": "",
 "text": "The guide only LISTENS (it is a read-only user of the gateway). It never answers a YES / NO question, never presses a boat button and never sends a command. Every decision is yours: with the mouse or with the shore stick's trigger on the question box. Nothing moves until you answer. The only thing it can do is the button \"Send the helicopter\": it moves a SIMULATED aircraft in the simulated ADS-B receiver. Nothing else, no rule is bypassed."
@@ -9264,8 +9264,8 @@
 "id": "en:713",
 "kind": "manual",
 "lines": [
-4466,
-4470
+4486,
+4490
 ],
 "term": "",
 "text": "The presenter's steps: 1. The boat in AUTO: screen 2, Program, \"Load file\" demo\\demo_mission.json, AUTO START, confirm with the joystick of the station that has it. 2. Press MOB (button or key M). The position is marked and you hear \"Man overboard\"."
@@ -9277,8 +9277,8 @@
 "id": "en:714",
 "kind": "manual",
 "lines": [
-4471,
-4474
+4491,
+4494
 ],
 "term": "",
 "text": "3. The return route is offered (it ends 30 m BEFORE the person). Look at it on the map and answer YES in the question box. Then press \"Done\". 4. \"UAV over the spot\": YES to the route, YES to the launch approval (the captain). The hatch opens and UAV 1 flies over the marker."
@@ -9290,8 +9290,8 @@
 "id": "en:715",
 "kind": "manual",
 "lines": [
-4475,
-4480
+4495,
+4500
 ],
 "term": "",
 "text": "5. A second person: right-click on the map, \"Search pattern here\", Expanding square, target UAV, YES. The pattern is drawn before it is sent. Press \"Done\". 6. Open the UAV 1 video (screen 2 camera view). The bright disc is the simulated person. Click it (or press K): an ESTIMATED position with an uncertainty circle is marked."
@@ -9303,8 +9303,8 @@
 "id": "en:716",
 "kind": "manual",
 "lines": [
-4481,
-4484
+4501,
+4504
 ],
 "term": "",
 "text": "7. Press \"Send the helicopter\" in the guide window. It appears on the map (ADS-B) and the station says \"Aircraft near UAV 1\". 8. The question \"HOLD / DESCEND UAV 1\" appears. You answer YES or NO. Nothing happens by itself. Press \"Done\". The demo is finished."
@@ -9316,8 +9316,8 @@
 "id": "en:717",
 "kind": "manual",
 "lines": [
-4485,
-4491
+4505,
+4511
 ],
 "term": "",
 "text": "If a step does not show as done, press \"Done\". The guide window can be closed at any time; closing it changes nothing in the demo. NOT FOR REAL USE: positions marked this way are estimates and not for navigation; the simulated person, helicopter and UAVs exist only in the demo. The academy has the lesson \"Man overboard and search\" and the scenario \"Man overboard (MOB)\" (simulator only)."
@@ -9329,8 +9329,8 @@
 "id": "en:718",
 "kind": "manual",
 "lines": [
-4497,
-4502
+4517,
+4522
 ],
 "term": "",
 "text": "What it is: a panel on screen 2 with graphs of the values you already know: speed and throttle, heading and rate of turn, cross-track error (only in AUTO), roll and pitch, impacts, depth from the chart, battery, the link (round trip and lost frames) and the boat's acceleration. It only SHOWS. It sends nothing to the boat, the gateway or another station, changes no mode, no setting of the boat, and plays no sound."
@@ -9342,8 +9342,8 @@
 "id": "en:719",
 "kind": "manual",
 "lines": [
-4504,
-4511
+4524,
+4531
 ],
 "term": "",
 "text": "THE PANEL (screen 2). The corner panel TRENDS starts CLOSED (only its title): click the title to open it, drag the title to move it. The buttons 2, 10, 30 and 60 are the time span in minutes (the last 10 minutes by default). The GRAPHS button chooses which graphs are shown, up to 6 at once. When the window is too small for six, the panel shows fewer, then only its title. A click on a graph shows the time (UTC and local), the mode and every value at that moment; a second click or Esc closes it. Where there is no data, the line STOPS: it is never drawn across a hole and never invented."
@@ -9355,8 +9355,8 @@
 "id": "en:720",
 "kind": "manual",
 "lines": [
-4512,
-4512
+4532,
+4532
 ],
 "term": "",
 "text": "Every value has its OWN colour and its OWN line pattern (solid, dashed,"
@@ -9368,8 +9368,8 @@
 "id": "en:721",
 "kind": "manual",
 "lines": [
-4513,
-4518
+4533,
+4538
 ],
 "term": "",
 "text": "dotted), so two lines in one graph are told apart even by someone who cannot tell the colours apart. At night (NIGHT) all lines are the dim red and only the pattern and the label at the right end tell them apart. The newest value and its unit are written at the right end of each line. Red and amber are never used for a normal line: they mean alarms. The graphs: 1 speed and throttle; 2 heading and rate of turn; 3 cross-track"
@@ -9381,8 +9381,8 @@
 "id": "en:722",
 "kind": "manual",
 "lines": [
-4519,
-4528
+4539,
+4548
 ],
 "term": "",
 "text": "error; 4 roll and pitch; 5 impacts (the peak in g and the number per minute); 6 depth; 7 battery; 8 link; 9 acceleration. ACCELERATION (graph 9). Three lines, one per axis: LONGITUDINAL (+ forward), LATERAL (+ starboard) and VERTICAL (+ up), in g, with gravity taken out. Each axis has its own colour and its own pattern. The solid-looking line is the AVERAGE over half a second; the thinner, fainter line of the same colour and pattern is the PEAK in the same half second (the largest value, with its sign). The right end of each line shows \"average/peak\". The three axes share one scale that includes zero (the dashed zero line), so you can compare them."
@@ -9394,8 +9394,8 @@
 "id": "en:723",
 "kind": "manual",
 "lines": [
-4529,
-4529
+4549,
+4549
 ],
 "term": "",
 "text": "Where it comes from: the BNO085 motion sensor of the boat, which also measures"
@@ -9407,8 +9407,8 @@
 "id": "en:724",
 "kind": "manual",
 "lines": [
-4530,
-4533
+4550,
+4553
 ],
 "term": "",
 "text": "the slamming impacts. It is for the eye and the record only: nothing in the control of the boat reads it, and it does not change any limit. Impacts per minute are in graph 5. Honest limits: this is NOT engine vibration. The sign and the axes depend on"
@@ -9420,8 +9420,8 @@
 "id": "en:725",
 "kind": "manual",
 "lines": [
-4534,
-4537
+4554,
+4557
 ],
 "term": "",
 "text": "how the sensor is mounted; they are checked on the boat at the first bench test (FIRST_TEST.md) and are only as good as that check. The values are averages over short windows, so a very short bump can be smaller in the average than in the peak line. Without a sensor value the lines are simply missing."
@@ -9433,8 +9433,8 @@
 "id": "en:726",
 "kind": "manual",
 "lines": [
-4539,
-4546
+4559,
+4566
 ],
 "term": "",
 "text": "THE SILENT RED «TREND» (not an alarm). When one value moves away from its own normal of the last ten minutes, its line and the label at its right end turn RED and a framed label «TREND: SPEED ↑» (or ↓, or a wave sign for a change in how much it swings) appears inside its graph. It needs two minutes of history, the change must last ten seconds, and the same value is not marked again for five minutes. Changes YOU commanded (a new mode, waypoint, throttle step, speed limit, gear, stopping) do not count: the panel starts again from the new state instead."
@@ -9446,8 +9446,8 @@
 "id": "en:727",
 "kind": "manual",
 "lines": [
-4546,
-4549
+4566,
+4569
 ],
 "term": "",
 "text": "The red label is NOT an alarm: no sound, no MASTER lamp, nothing in the alarm list, nothing to acknowledge. Real alarms are unchanged and always win. It is written, as text, to a log on THIS PC only (never sent anywhere). Honest limits: it is simple statistics. It can miss a slow drift and it can"
@@ -9459,8 +9459,8 @@
 "id": "en:728",
 "kind": "manual",
 "lines": [
-4550,
-4558
+4570,
+4578
 ],
 "term": "",
 "text": "mark a natural change, for example when the sea gets rougher. It is a hint to look, not a safety function. THE STRIP ON SCREEN 1 (optional, off by default). In the TRENDS panel on screen 2 the button ON SCREEN 1 (inside the GRAPHS choice) switches on a thin strip of small graphs at the LEFT edge of screen 1 (speed with throttle, roll with pitch, impacts). It never covers the centre of the picture, has no click and no zoom (it follows the time span of the panel), has no red label, and is hidden at the minimal declutter level."
@@ -9472,8 +9472,8 @@
 "id": "en:729",
 "kind": "manual",
 "lines": [
-4558,
-4559
+4578,
+4579
 ],
 "term": "",
 "text": "On the camera video it keeps the colour and pattern of each value (the one exception from \"all information green\")."
@@ -9485,8 +9485,8 @@
 "id": "en:730",
 "kind": "manual",
 "lines": [
-4561,
-4567
+4581,
+4587
 ],
 "term": "",
 "text": "LOOKING BACK. The same graphs are in (1) the log viewer (logview.py): a pane under the plots with the whole recording (the last 60 minutes of a longer one), the cursor in step with the plots; the boat's log holds speed, throttle, heading, rate of turn, cross-track (AUTO), impacts, battery and, once per second, the acceleration; roll, pitch, depth and the link are NOT in the log and are left empty; (2) the replay of an academy scenario, and (3) the video lessons of the academy. They read files only and send nothing."
@@ -9498,8 +9498,8 @@
 "id": "en:731",
 "kind": "manual",
 "lines": [
-4569,
-4571
+4589,
+4591
 ],
 "term": "",
 "text": "REMEMBER. The graphs keep the last 60 minutes in the PC's memory. A new connection or a restart of the boat starts them empty. Nothing is written to a file for the graphs themselves."
@@ -11521,9 +11521,9 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "b1e76fb403979730669a1c85627cb54aa3776ea77f0184107b1cc71d92b6bb74",
+"MANUAL.txt": "6e4f6b26d467406615c48c8e6d33c18d0f856c7dc840eaf3dc9854784ffe1cb4",
 "academy/content/tour.json": "e4464b2235485412b35a599069004cd30d67a8d402000a0612e6b2b90926facd",
-"groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
+"groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },
 "version": 3
 }

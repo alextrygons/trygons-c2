@@ -71,9 +71,10 @@ def on_gateway_pc(env=None):
 
 
 # --- the language model (step AM4, tools/get_llm.py) ---------------------------------------------------------------
-# the model the AM4 comparison chose (docs/assistant_design.md 5b; = tools/get_llm.py CHOSEN); another one by
-# $TRYGONS_ASSISTANT_LLM = a model folder name under llm_root() or a local .gguf path
-LLM_DEFAULT = "llama3.2-3b"
+# the model the comparison chose (AM4: docs/assistant_design.md 5b; AM7 5n: licence-clean only = Qwen3-4B-Instruct-2507,
+# Apache-2.0; = tools/get_llm.py CHOSEN); another one by $TRYGONS_ASSISTANT_LLM = a model folder name under llm_root()
+# or a local .gguf path
+LLM_DEFAULT = "qwen3-4b"
 
 
 def llm_root():
@@ -114,6 +115,13 @@ LLM_PINNED = {
     "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf": (4920739232, "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c"),
     "qwen2.5-3b-instruct-q4_k_m.gguf": (2104932768, "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"),
     "Llama-3.2-3B-Instruct-Q4_K_M.gguf": (2019377696, "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"),
+    # AM7 (W135): the licence-clean candidates
+    "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf": (2491874688, "01999f17c39cc3074afae5e9c539bc82d45f2dd7faa3917c66cbef76fce8c0c2"),
+    "Phi-3.5-mini-instruct-Q4_K_M.gguf": (2393232672, "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5"),
+    "qwen2.5-1.5b-instruct-q4_k_m.gguf": (1117320736, "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"),
+    "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf": (2497280736, "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e"),
+    "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf": (2147023008, "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8"),
+    "EuroLLM-1.7B-Instruct.Q4_K_M.gguf": (1045157088, "1cade17f491ea46a686dbee51fbd52442e0f001f102380c3b9d66b4a77f84093"),
 }
 
 

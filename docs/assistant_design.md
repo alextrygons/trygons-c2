@@ -463,7 +463,7 @@ of the generated answers (a changed number / an invented name) - the guard works
 grounded sentence (e.g. "Ο ΚΥΒΕΡΝΗΤΗΣ απαντά ΝΑΙ" for "how do I stop a launch"). (4) qwen2.5-3b writes poor Greek
 (numbered lists, invented words: proxy 49 %).
 
-CHOICE (tools/get_llm.py CHOSEN = paths.LLM_DEFAULT): **llama3.2-3b** (Meta Llama 3.2 3B Instruct, Llama 3.2
+CHOICE (REPLACED in AM7 by the licence-clean qwen3-4b, 5n; tools/get_llm.py CHOSEN = paths.LLM_DEFAULT): **llama3.2-3b** (Meta Llama 3.2 3B Instruct, Llama 3.2
 Community licence) - the only candidate that fits COMPLETELY on the GPU beside Whisper with the margin (need 2.7 GB;
 all 28 layers when >= 3.5 GB is free), best English, Greek correctness = the larger models' within the noise of this
 small list, and the only one inside the < 4 s target (e2e below). Krikri-8B (the best Greek wording) is the
@@ -1333,6 +1333,102 @@ The review of 09d086c (AM4-r8) found TWO safety MEDs (no HIGH), both display pla
   only reached 3.000 and cost 2 top-1 hits, so the full text was kept. Neither MIN_SCORE nor the AS17 floor was
   changed (no tuning for one question): the owner decides with the real re-tune (W84 / W89).
 
+### 5n. Licence-clean models + the creeping floor (step AM7, owner W135, 2026-11-11; station / tools / tests / docs only, NO app / hal / gateway logic change)
+
+LICENCES (docs/licences.md = every model + bundled tool): the AM4-AM6 default llama3.2-3b (Llama 3.2 Community),
+llama3.1-8b / krikri-8b (Llama 3.1 Community; Krikri is a Llama-3.1-8B derivative) and qwen2.5-3b (Qwen RESEARCH
+licence = no commercial use) are RESTRICTED: never the default, downloaded by tools/get_llm.py ONLY with
+`--allow-restricted` (+ a printed warning; the plain run and `--all` skip them; AS23). Clean = MIT / Apache-2.0
+(get_llm.CLEAN_LICENCES, licence_clean()). Six clean candidates added (pinned GGUF, HF revision + sha256 in
+get_llm.MODELS = paths.LLM_PINNED): phi4-mini, phi3.5-mini (MIT), qwen2.5-1.5b, qwen3-4b (Qwen3-4B-Instruct-2507),
+ministral3-3b (Ministral-3-3B-Instruct-2512, text part), eurollm-1.7b (Apache-2.0); qwen2.5-7b and meltemi-7b were
+already there and are clean too.
+
+METHOD (as 5b / 12): the real worker (Whisper large-v3-turbo loaded first), typed questions, answer mode extract,
+the station's default prompt "fewshot", the post-check, the scaled floor below (7.40 Greek / 7.33 English today);
+choices on the TUNING part only (Greek 96 in the manual + 7 not, English 34 + 4); the FRESH set measured ONCE with the
+chosen model. The PC was quiet (nothing else on the GPU: 4886 MB free at every load). One run per model (the 3B
+churn is about +-6 of 96, 5h).
+
+| model (licence) | runs on (GPU MB, worker total) | el correct | el answered | el precision | el false can't find (model's own) | el median ms | en correct | en precision | en median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| llama3.2-3b (RESTRICTED, the old default - reference) | gpu all (3651) | 42/96 = 44 % | 88 % | 50 % | 12 (10) | 571 | 18/34 = 53 % | 55 % | 323 |
+| **qwen3-4b (Apache-2.0) - CHOSEN** | gpu all (4225) | **45/96 = 47 %** | 73 % | **64 %** | 26 (17) | 1315 | **20/34 = 59 %** | **65 %** | 369 |
+| ministral3-3b (Apache-2.0) | gpu all (3729) | 44/96 = 46 % | 78 % | 59 % | 21 (18) | 628 | 21/34 = 62 % | 68 % | 376 |
+| phi4-mini (MIT) | gpu all (4273) | 8/96 = 8 % | 29 % | 29 % | 68 (22) | 739 | 18/34 = 53 % | 58 % | 599 |
+| phi3.5-mini (MIT) | gpu all (4721) | 28/96 = 29 % | 73 % | 40 % | 26 (10) | 1645 | 17/34 = 50 % | 55 % | 531 |
+| qwen2.5-1.5b (Apache-2.0) | gpu all (2435) | 7/96 = 7 % | 19 % | 39 % | 78 (52) | 699 | 16/34 = 47 % | 52 % | 191 |
+| eurollm-1.7b (Apache-2.0) | gpu all (2511) | - (empty output) | - | - | - | - | - | - | - |
+| meltemi-7b (Apache-2.0) | gpu+cpu 24 of 32 layers (4691) | 18/96 = 19 % | 50 % | 38 % | 48 (10) | 2200 | 15/34 = 44 % | 50 % | 2901 |
+| qwen2.5-7b (Apache-2.0) | gpu+cpu 21 of 28 layers (4623) | 36/96 = 38 % | 77 % | 49 % | 22 (16) | 6450 | 20/34 = 59 % | 65 % | 3113 |
+
+"can't find right" was 7/7 Greek + 4/4 English for EVERY model (the floor + the model's own can't-find). Notes:
+phi4-mini / qwen2.5-1.5b / meltemi-7b mostly do not answer the Greek pick prompt with numbers (phi4-mini wrote text in
+62 % of the Greek rows, meltemi echoed the worked example's "2" 37 times = no pick = can't find: safe, but useless);
+eurollm-1.7b's GGUF (mradermacher, llama-cpp-python 0.3.36) generates nothing at all (0 tokens on every prompt,
+also a one-line test outside the worker) - the worker fell back to retrieval only; not investigated further. The
+7-8B models never fit beside Whisper on 6 GB (partly on the CPU, 2-6 s per answer).
+
+CHOICE (get_llm.CHOSEN = paths.LLM_DEFAULT = **qwen3-4b**, Qwen3-4B-Instruct-2507, Apache-2.0): with ministral3-3b the
+best on the tuning part (correct 65 of 130 for both; within one run's noise of the old llama3.2-3b, 60), chosen for
+the higher PRECISION (Greek 64 % vs 59 %: fewer true-but-wrong sentences; it says "can't find" more instead, the safe
+side) at 1.3 s Greek / 0.4 s English median; it fits completely on the GPU with the 800 MB margin (4.2 GB worker).
+ministral3-3b is the clean alternative that is twice as fast in Greek and needs 0.5 GB less (W142). END TO END
+(`e2e --model qwen3-4b+extract~fewshot`, 10 Greek tuning questions spoken by the Windows voice, the quiet PC): release
+-> answer text median 2.5 s, max 3.3 s (Whisper 0.85-1.1 s of it) = inside the < 4 s target (llama3.2-3b: 1.9 s).
+
+FRESH SET, measured ONCE (tests/assistant/fresh_*.json; qwen3-4b, extract, fewshot, scaled floor):
+
+| fresh set | correct | answered | precision | can't find right | false can't find (model's own / no pick + post-check) | median ms (p90) |
+|---|---|---|---|---|---|---|
+| el (68 + 8) | 30/68 = 44 % | 50/68 = 74 % | 30/50 = 60 % | 7/8 | 18 (10 / 8) | 1455 (5781) |
+| en (25 + 6) | 5/25 = 20 % | 10/25 = 40 % | 5/10 = 50 % | 6/6 | 15 (5 / 10) | 1884 (3022) |
+
+Reading, honestly: Greek is BETTER than the AM6 fresh figure of llama3.2-3b (41 % correct, 51 % precision - that run
+used the old "default" prompt, so the two differ in model AND prompt). ENGLISH IS MUCH WORSE (20 % vs 52 %): in 7 of
+the 25 English and 6 of the 68 Greek questions qwen3-4b answered with a lone "2" - the worked example's answer of the
+fewshot prompt, which the AM4-r8 echo rule (answer.FEWSHOT_ECHO) refuses as NO PICK = «can't find» + the passage.
+The tuning part showed the same tendency only weakly (8 Greek / 1 English echo), so it was not visible in the choice.
+This failure is SAFE (a "can't find" with the passage shown, never a wrong sentence; precision stays 50-60 %), but it
+costs answers. NOT tuned away after seeing the fresh set (the rule of 12): the options (ministral3-3b, which echoed 3
+/ 0 times on the tuning part; another worked-example answer number; accepting a lone "2" when sentence 2 is on topic)
+are W142 for the owner, to be judged on his W84 recordings or a second fresh set. The fresh set has now been used
+twice (AM6 + AM7): its figures are no longer an unseen-set measurement for a third choice.
+
+THE CREEPING FLOOR (W135 item 4). Why: a BM25 score is a sum of idf weights, idf = log(1 + (N - df + 0.5) / (df +
+0.5)) grows with the number of passages N. Measured with today's parser on the manuals of 8 commits (0ef4bc4 AM4-r2 ->
+HEAD; N Greek 540 -> 615, English 810 -> 886): the median Greek tuning score rose +3.1 % (English +0.9 %) although the
+questions did not change; the off-manual el016 went 7.09 -> 7.30 (+2.8 %), exactly the idf ratio of a word with df = 5
+(+2.8 %). Every manual chapter (SAR, ADS-B, trends) therefore pushed off-manual questions over an ABSOLUTE floor and the
+floor was raised by hand 7.2 -> 7.25 -> 7.3; the same creep pushed the off-manual el140 over the search's MIN_SCORE 3.0
+(2.993 -> 3.003, 5m) = AS17's failing "can't find" count. A score normalised by the question's own idf mass is NOT a
+fix (it separates badly: the short off-manual el140 gets the highest normalised score).
+FIX (index.py corpus_scale): both thresholds are now in the units of the corpus they were TUNED on (SCALE_REF_N = 540
+Greek / 810 English passages = the manuals of AM3-r / AM4-r2 rebuilt with today's parser) and are multiplied by
+corpus_scale = idf(df 5, N) / idf(df 5, N_ref), never below 1 (a smaller corpus never lowers a threshold). The floor is
+back to its TUNED value 7.2 (answer.EXTRACT_FLOOR = client.DEFAULT_EXTRACT_FLOOR; the per-PC setting is read in the same
+units); the search reports its scale with every result, the Answerer compares the best score with 7.2 x scale.
+Today: Greek x 1.0283 = floor 7.40 / MIN_SCORE 3.085, English x 1.0179 = 7.33 / 3.054. BACKTEST over the 8 versions:
+the scaled 7.2 refuses el016 at EVERY version (the absolute 7.2 failed from 5ad0912 on) and loses no in-manual tuning
+question at any version (86 Greek / 32-33 English over it, = the hand-tuned floors); the scaled MIN_SCORE refuses
+el140 again (Greek can't find right 7 -> 8 of 10, AS17 PASSES again) and changes nothing else on the main list (top-1 /
+top-3 / false can't find, tuning + held-out) or on the fresh set's retrieval. PROTECTION: today's floor is HIGHER than
+the hand-raised 7.3 (7.40 / 7.33) at no measured cost; future manual growth raises it by itself. THE GATE stays and is
+clearer: `tools/assistant_index.py floor` (check.sh, AS29) compares the frozen off-manual / in-manual separation with
+the SCALED floor and FAILS when a question moved MORE than the corpus scale explains (a manual text that really came
+closer to an off-manual question) - then the floor is re-tuned by hand (never lowered or raised automatically); a
+change of SCALE_REF_N / SCALE_DF without floor.json = FAIL ("a reference change is a RE-TUNE"). Limits: the scale is a
+corpus-level average - single questions drift by -19 % .. +21 % (other passages competing), so the gate is still
+needed; el016 is only 0.10 under the floor today.
+
+AS17 STATUS: PASS again (above). It is NOT the place of the W84 recordings: AS17 measures RETRIEVAL on the typed
+question list (questions_*.json), which needs no recording. What W84 (the owner's spoken questions) is needed for is
+the speech-recognition numbers and a re-tune of the floor / MIN_SCORE on real questions (AS4 / AS24 stay N/A-able
+without the models; nothing is faked).
+EXTRA FINDING (docs/licences.md section 5, W141): BOTH Piper voices (el_GR-rapunzelina-low, en_GB-alan-medium) are
+fine-tunes of voices trained on NON-COMMERCIAL data (RyanSpeech CC BY-NC-SA 4.0; lessac / Blizzard 2013) although the
+piper-voices repository is tagged MIT - the station's "windows" voice engine is the clean option. Not changed here.
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,
@@ -1618,6 +1714,9 @@ read-only proof) and MED-1 was cheap - both fixed; the LOWs were cheap and are i
   tools/bin/assistant/llm/. Both found through gateway/toolpaths.py (new functions
   `assistant_python()`, `whisper_model()`, `llm_model()`), env overrides like the others.
 - A download that fails its sha256 is deleted and reported; nothing is fetched at run time.
+- AM7 (W135): get_llm.py downloads only LICENCE-CLEAN models (MIT / Apache-2.0) by default (the plain run = the
+  chosen qwen3-4b, `--all` = every clean candidate); the Llama Community / Qwen Research models only with
+  `--allow-restricted` + a printed warning (refused otherwise, nothing downloaded). Licences: docs/licences.md.
 - AM2-r MED-4 (supply chain): the embeddable Python zip (sha256; its md5 = python.org's) and get-pip.py
   from a pinned pypa/get-pip COMMIT (sha256; never the moving bootstrap.pypa.io URL) are checked
   before use; pip installs ONLY `--require-hashes --only-binary :all: -r tools/assistant_requirements.txt`

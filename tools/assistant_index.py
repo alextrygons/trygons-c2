@@ -260,14 +260,18 @@ def floor_snapshot(floor, margin=FLOOR_MARGIN):
                      "DEFAULT_EXTRACT_FLOOR) differs from 'floor'. Then re-tune the floor on the tuning part "
                      "(tools/assistant_llm_eval.py run --answer extract, docs/assistant_design.md 5e) and run "
                      "`floor --write`. Never tune on the held-out questions." % FLOOR_DRIFT,
-            "floor": floor, "margin": margin}
+            "floor": floor, "margin": margin,
+            # AM7: the floor is in the units of these reference corpora (index.SCALE_REF_N / SCALE_DF)
+            "scale_ref_n": dict(index.SCALE_REF_N), "scale_df": index.SCALE_DF}
     for lang in ("el", "en"):
-        rows, _t = evaluate(lang)
+        s = index.Searcher(index.load(lang))
+        eff = floor * s.scale
+        rows, _t = evaluate(lang, searcher=s)
         tun = [r for r in rows if not r["heldout"]]
         best = {r["id"]: (r["top"][0][2] if r["top"] else 0.0) for r in tun}
-        snap[lang] = {"below": [r["id"] for r in tun if not r["in_manual"] and best[r["id"]] < floor],
-                      "above": [r["id"] for r in tun if r["in_manual"] and best[r["id"]] >= floor + margin],
-                      "above_n": sum(1 for r in tun if r["in_manual"] and best[r["id"]] >= floor)}
+        snap[lang] = {"below": [r["id"] for r in tun if not r["in_manual"] and best[r["id"]] < eff],
+                      "above": [r["id"] for r in tun if r["in_manual"] and best[r["id"]] >= eff + margin],
+                      "above_n": sum(1 for r in tun if r["in_manual"] and best[r["id"]] >= eff), "n": s.n}
     return snap
 
 
@@ -283,27 +287,40 @@ def floor_check(frozen=None, code_floor=None):
     if abs(code - floor) > 1e-9 or abs(client.DEFAULT_EXTRACT_FLOOR - code) > 1e-9:
         bad.append("the code's floor (answer.EXTRACT_FLOOR %s, client.DEFAULT_EXTRACT_FLOOR %s) != the tuned one %s "
                    "in tests/assistant/floor.json" % (code, client.DEFAULT_EXTRACT_FLOOR, floor))
+    # AM7: the reference corpora the floor is expressed in - changing them silently would re-tune the floor
+    if frozen.get("scale_ref_n") != dict(index.SCALE_REF_N) or frozen.get("scale_df") != index.SCALE_DF:
+        bad.append("the corpus-scale reference (index.SCALE_REF_N %s, SCALE_DF %s) != tests/assistant/floor.json (%s, "
+                   "%s): a reference change is a RE-TUNE of the floor" % (index.SCALE_REF_N, index.SCALE_DF,
+                                                                         frozen.get("scale_ref_n"),
+                                                                         frozen.get("scale_df")))
     for lang in ("el", "en"):
         fr = frozen.get(lang) or {}
-        rows, _t = evaluate(lang)
+        s = index.Searcher(index.load(lang))
+        eff = floor * s.scale                          # AM7: the floor in today's corpus units
+        rows, _t = evaluate(lang, searcher=s)
         tun = {r["id"]: r for r in rows if not r["heldout"]}
         best = {i: (r["top"][0][2] if r["top"] else 0.0) for i, r in tun.items()}
         for i in fr.get("below", ()):
-            if i in best and best[i] >= floor:
-                bad.append("%s %s (off-manual) now scores %.2f >= the floor %.2f" % (lang, i, best[i], floor))
+            if i in best and best[i] >= eff:
+                bad.append("%s %s (off-manual) now scores %.2f >= the scaled floor %.2f (= %.2f x corpus scale %.4f): "
+                           "it rose FASTER than the corpus scale" % (lang, i, best[i], eff, floor, s.scale))
         for i in fr.get("above", ()):
-            if i in best and best[i] < floor:
-                bad.append("%s %s (in-manual) now scores %.2f < the floor %.2f" % (lang, i, best[i], floor))
-        n = sum(1 for i, r in tun.items() if r["in_manual"] and best[i] >= floor)
+            if i in best and best[i] < eff:
+                bad.append("%s %s (in-manual) now scores %.2f < the scaled floor %.2f" % (lang, i, best[i], eff))
+        n = sum(1 for i, r in tun.items() if r["in_manual"] and best[i] >= eff)
         if n < int(fr.get("above_n", 0)) - FLOOR_DRIFT:
             bad.append("%s: only %d in-manual tuning questions clear the floor (frozen %d)" % (lang, n, fr["above_n"]))
-        lines.append("extract floor %.2f %s: %d off-manual tuning questions under it, %d in-manual over it (frozen "
-                     "%d / %d)" % (floor, lang, sum(1 for i, r in tun.items() if not r["in_manual"] and
-                                                     best[i] < floor), n, len(fr.get("below", ())), fr.get("above_n", 0)))
+        lines.append("extract floor %.2f x corpus scale %.4f (N %d, reference %d) = %.2f %s: %d off-manual tuning "
+                     "questions under it, %d in-manual over it (frozen %d / %d)" % (
+                         floor, s.scale, s.n, index.SCALE_REF_N.get(lang, 0), eff, lang,
+                         sum(1 for i, r in tun.items() if not r["in_manual"] and best[i] < eff), n,
+                         len(fr.get("below", ())), fr.get("above_n", 0)))
     if bad:
-        lines += ["FLOOR CHECK FAILED - the search scores moved (a manual / parser change?): re-tune the extract floor "
-                  "on the TUNING part (W112 / W117: tools/assistant_llm_eval.py run --answer extract --floor F, docs/"
-                  "assistant_design.md 5e), set it in answer.EXTRACT_FLOOR + client.DEFAULT_EXTRACT_FLOOR, then "
+        lines += ["FLOOR CHECK FAILED - the search scores moved MORE than the corpus scale explains (a manual / parser "
+                  "change that brought an off-manual question closer to the manual text, or a new reference): the "
+                  "floor is NOT lowered and NOT raised by itself - re-tune it on the TUNING part (W112 / W117: tools/"
+                  "assistant_llm_eval.py run --answer extract --floor F, docs/assistant_design.md 5e / 5n), set it in "
+                  "answer.EXTRACT_FLOOR + client.DEFAULT_EXTRACT_FLOOR (index.SCALE_REF_N = the new reference), then "
                   "python tools/assistant_index.py floor --write"] + ["  " + b for b in bad]
     return not bad, lines
 
@@ -314,9 +331,10 @@ def floor_blockers(floor):
     out of 'below')."""
     out = {}
     for lang in ("el", "en"):
-        rows, _t = evaluate(lang)
+        s = index.Searcher(index.load(lang))
+        rows, _t = evaluate(lang, searcher=s)
         out[lang] = [(r["id"], r["top"][0][2]) for r in rows if not r["heldout"] and not r["in_manual"] and r["top"]
-                     and r["top"][0][2] >= floor]
+                     and r["top"][0][2] >= floor * s.scale]
     return out
 
 

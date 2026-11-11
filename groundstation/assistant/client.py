@@ -49,8 +49,9 @@ DEFAULT_ANSWER_MODE = "extract"
 # AM4-r2 (W112): in "extract" the best passage's search score must reach this before the model may pick, else "can't
 # find" + the passage shown; 0 = no floor. 7.2 = just above the 3 off-manual questions extract still answered on the
 # tuning part (6.07 / 6.79 / 7.10; costs 3 of 41 correct Greek answers, no English one - docs/assistant_design.md
-# 5e); gs_settings "assistant_extract_floor" (a number)
-DEFAULT_EXTRACT_FLOOR = 7.3
+# 5e); gs_settings "assistant_extract_floor" (a number, in the search's reference-corpus units: AM7 - the worker
+# multiplies it by index.corpus_scale, so it no longer has to be raised by hand when the manual grows)
+DEFAULT_EXTRACT_FLOOR = 7.2
 # AM6 (W128 / W129): the extract PROMPT variant - "default" = the AM4-r instruction with the digit example "4 or 4, 9";
 # "fewshot" = no digit example, one worked example turn with real manual sentences (answer.PROMPT_VARIANTS). Measured
 # on the TUNING part (docs/assistant_design.md 12): fewshot el 45 % / en 61 % correct vs 34 % / 48 %, first pick = 4

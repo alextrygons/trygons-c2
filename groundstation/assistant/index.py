@@ -48,6 +48,34 @@ MIN_SCORE = 3.0
 # tuning range 0.31 .. 0.34 (en tuning: 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged; 0.30 =
 # 2 / 5; 0.35 = 3 / 5 but 1 FALSE can't find - AM3-r3 LOW-3, measured again)
 MIN_COVER = {"el": 0.30, "en": 0.33}
+# AM7 (W135 item 4): the CORPUS SCALE. A BM25 score grows with the number of passages N (idf = log(1 + (N - df +
+# 0.5) / (df + 0.5)) grows ~log N): every manual chapter added raised EVERY score by ~1-3 % (measured over 8 manual
+# versions, docs/assistant_design.md 5n: the Greek median +3.1 % for N 540 -> 615, el016 +2.8 %) - so an ABSOLUTE
+# threshold (MIN_SCORE, answer.EXTRACT_FLOOR) crept: off-manual questions crossed it although nothing about them
+# changed (the floor had to go 7.2 -> 7.25 -> 7.3). The thresholds are now in the units of the REFERENCE corpus
+# (SCALE_REF_N = the passage count of the index BOTH were tuned on: AM3-r MIN_SCORE 3.0 and AM4-r2 the floor 7.2 -
+# the manuals of 9b12cd7 / 0ef4bc4 = 540 Greek / 810 English passages with today's parser) and are multiplied by
+# corpus_scale() = idf(df = SCALE_DF, N) / idf(df = SCALE_DF, N_ref), never below 1 (a smaller corpus never LOWERS
+# a threshold). Backtest (5n): the floor 7.2 scaled this way = 7.40 / 7.33 at today's manuals (the hand-raised 7.3
+# is gone) - el016 refused at every one of the 8 versions, 0 in-manual tuning questions lost; MIN_SCORE 3.0 -> 3.085
+# Greek refuses the off-manual el140 again (it had crept to 3.003, 5m), 0 in-manual lost (main list + fresh set).
+# Changing SCALE_REF_N = a re-tune (floor --write records it; tools/assistant_index.py floor fails when the code and
+# tests/assistant/floor.json disagree).
+SCALE_DF = 5
+SCALE_REF_N = {"el": 540, "en": 810}
+
+
+def _idf_df(n, df=SCALE_DF):
+    return math.log(1 + max(0.0, n - df + 0.5) / (df + 0.5))
+
+
+def corpus_scale(n, lang):
+    """The factor the score thresholds are multiplied with for a corpus of n passages (>= 1.0; 1.0 = the
+    reference corpus SCALE_REF_N[lang] or smaller, an unknown language = 1.0)."""
+    ref = SCALE_REF_N.get(lang)
+    if not ref or n <= ref:
+        return 1.0
+    return max(1.0, _idf_df(n) / _idf_df(ref))
 
 CHAPTER_RE = re.compile(r"^(\d+[A-Z]?)\.\s+(\S.*)$")
 RULE_RE = re.compile(r"^\s*([-=])\1{10,}\s*$")
@@ -458,6 +486,7 @@ class Searcher:
         self.avg = sum(d[1] for d in self.docs) / float(max(1, self.n))
         self.idf = {t: math.log(1 + (self.n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
         self.idf_unknown = math.log(1 + (self.n + 0.5) / 0.5)
+        self.scale = corpus_scale(self.n, self.lang)     # AM7: the thresholds in reference-corpus units
 
     def search(self, q, k=3):
         qt = []
@@ -487,14 +516,16 @@ class Searcher:
         hits = [{"passage": self.passages[i], "score": round(s, 3), "cover": round(c, 3),
                  "after": following(self.passages, i)} for s, c, i in scored[:k]]
         if not hits:
-            return {"hits": [], "cant_find": True, "why": "no passage has any search word", "terms": qt}
+            return {"hits": [], "cant_find": True, "why": "no passage has any search word", "terms": qt,
+                    "scale": self.scale}
         best = hits[0]
         why = ""
-        if best["score"] < self.min_score:
-            why = "best score %.2f < %.2f" % (best["score"], self.min_score)
+        min_score = self.min_score * self.scale
+        if best["score"] < min_score:
+            why = "best score %.2f < %.2f" % (best["score"], min_score)
         elif best["cover"] < self.min_cover:
             why = "best covers %.0f %% of the question < %.0f %%" % (best["cover"] * 100, self.min_cover * 100)
-        return {"hits": hits, "cant_find": bool(why), "why": why, "terms": qt}
+        return {"hits": hits, "cant_find": bool(why), "why": why, "terms": qt, "scale": self.scale}
 
 
 FOLLOWING_N = 2
@@ -531,6 +562,6 @@ def _summary(p):
 def hit_summary(res):
     """The worker's / the Tools page's short form of a search (no full texts); "after" = the following passages of
     the chapter (AM4-r4 MED-1 a, for the pick units)."""
-    return {"cant_find": res["cant_find"], "why": res["why"],
+    return {"cant_find": res["cant_find"], "why": res["why"], "scale": res.get("scale", 1.0),
             "hits": [dict(_summary(h["passage"]), score=h["score"], cover=h["cover"],
                           after=[_summary(a) for a in h.get("after", ())]) for h in res["hits"]]}

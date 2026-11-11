@@ -1327,13 +1327,28 @@ def _decide_pick(raw, hits, lang, terms, out, err, variant="default"):
     return out
 
 
-EXTRACT_FLOOR = 7.3       # answer mode "extract": the best passage's BM25 score must reach this before the model may
+EXTRACT_FLOOR = 7.2       # answer mode "extract": the best passage's BM25 score must reach this before the model may
 #                           pick, else «Δεν βρίσκω ...» + the passage shown (0 = no floor). AM4-r2 / W112, measured
 #                           on the tuning part: the 3 off-manual questions extract still answered (el016 7.10, el143
 #                           6.07, en047 6.79) lie INSIDE the in-manual range (correct Greek answers from 5.31 up): 7.2
 #                           = just above the highest of the three - refuses all 3 at the cost of 3 of 41 correct Greek
 #                           answers (+ 5 wrong ones) and no English one; set on 3 cases (W112: the owner decides; the
 #                           per-PC setting assistant_extract_floor; the passage is still shown below the floor).
+#                           PF5 / TR4 raised it 7.2 -> 7.25 -> 7.3 only because the BM25 scores CREEP with the
+#                           manual's size; AM7: back to the TUNED 7.2, in REFERENCE-corpus units (index.SCALE_REF_N
+#                           = the corpus it was tuned on) and multiplied by the search's corpus scale
+#                           (index.corpus_scale, >= 1) = it follows the creep by itself: 7.40 Greek / 7.33 English
+#                           at today's manuals (docs/assistant_design.md 5n; the gate = tools/assistant_index.py floor).
+
+
+def scale_of(found):
+    """AM7: the corpus scale the search reported (index.corpus_scale, >= 1); missing / garbage / below 1 = 1.0 (the
+    floor is never lowered by a bad value)."""
+    try:
+        v = float((found or {}).get("scale", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return v if v == v and 1.0 <= v < 10.0 else 1.0
 
 
 def floor_value(x, default=EXTRACT_FLOOR):
@@ -1371,14 +1386,15 @@ class Answerer:
         hits = (found or {}).get("hits") or []
         r = {"q": q, "lang": lang, "problems": [], "gen_ms": 0, "tokens": 0, "id": "", "cite": "", "passage": None,
              "mode": "retrieval" if self.retrieval_only else getattr(self.llm, "mode", ""), "answer_mode": self.mode}
+        floor = self.extract_floor * scale_of(found)     # AM7: in reference-corpus units (index.corpus_scale)
         if (found or {}).get("cant_find") or not hits:
             r.update(a=CANT[lang], src="cant_find")
-        elif self.mode == "extract" and not self.retrieval_only and self.extract_floor and \
-                hits[0].get("score") is not None and float(hits[0]["score"]) < self.extract_floor:
+        elif self.mode == "extract" and not self.retrieval_only and floor and \
+                hits[0].get("score") is not None and float(hits[0]["score"]) < floor:
             h = hits[0]                                  # below the floor: nothing picked, the passage still shown
             r.update(a=CANT[lang], src="cant_find", id=h.get("id", ""), cite=cite(h, lang), cut=False,
-                     passage=passage_of(h, lang), floor=self.extract_floor,
-                     why="best passage score %.2f < the extract floor %.2f" % (float(h["score"]), self.extract_floor))
+                     passage=passage_of(h, lang), floor=round(floor, 3),
+                     why="best passage score %.2f < the extract floor %.2f" % (float(h["score"]), floor))
         elif self.retrieval_only:
             h = hits[0]
             r.update(a=shortest_sentence(h.get("text", "")), src="retrieval", id=h.get("id", ""), cite=cite(h, lang),

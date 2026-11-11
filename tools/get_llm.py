@@ -1,10 +1,16 @@
 """The talking manual's answer step (step AM4): llama.cpp's Python bindings + the local language models.
 
     C:\\msys64\\ucrt64\\bin\\python.exe tools\\get_llm.py               (the bindings + the CHOSEN model: ~0.5 GB +
-                                                                      2.0 GB = ~2.5 GB)
-    ... tools\\get_llm.py --all                                       (every candidate of the comparison, ~23 GB)
-    ... tools\\get_llm.py --model qwen2.5-3b                          (one model by name)
+                                                                      2.5 GB = ~3 GB)
+    ... tools\\get_llm.py --all                                       (every LICENCE-CLEAN candidate of the comparison)
+    ... tools\\get_llm.py --model phi4-mini                           (one model by name)
+    ... tools\\get_llm.py --all --allow-restricted                    (+ the Llama Community / Qwen Research models:
+                                                                      comparison only, a warning is printed)
     ... tools\\get_llm.py --list                                      (the candidates, their files and licences)
+
+Licences (step AM7, owner W135; docs/licences.md): only MIT / Apache-2.0 models are "clean" and downloaded by default;
+a model under the Llama 3.x Community or the Qwen Research licence is downloaded ONLY with --allow-restricted and is
+never the default (CHOSEN is always clean - test AS23).
     ... tools\\get_llm.py --check                                     (what is installed; downloads nothing)
 
 Everything goes into tools/bin/ (not in git, nothing installed system-wide):
@@ -71,9 +77,45 @@ MODELS = {
                     "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 2019377696,
                     "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff", "Llama 3.2 Community",
                     "Meta Llama-3.2-3B-Instruct (the 3B option)"),
+    # step AM7 (owner W135): licence-clean candidates (MIT / Apache-2.0) that fit beside Whisper on a 6 GB GPU
+    "phi4-mini": ("bartowski/microsoft_Phi-4-mini-instruct-GGUF", "7ff82c2aaa4dde30121698a973765f39be5288c0",
+                  "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf", 2491874688,
+                  "01999f17c39cc3074afae5e9c539bc82d45f2dd7faa3917c66cbef76fce8c0c2", "MIT",
+                  "Microsoft Phi-4-mini-instruct (3.8B)"),
+    "phi3.5-mini": ("bartowski/Phi-3.5-mini-instruct-GGUF", "6d70da17e749a471ccb62ade694486011a75cda3",
+                    "Phi-3.5-mini-instruct-Q4_K_M.gguf", 2393232672,
+                    "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5", "MIT",
+                    "Microsoft Phi-3.5-mini-instruct (3.8B)"),
+    "qwen2.5-1.5b": ("Qwen/Qwen2.5-1.5B-Instruct-GGUF", "91cad51170dc346986eccefdc2dd33a9da36ead9",
+                     "qwen2.5-1.5b-instruct-q4_k_m.gguf", 1117320736,
+                     "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", "Apache-2.0",
+                     "Qwen2.5-1.5B-Instruct, the official Qwen GGUF"),
+    "qwen3-4b": ("bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF", "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+                 "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2497280736,
+                 "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e", "Apache-2.0",
+                 "Qwen3-4B-Instruct-2507 (no thinking mode)"),
+    "ministral3-3b": ("mistralai/Ministral-3-3B-Instruct-2512-GGUF", "eb599d408350ea2bb60452cb86be7c7b2fc28227",
+                      "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf", 2147023008,
+                      "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8", "Apache-2.0",
+                      "Mistral Ministral-3-3B-Instruct-2512, the official Mistral GGUF (text only, no mmproj)"),
+    "eurollm-1.7b": ("mradermacher/EuroLLM-1.7B-Instruct-GGUF", "2951f08f66429c934c8b01a94347161362430808",
+                     "EuroLLM-1.7B-Instruct.Q4_K_M.gguf", 1045157088,
+                     "1cade17f491ea46a686dbee51fbd52442e0f001f102380c3b9d66b4a77f84093", "Apache-2.0",
+                     "utter-project EuroLLM-1.7B-Instruct (EU languages incl. Greek)"),
 }
-# the model the comparison chose (docs/assistant_design.md 5b) = what a plain run downloads and the worker loads
-CHOSEN = "llama3.2-3b"
+# AM7 (owner W135): only these licences are "clean" (commercial use, no use policy / user cap / attribution rule
+# beyond the licence text); the others (Llama Community, Qwen Research) are downloaded ONLY with --allow-restricted
+# and are never the default (docs/licences.md)
+CLEAN_LICENCES = ("MIT", "Apache-2.0")
+
+
+def licence_clean(name):
+    return MODELS[name][5] in CLEAN_LICENCES
+
+
+# the model the comparison chose (docs/assistant_design.md 5b, AM7 5n) = what a plain run downloads and the worker
+# loads; ALWAYS a licence-clean one (AS23 checks it). AM7: Qwen3-4B-Instruct-2507 (Apache-2.0) replaces llama3.2-3b
+CHOSEN = "qwen3-4b"
 
 
 def sha256(path):
@@ -186,7 +228,7 @@ def check(verify=False):
     return 0 if st == "ok" and not bad else 1
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--all", action="store_true", help="every candidate model (the comparison)")
     ap.add_argument("--model", action="append", default=[], help="one model by name (repeatable)")
@@ -194,10 +236,14 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--verify", action="store_true", help="with --check: the sha256 of every present model too")
-    a = ap.parse_args()
+    ap.add_argument("--allow-restricted", action="store_true",
+                    help="also models under a RESTRICTED licence (Llama Community, Qwen Research): comparison only, "
+                         "never the default - see docs/licences.md")
+    a = ap.parse_args(argv)
     if a.list:
         for n, (repo, rev, fn, size, digest, lic, note) in MODELS.items():
-            print("%-12s %5.2f GB  %-22s %s%s" % (n, size / 1e9, lic, note, "   <- chosen" if n == CHOSEN else ""))
+            print("%-14s %5.2f GB  %-22s %-10s %s%s" % (n, size / 1e9, lic, "clean" if licence_clean(n) else
+                                                        "RESTRICTED", note, "   <- chosen" if n == CHOSEN else ""))
         return 0
     if a.check:
         return check(a.verify)
@@ -205,6 +251,11 @@ def main():
         if n not in MODELS:
             print("unknown model %r (known: %s)" % (n, ", ".join(MODELS)))
             return 2
+    restricted = [n for n in a.model if not licence_clean(n)]
+    if restricted and not a.allow_restricted:
+        print("REFUSED: %s under a restricted licence (%s) - only with --allow-restricted (comparison only, never "
+              "the default; docs/licences.md)" % (", ".join(restricted), ", ".join(MODELS[n][5] for n in restricted)))
+        return 2
     if not a.models_only:
         if os.name != "nt":
             print("on Ubuntu: in the assistant venv install the SAME pinned versions - the wheel llama-cpp-python==%s "
@@ -219,7 +270,17 @@ def main():
             return 1
         if not install_bindings(exe):
             return 2
-    names = list(MODELS) if a.all else (a.model or [CHOSEN])
+    if a.all:
+        names = [n for n in MODELS if licence_clean(n) or a.allow_restricted]
+        skipped = [n for n in MODELS if n not in names]
+        if skipped:
+            print("not downloaded (restricted licence; --allow-restricted to include): %s" % ", ".join(skipped))
+    else:
+        names = a.model or [CHOSEN]
+    for n in names:
+        if not licence_clean(n):
+            print("WARNING: %s is under the %s licence - NOT licence-clean (use policy / attribution / limits; "
+                  "docs/licences.md). For the comparison only, never the station default." % (n, MODELS[n][5]))
     ok = True
     for n in names:
         ok = get_model(n) and ok
