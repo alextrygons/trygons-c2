@@ -518,8 +518,13 @@ def main():
 
         # LH20 (owner W54) the captain's press takes the horn at once from the copilot; the copilot sees it; a VIEWER /
         # another non-captain still first-wins
+        # (CL2-c) a settled start: LH1's release has reached the copilot's station (its `mine` / speaker are the
+        # broadcast's, not a stale True that makes the next wait pass at once), and the copilot really holds the
+        # floor on the GATEWAY with its first voice frame in (else the take-over below is a plain grant, flaky)
+        until(lambda: g.hail.floor is None and not cop.hail.mine and cop.hail.speaker is None, 3, pump=pumps)
         cop.hail.press()
-        until(lambda: cop.hail.mine, 3, pump=pumps)
+        until(lambda: cop.hail.mine and g.hail.floor and g.hail.floor.get("crew") == "copilot" and
+              g.hail.floor.get("got"), 4, pump=pumps)
         vic.link.send_msg({"t": "ptt", "on": True})
         vic_ref2 = until(lambda: vic.last("ptt_ack") and vic.last("ptt_ack").get("ok") is False, 3, pump=pumps)
         cop.msgs.clear()
@@ -560,8 +565,12 @@ def main():
         wait(1.0, pumps)
         n1 = cap.hail.rx_frames
         cop.hail.press()
+        t_press = time.time()
         until(lambda: cop.hail.mine, 3, pump=pumps)
         wait(0.6, pumps)                                    # (the hang time + frames in flight)
+        # (CL2-c) the worker reports its counters once a second: take the "before" snapshot from a status sent AFTER the
+        # mute (the hang time 0.3 s); an older one still counts the mic frames of the moment before the press
+        until(lambda: g.hail.worker_t > t_press + 0.5, 4, pump=pumps)
         n2, w2 = cap.hail.rx_frames, dict(g.hail.worker)
         wait(1.5, pumps)
         for s in pumps:

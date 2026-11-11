@@ -2410,6 +2410,7 @@ def section_f1():
         # F1e the real ground station through the gateway: driver window answers the gateway's question,
         # closing it mid-question rejects; single-operator banners on both screens + own confirmation
         import tkinter as tk
+        import _tkinter
         import app as A
         lay = None
         if os.path.exists(A.LAYOUT):
@@ -2420,7 +2421,11 @@ def section_f1():
         troot = tk.Tk()
         f1e_err = []
         troot.report_callback_exception = lambda *a: f1e_err.append(repr(a[1]))
-        ap = A.App(troot, "gw:127.0.0.1:%d" % sp, login=("alice", PW["alice"]))
+        # (CL2-c) F1e is about the driver window / single-operator flow, not the map: the station must not load the
+        # PC's own charts/ (a real chart makes every screen-2 render take seconds here -> the 8 s waits + the 1.5 s
+        # driver heartbeat fail, and root.update() never returned = the F1 STALL). Empty chart folder = same on every PC.
+        ap = A.App(troot, "gw:127.0.0.1:%d" % sp, login=("alice", PW["alice"]),
+                   charts_dir=os.path.join(tmp, "no_charts"))      # (CL2-c) not the PC's own charts/: see the note above
         # a watchdog: where is the station's main thread when its Tk loop stalls for more than 2 s?
         import traceback as _tb2
         f1e_beat = [time.time()]
@@ -2441,7 +2446,11 @@ def section_f1():
             end = time.time() + s
             while time.time() < end:
                 f1e_beat[0] = time.time()
-                troot.update()
+                # (CL2-c) bounded events per step, as test_boats / test_driver: root.update() returns only when no
+                # event is pending and the station's HUD timers can fall due faster than a frame is drawn
+                for _i in range(400):
+                    if not troot.tk.dooneevent(_tkinter.ALL_EVENTS | _tkinter.DONT_WAIT) or time.time() >= end:
+                        break
                 f1e_beat[0] = time.time()
                 if until and until():
                     return True
