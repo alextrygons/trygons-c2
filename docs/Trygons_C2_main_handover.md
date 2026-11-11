@@ -1,4 +1,4 @@
-# Trygons C2 – main project handover (state 25 Oct 2026)
+# Trygons C2 – main project handover (state 11 Nov 2026, HEAD e502095 + CL4)
 
 Upload this file to the Claude project together with CLAUDE.md, MANUAL.txt, WIRING.md, TEST_REPORT.md (section 0), PARTS spreadsheet and the Academy/Simulator handover. The repository (github.com/alextrygons/trygons-c2) and its CLAUDE.md are the source of truth; this file is the summary for chats.
 
@@ -22,18 +22,20 @@ A command-and-control (C2) system for a small outboard boat in the Saronic Gulf 
 - Collision: AUTO = automatic slow down + pass astern; HEADING LOCK = proposal; MANUAL = alarm only. Shallow-water check on all routes. Vision never steers and never adds throttle.
 - **FIRST_TEST** is ON in git: steering only (throttle/gear held at idle/neutral), only STANDBY/TRAINING/HDG LOCK.
 
-## 4. Status
-- Software: all features built and tested in simulation; full acceptance test (2000 random fault runs, 24 h soak, invariants I1–I21) passed; all findings fixed except R7 (documented design decision).
-- Board build: ADS build clean (0 errors, 0 warnings); memory OK (CPU1 < 60 %, shared data uncached; LMU block 2 at 84 % – watch it).
-- Real board drivers written but NOT yet tested on hardware. Bench test tab + FIRST_TEST.md checklist ready.
-- Running / next in Claude Code: driver HUD redesign (full-screen camera, aircraft-style overlays, AR, sounds/voice, Greek/English, map window, Greek manual). Then the Academy (see Academy handover).
+## 4. Status (11 Nov 2026)
+- Software: all features built and tested in simulation. Done since the 25 Oct state (details: CLAUDE.md sections, PROGRESS.md rows): DroneCAN actuators (11d-11g, 13b-13k), crew profiles / two screens / MANEUVER / UNCREWED HDG LOCK / shore stick override (13n-13q), UAV magazine (U1-U6, WA), talking manual (AM1-AM6), SAR tools (PF1-PF6: MOB, search patterns, mark from video, ADS-B, demo), trend panel (TR1-TR4), acceleration telemetry (FW-TR / FW-TR-r, firmware), cleanup CL1-CL4 (stale texts, stray-process guard tools/strays.py, flaky-test harness fixes CL2 / CL2-b / CL2-c, archive of old PROGRESS tasks, unused lang keys).
+- Board build: ADS build clean at the last gate; NOT yet tested on hardware (FIRST_TEST.md). FIRST_TEST is ON in git.
+- Gate: tools/check.sh (now needs MORE than 45 min in one run, the gateway suite alone is ~25 min; split proposed in docs/cleanup_report.md CL4) + tests/acceptance/RUN_ACCEPTANCE.bat.
 
-## 5. Next steps
-1. Order Stage 1 parts (spreadsheet), then bench test → dock test → first steering-only water test (FIRST_TEST.md).
-2. Hardware-in-the-loop test: real AURIX fed by the PC simulator before the water.
-3. After first tests: MOB button, geofence, battery/engine monitoring, water-in-hull sensor; later virtual anchor and lost-link return-home.
-4. Fix the 3 flaky camera-vision timing tests (pass alone, fail in the full gate).
-5. Gateway software: make it platform-independent for the N150 mini PC (x86 Debian/Ubuntu, USB AIS receiver, USB-TTL UART to the AURIX).
+## 5. Open items / next steps
+Owner:
+1. W84 (recorded questions for the talking manual - AS17 needs them), W89 (question list review), W97 (firewall command), W99 (blind answer review); W132 (tools/get_readsb.py needs the owner's --sha256).
+2. Tour voice clips pending for the MOB / trends stops (voice_pending in academy/content/tour.json); other stale tour lines listed in docs/cleanup_report.md (CL1).
+3. DEMO_SAR.bat live click-through has not been run by a person.
+4. Order hardware (PARTS.md), bench test, dock test, first steering-only water test (FIRST_TEST.md; section 6 = UAV / loudhailer bench checks).
+Tests known open: SR8 (needs the NVENC environment), AS17 (needs W84), LH2 flaky under load (documented, CL2-c).
+Firmware awaiting the next flash-gate deep review: FW-TR / FW-TR-r (hal_read_accel3, ACCEL frame 0x8F, tools/stackcheck.py POLLED_ONLY). Review notes (C:/trygons/private/reviews/review_c522e77.txt), recorded in PROGRESS.md): MED-A stackcheck POLLED_ONLY should also fail when reachable from core1 / core2 trees; MED-B the proof depends on GCC inlining and an iLLD assumption; LOW-1 hal_read_accel_z / accel3 call order grep; LOW-2 AX6 should assert TELEM2 survives; LOW-3 AX4 popen may pass when the child never ran; LOW-4 AX5 log header margin only partly proven.
+Cleanup: unused-key list, dead-file list and the check.sh split proposal = docs/cleanup_report.md (CL4).
 
 ## 6. Things to measure / decide
 - Outboard draft (leg down), steering motor voltage/current, boat 12 V vs 24 V.

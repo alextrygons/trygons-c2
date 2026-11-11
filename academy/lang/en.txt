@@ -19,7 +19,6 @@ level.DRIVER = DRIVER
 level.CAPTAIN = CAPTAIN
 
 # refusals (the English reason stays in the log)
-refuse.not_sim = The academy connects only to the simulator on this PC.\n{why}
 refuse.on_gateway = The academy never runs on a boat's gateway PC.
 refuse.recording = This is not a recorded file: {why}
 

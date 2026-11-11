@@ -335,3 +335,52 @@ Notes, NOT fixed (honest):
 - VR under 20 busy processes: the vision manager pauses itself by design ("VISION PAUSED: CPU 100 %", the product's CPU guard), so the worker does not run and VR1-VR5 cannot pass; this is correct product behaviour, not a flake. VR2 / VR3 / VR5 are stable at 4 busy processes.
 - I4 / I12 / I19 were not seen failing in these series (before_* runs: only I25 at p0 / p4; the pall run-2 list was caused by the stalled / overloaded harness) and pass in all after series.
 - test_boats.py (NOT touched by CL2, NOT in the CL2 list): in the one tools/check.sh run of this step (74 min, stopped by hand) test_boats hung > 55 min; 3 more runs alone, no load, quiet PC: hung again at B11 (run 1), B4 (run 2: faulthandler = inside root.update() in ov_tick -> render), B5 `toggle_screen()` + pump (run 3, with a bounded dooneevent pump tried: the hang is then INSIDE one dooneevent call, native Tk, no Python frame deeper). Same family as the driver stall (Tk event loop not returning) but here a single native call; not reproducible by timing alone, so the experiment was reverted (nothing proven). Open item for the owner / next step: test_boats B4 / B5 / B11 hang on this PC (the earlier gates passed it). The gate of this step was stopped at that suite: "section test_boats stalled, re-run alone 3 x: STALLED" - the suites after it (screen 2 ... gateway) were not run in this gate; of the gateway tests only section VR was run (above), the rest is unchanged by CL2 (VR5 wait helper only).
+
+
+## CL4 rest - unused lang keys, dead files, check.sh split (2026-11-11; docs / lang text only, app/ and hal/ untouched)
+
+### 1. Unused lang keys
+Method: every key of groundstation/lang/{el,en}.txt (2312) and academy/lang/{el,en}.txt (421) was searched as a
+literal string in every tracked-style source of the repo (py, json incl. academy content / tour, c, h, bat, sh, md;
+test_results/, tools/bin, Libraries/ and the lang files themselves excluded). A key with no literal hit was then
+checked for a DYNAMIC use: any quoted prefix that ends at a "." or "_" boundary of the key and is followed by a
+quote, "{", "%" or "+" (e.g. T("cap." + x), f"alarm.{code}", from_en "what." / "gw." templates, say.* tables).
+Only keys with NO literal and NO prefix hit were removed (both languages, 55 lines each in groundstation, 1 in academy):
+
+bench.stack_core0, bench.stack_core1, bench.stack_core2, cap.ack_alarm, cap.alarm_nodata, cap.auto_prog, cap.btn_maneuver, cap.clear_track, cap.click_adds, cap.depth_shading, cap.driver_screen, cap.ev_driver_asked, cap.f12_hint, cap.hdg_step, cap.hdg_title, cap.info_manual, cap.maneuver_request, cap.map_missing, cap.map_window, cap.mode_lit, cap.no_sensor, cap.north_up, cap.not_sent, cap.power_none, cap.remote_request, cap.train_last, cap.wait_driver, cap.zoom_in, cap.zoom_out, keep.tip, lt.longer, lt.shorter, lt.silent, map.north_arrow, map.scale_info, menu.map, mob.no_search, mw.ais_title, mw.course_up, mw.free, mw.info, mw.north, mw.north_up, mw.orient, mw.rings, mw.theme, mw.theme_dark, mw.theme_day, mw.theme_night, mw.title, mw.view_only, mw.zoom_in, mw.zoom_out, scr.tip, hud.colour_green, hud.colour_white; academy: refuse.not_sim
+
+Checked afterwards by hand: no code/test mentions of these names or a family prefix ("cap", "mw", "lt", "keep",
+"scr", "bench.stack_core{i}", "hud.colour_" + col was the OLD driver.py menu, gone since 13n1).
+Side effect: the assistant index depends on the lang files' sha; `tools/assistant_index.py check` still says
+"current" (the lang files are term hints, not indexed), so no index rebuild was needed.
+
+Uncertain, NOT removed: 812 groundstation keys and 77 academy keys have no literal hit but a dynamic prefix could
+reach them (largest families: gw.* 247, say.* 73, cap.* 52, result.* 45, uav.* 32, asst.* 28, trend.* 27, train.* 26,
+hud.* 23, snd.* 18, eng.* 15, mark.* 13; academy: the lesson / scenario text keys). Most are certainly used (alarm /
+result / gw sentences are built from codes). A proof needs a runtime trace (record every T() key during check.sh,
+then diff) - proposed as a later tool; not done here. Note: keys that are only mentioned in .md files count as
+"used" in this scan, so a few documented-but-dead keys can remain.
+
+Tests run (each alone, one at a time): groundstation/test_lang.py 6/6 PASS, test_look.py 26/26 PASS,
+test_screen2.py 29/29 PASS, tools/assistant_index.py check current. The full tools/check.sh was NOT run (as ordered).
+
+### 2. Dead files (LISTED only, nothing deleted)
+- tests/acceptance/gate_commit.sh - no other file names it (only reference-free helper; may be a manual flash-gate
+  script). The owner decides.
+- Untracked media in docs/ (git status "??", not in git, not referenced): 20260313_172847.jpg,
+  6e9b885d-cf23-4725-829c-1fb41cffba77.jpg, 97355df1-f1ef-4389-926e-34afdab5489e.jpg, IMG_7414.HEIC, IMG_7530.MOV,
+  IMG_7662.HEIC - the owner's own files; commit, move or delete as wanted.
+- Scan rule: every tracked .py / .bat / .ps1 / .sh (not test_* / __*) whose module name appears in no OTHER tracked
+  text file; no .bak / .old / .orig / .tmp files are tracked.
+
+### 3. Proposal (NOT implemented): split tools/check.sh
+One run now needs more than 45 min (the user-level limit "kill any test that runs longer than 45 minutes"); the
+gateway suite alone (gateway/test_gateway.py, each section in its own process) is ~25 min. Proposal:
+- tools/check.sh keeps its name and becomes a thin wrapper: `check.sh fast | gateway | stations | all`.
+- fast (< 20 min): sim all + bridge, TriCore compile, HAL / servo checks, memory + stackcheck, lang / look / screen2 /
+  trends / assistant index / progress-archive / ADS-exclude checks, academy.
+- gateway (~25 min): gateway/test_gateway.py (+ test_uav, test_avoid, test_adsb, test_loudhailer).
+- stations (< 25 min): test_driver, test_boats, test_screen2, test_look, test_sar, test_uavui, test_assistant, groundstation others.
+- each part has its own `strays.py mark --begin / check / report` pair and writes its own summary; `all` runs the three
+  in sequence only for the flash gate (it may exceed 45 min by design - run it as three separate commands, each under the limit).
+- every commit needs `fast` + the part of the touched area; the flash gate needs all three.
