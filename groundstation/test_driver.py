@@ -557,6 +557,37 @@ def main():
                    qy0, qy1, Hh, low, vert, pre_yes, early_none, early_pkt, no_sel, yes_again, got, held_pkt, free_pkt,
                    thumb, mouse, cc, replaced))
 
+        # I27 YES / NO callbacks of every shape, answered through the REAL buttons (driver.answer): a callback
+        # whose parameters all have defaults (the SAR offers: yes(k=key, mm=m)) or none (lambda: None) must be
+        # called with NO argument, so its default is never overwritten and a NO never raises TypeError
+        g27 = []
+        key27, m27 = "KEY", {"id": 1}
+
+        def y_def(k=key27, mm=m27):
+            g27.append(("yes", k, mm))
+
+        def n_def(k=key27):
+            g27.append(("no", k))
+        shapes = [("defaults", y_def, n_def), ("noarg", lambda: g27.append("y0"), lambda: g27.append("n0")),
+                  ("reason", lambda why: g27.append(("yw", why)), lambda why: g27.append(("nw", why)))]
+        errs27 = []
+        for nm, cy, cn in shapes:
+            for want_yes in (True, False):
+                n0 = len(g27)
+                try:
+                    dv.ask("I27 %s?" % nm, cy, cn, 30.0)
+                    pump(0.1)
+                    (dv.q_yes if want_yes else dv.q_no).invoke()
+                except Exception as e:
+                    errs27.append("%s %s: %r" % (nm, want_yes, e))
+                if len(g27) != n0 + 1:
+                    errs27.append("%s %s: callback not run once" % (nm, want_yes))
+        ok27 = (not errs27 and ("yes", key27, m27) in g27 and ("no", key27) in g27 and "y0" in g27 and "n0" in g27
+                and any(isinstance(x, tuple) and x[0] == "yw" for x in g27))
+        report("I27 YES / NO callbacks with default arguments / no argument run through driver.answer with the "
+               "defaults intact, a NO never raises (the old one-argument call overwrote the default / raised)",
+               ok27, "calls %s; errors %s" % (g27, errs27))
+
         # I10 full-screen camera, every text inside its box in both languages, sizes
         import settings
         import i18n

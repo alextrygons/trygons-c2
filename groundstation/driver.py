@@ -175,6 +175,24 @@ def rgba(col, alpha=255):
     return int(col[0:2], 16), int(col[2:4], 16), int(col[4:6], 16), int(alpha)
 
 
+def _call_answer(cb, reason):
+    """Call a YES / NO callback the way a click means it: the reason goes in ONLY when the callback's
+    first parameter is a REQUIRED one (lambda why: ...); a callback with no parameter, or whose
+    parameters all have defaults (yes(k=key, mm=m)), is called with NO argument, so its defaults are
+    never overwritten by the reason text."""
+    import inspect
+    try:
+        params = list(inspect.signature(cb).parameters.values())
+    except (TypeError, ValueError):
+        return cb(reason)
+    first = params[0] if params else None
+    if first is not None and first.default is inspect.Parameter.empty and             first.kind in (first.POSITIONAL_ONLY, first.POSITIONAL_OR_KEYWORD):
+        return cb(reason)
+    if first is not None and first.kind == first.VAR_POSITIONAL:
+        return cb(reason)
+    return cb()
+
+
 class PilRenderer:
     """Draws a display list on top of a picture: real transparency, outlined text."""
 
@@ -706,7 +724,7 @@ class DriverScreen:
         self.question = None
         self.qbox.place_forget()
         self.answers.append((text, "accepted" if yes else (why or "rejected")))
-        (on_yes if yes else on_no)(why or ("accepted" if yes else "rejected by the driver"))
+        _call_answer(on_yes if yes else on_no, why or ("accepted" if yes else "rejected by the driver"))
 
     # --- the picture ----------------------------------------------------------------------------------
     def tick(self):
