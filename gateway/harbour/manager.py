@@ -20,6 +20,7 @@ ONLY: nothing goes to the AURIX.
 import collections
 import json
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -34,6 +35,7 @@ mono = time.monotonic          # HX3 review M1: every age / timer (a GPS clock s
 log = logging.getLogger("harbour")
 HERE = os.path.dirname(os.path.abspath(__file__))
 KN = 0.514444
+AGE_MIN_S, AGE_MAX_S = -0.2, 2.5     # a batch's age (epoch receive - epoch measurement) accepted for the tracker
 
 
 class SensorProc:
@@ -320,7 +322,7 @@ class HarbourSensors:
     def _to_mono(self, b):
         """Review H3: the tracker runs on the MONOTONIC clock. A batch's measurement time = its monotonic receive
         time minus its age (the epoch receive time - the epoch measurement time, both from nearby clocks); an age
-        outside -0.5 .. 10 s (a clock step between the worker and here) = the batch time made invalid -> the tracker
+        outside AGE_MIN_S .. AGE_MAX_S (a clock step between the worker and here) = the batch time made invalid -> the tracker
         refuses it and says so (input rejected)."""
         b = dict(b)
         try:
@@ -329,7 +331,9 @@ class HarbourSensors:
         except (KeyError, TypeError, ValueError):
             b["t"] = float("nan")
             return b
-        b["t"] = rx - age if -0.5 <= age <= 10.0 else float("nan")
+        b["t"] = rx - age if AGE_MIN_S <= age <= AGE_MAX_S else float("nan")     # round 2 M-1: the real latency
+        # only (radar 0.3 s + a 1.25 s period + transport); else refused = "input rejected" + U11 "clock".
+        # pose["t"] stays epoch: the tracker never uses it (the HealthJudge's pose_dt saw the original batch)
         return b
 
     def _tracker_failed(self, now):
@@ -345,8 +349,12 @@ class HarbourSensors:
             if tr.origin is None:
                 if self.world is not None and self.world.origin:
                     tr.set_origin(*self.world.origin)
-                elif self.static.origin:             # a stored harbour map fixes the harbour frame
-                    tr.set_origin(*self.static.origin)
+                elif self.static.origin and pose is not None and math.hypot(*simworld.ll_to_xy(
+                        self.static.origin[0], self.static.origin[1], pose["lat"], pose["lon"])) <= \
+                        float(self.cfg.get("chart_radius_m", 300.0)):
+                    tr.set_origin(*self.static.origin)   # a stored harbour map near the boat fixes the frame
+                elif self.static.origin and pose is not None:
+                    tr.set_origin(pose["lat"], pose["lon"])   # round 2 L-1: a map of another harbour = refused below
                 elif pose is not None:
                     tr.set_origin(pose["lat"], pose["lon"])
             if tr.origin is not None:               # review M1: the static map lives in the tracker's frame
@@ -387,6 +395,7 @@ class HarbourSensors:
                     skews[kind] = sp.judge.skew
             tr.cycle(health=health, ages=ages, skews=skews, attitude=att, no_pose=pose is None,
                      error=now < self.tracker_err_until, now=t_ep)
+            self.cycle_mono = now                  # round 2 M-3: only a cycle that ran sets the cycle age
         except Exception:
             self._tracker_failed(now)
             try:
@@ -396,7 +405,6 @@ class HarbourSensors:
             except Exception:
                 pass
         tr.note_ms((time.perf_counter() - t0) * 1000.0)
-        self.cycle_mono = now
         if self.static_file and now - self.static_saved > 300.0:
             self.static_saved = now
             try:

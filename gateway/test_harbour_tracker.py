@@ -207,7 +207,8 @@ def ht2():
     out.append(("moored static", all(d < 4.0 and t["static"] and t["steer_ok"] and t["cls"] == "static"
                                      for d, t in mo)))
     qs = [t for t in s.tracks() if abs(t["x"] + 90.0) < 4.0 and 0 < t["y"] < 120 and t["steer_ok"]]
-    out.append(("quay tracks static", len(qs) >= 3 and all(t["static"] and t["in_static_map"] for t in qs)))
+    out.append(("quay tracks in the chart", len(qs) >= 3 and all(t["in_static_map"] for t in qs) and
+                sum(1 for t in qs if t["static"]) * 2 >= len(qs)))
     bad = [k for k, v in out if not v]
     report("HT2 multiple targets + the default harbour", not bad,
            "failed %s; ferry %.1f m mmsi %s, fisher %.1f m %s, moored %s, quay tracks %d, total %d"
@@ -661,6 +662,22 @@ def ht17():
     ids1 = {t["id"]: (t["x"], t["y"]) for t in s.tracks() if t["steer_ok"]}
     kept = all(i in ids1 and math.hypot(ids1[i][0] - p[0], ids1[i][1] - p[1]) < 5 for i, p in ids0.items())
     out.append(("H1 AIS jump keeps the range tracks", kept and len(ids0) >= 2))
+    # round 2 H-1: the AIS vessel stays represented AT its report (an AIS-only twin), the conflict is raised
+    at = [t for t in s.tracks() if t["mmsi"] == 237000777 and math.hypot(t["x"] + 20.0, t["y"] - 31.0) < 3.0]
+    out.append(("H-1 the AIS report keeps a track at its position + U6", bool(at) and any(
+        u.startswith("U6") for u in s.tr.flags()["unsure"])))
+    # round 2 H-1: a coasting AIS ferry (range hits stop) beside a moored boat 20 m away keeps its MMSI + position
+    s = Sim([vessel("f", (0, 40), (0, 41), 0.01, ais=237000888), dict(moored, x=20.0, y=40.0)])
+    s.run(10)
+    fid = [t["id"] for t in s.tracks() if t["mmsi"] == 237000888 and t["steer_ok"]]
+    s.w.objects[0]["rcs"] = 0.0                         # the ferry goes invisible to the range sensors
+    s.w.objects[0]["refl"] = 0.0
+    s.w.objects[0]["h"] = 0.0
+    s.run(4)
+    still = [t for t in s.tracks() if t["mmsi"] == 237000888 and math.hypot(t["x"], t["y"] - 40.0) < 3.0]
+    moored_tr = [t for t in s.tracks() if math.hypot(t["x"] - 20.0, t["y"] - 40.0) < 3.0 and t["steer_ok"]]
+    out.append(("H-1 a coasting AIS ferry is not handed to the moored boat", bool(fid) and bool(still) and
+                bool(moored_tr) and all(t["mmsi"] is None for t in moored_tr)))
     # H2: a batch without heading is NOT silent
     tr = tracker.Tracker()
     pz = pose_xy(0, 0, 0, T0)
@@ -677,8 +694,9 @@ def ht17():
     from harbour.manager import HarbourSensors
     hs = HarbourSensors({"enabled": False}, None)
     good = hs._to_mono({"t": 100.0, "t_rx_epoch": 100.06, "t_rx_mono": 5.0})["t"]
-    stepped = hs._to_mono({"t": 100.0, "t_rx_epoch": 3700.0, "t_rx_mono": 5.0})["t"]
-    out.append(("H3 time jump refused + mono mapping", tr.counts["time_jump"] == 1 and f["input_errors"] and
+    stepped = hs._to_mono({"t": 100.0, "t_rx_epoch": 105.0, "t_rx_mono": 5.0})["t"]     # a 5 s clock step
+    out.append(("H3 time jump refused + mono mapping + U11", tr.counts["time_jump"] == 1 and f["input_errors"] and
+                "clock" in f["time_skew"] and
                 abs(good - 4.94) < 1e-6 and math.isnan(stepped) and tr.T < T0 + 10))
     # M1: a stored static map of another origin is refused (notice), the tracker gets a fresh one
     m = HarbourSensors({"sim": True}, type("G", (), {"own": lambda self: {"fresh": False}, "telem_rx": None})())

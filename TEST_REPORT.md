@@ -1129,3 +1129,6 @@ tracks in place, a batch without heading = input rejected + no pose, a batch 1 h
 manager's monotonic mapping, a static map of another origin refused, a camera swimmer 12 m in front of a moored boat
 at 22 m = a camera-only track + camera_without_range, flags before the first cycle = range_lost + "tracker not
 started", two rafted boats 3 m apart = 2 tracks.
+Round 2 (review of 858168e): 17 / 17; HT17 adds the AIS report kept at its position (U6) after a jump, a coasting AIS
+ferry not handed to a moored boat 20 m away, a 5 s clock step refused + U11 "clock". UA22 (UAV battery landing) failed
+in both gateway-misc runs AND alone AND on the pre-HX4 commit 693fcfd (worktree) - environmental, not this step.

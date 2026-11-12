@@ -505,6 +505,16 @@ below), fed every received batch at once; the sensor workers stay their own proc
   static map is serialised in the tick, written in the thread; the capped-items overload is held 2 s, not latched.
   Note (not fixed): tracks() / tracker_flags() have no lock - HX5 must read them from the gateway thread (the tick).
   Test HT17.
+- Round 2 (review of 858168e, the last round, LOOP RULE 7): H-1 an AIS MMSI is handed from a coasting track only to
+  a steer_ok track within 5 m of the report that is >= 10 m nearer than the old one (never to a moored boat 20 m
+  away), and a report > 10 m from its range track keeps an AIS-only twin AT the report (never steer_ok, always an
+  obstacle, ais_without_range U6); M-1 the manager accepts a batch age -0.2..2.5 s only (the real latency), else
+  refused = "input rejected" + U11 "clock"; M-2 pose["t"] stays epoch (the tracker never uses it); M-3 the cycle age
+  is set only by a cycle that ran; L-1 a stored map is used for the frame only when the boat is within
+  chart_radius_m of its origin, else refused; L-3 a chart-cell track is static only below 0.5 m/s. Notes: L-2 an
+  MMSI may move between two close tracks; L-4 a poor camera range on a ranged object = a camera-only duplicate +
+  U6 (fail safe, HX5 tuning); L-5 a LiDAR-split hull stays two tracks; U10 judges the map's contents, not its
+  coverage at the boat (HX5 gate item).
 
 ## 7. Local planner (HX5, SERIAL review: it steers the boat)
 

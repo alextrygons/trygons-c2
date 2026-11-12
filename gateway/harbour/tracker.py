@@ -53,7 +53,7 @@ DEFAULTS = {
     # window_s / fresh_s / confirm_n / range_ok_n of camera + AIS are used ONLY if C / A were a range source - they
     # never are (RANGE_SRC); the HT15 mutation adds them to prove the camera / AIS checks catch it
     "camera": {"window_s": 10.0, "fresh_s": 2.0, "confirm_n": 3, "range_ok_n": 3, "brg_gate_deg": 4.0, "brg_sd_deg": 2.0, "range_sd_min_m": 8.0, "delete_s": 5.0, "max_range_m": 400.0},
-    "ais": {"window_s": 10.0, "fresh_s": 2.0, "confirm_n": 3, "range_ok_n": 3, "assoc_m": 30.0, "assoc_v_mps": 2.0, "sd_m": 10.0, "delete_s": 5.0, "unlink_m": 90.0},
+    "ais": {"window_s": 10.0, "fresh_s": 2.0, "confirm_n": 3, "range_ok_n": 3, "assoc_m": 30.0, "twin_m": 10.0, "handover_m": 5.0, "assoc_v_mps": 2.0, "sd_m": 10.0, "delete_s": 5.0, "unlink_m": 90.0},
     "conflict": {"near_m": 50.0, "disagree_m": 20.0, "camera_near_m": 30.0, "camera_ahead_deg": 30.0},
     "tentative_s": 3.0,         # a tentative track not confirmed within this (+ its sensor window) is deleted
     "static_v": 0.25, "static_s": 20.0, "static_tau_s": 5.0, "static_off_v": 0.5,
@@ -317,6 +317,7 @@ class Tracker:
         self.err_seen = 0                    # errors counted at the last cycle
         self.err_until = None                # input errors are reported (unsure) until this tracker time
         self.cap_seen = 0
+        self.tj_seen, self.tj_until = 0, None
         self.cap_until = None
         self._flags = {"range_lost": True, "unsure": ["tracker not started"], "degraded": ["radar", "lidar"],
                        "conflicts": [], "error": False, "no_pose": True}      # review M3: fail closed
@@ -616,10 +617,11 @@ class Tracker:
                 if tr is not rt and tr.has_range():   # overwrite: a tentative range track only loses the MMSI
                     tr.mmsi, tr.disagree = None, None
             linked = [tr for tr in linked if not tr.has_range()]     # the AIS-only twins (removable)
-            if rt is not None and not rt.steer_ok:   # a coasting linked track: hand the MMSI to a steer_ok track
-                alt = self._ais_best(x, y, vx, vy, mmsi, c, steer_only=True)  # right at the report, if one is
-                if alt is not None and alt[0] is not rt:
-                    rt.mmsi, rt.disagree = None, None
+            if rt is not None and not rt.steer_ok:   # a coasting linked track: hand the MMSI over only to a
+                alt = self._ais_best(x, y, vx, vy, mmsi, c, steer_only=True)  # steer_ok track RIGHT at the report
+                if alt is not None and alt[0] is not rt and alt[1] <= float(c["handover_m"]) and \
+                        math.hypot(rt.s[0] - x, rt.s[1] - y) > alt[1] + float(c["twin_m"]):
+                    rt.mmsi, rt.disagree = None, None    # (round 2 H-1: never to a moored boat 25 m away)
                     rt = None
             if rt is not None:
                 dd = math.hypot(rt.s[0] - x, rt.s[1] - y)
@@ -630,19 +632,23 @@ class Tracker:
                     rt.disagree = dd
                     rt.ais_xy = (x, y)
                     rt.hit("A", t, 10.0)
-                    for tr in linked:                         # an AIS-only twin is no longer needed
-                        self.tracks.remove(tr)
-                        self.counts["merged"] += 1
-                    continue
-            bb = self._ais_best(x, y, vx, vy, mmsi, c, steer_only=False)
+                    if dd <= float(c["twin_m"]):
+                        for tr in linked:                     # an AIS-only twin is no longer needed
+                            self.tracks.remove(tr)
+                            self.counts["merged"] += 1
+                        continue
+                    # round 2 H-1: the report is > twin_m from its range track: an AIS-only twin stays AT the report
+                    # (never steer_ok, always an obstacle) - falls through to the AIS-only code below
+            bb = None if rt is not None else self._ais_best(x, y, vx, vy, mmsi, c, steer_only=False)
             best, bd = bb if bb is not None else (None, None)
             if best is not None:
                 best.mmsi, best.ais_xy, best.disagree = mmsi, (x, y), bd
                 best.hit("A", t, 10.0)
-                for tr in linked:
-                    self.tracks.remove(tr)
-                    self.counts["merged"] += 1
-                continue
+                if bd <= float(c["twin_m"]):
+                    for tr in linked:
+                        self.tracks.remove(tr)
+                        self.counts["merged"] += 1
+                    continue
             sd = float(c["sd_m"])
             tr = linked[0] if linked else None
             if tr is None:
@@ -742,7 +748,7 @@ class Tracker:
             # static: the centroid inside a CHART pier / shore cell (nothing moving can be there - a long quay's
             # returns slide along it), or an accumulated LiDAR cell while slow, or slow for static_s
             chart_in = bool(self.static is not None and self.static.in_chart(tr.s[0], tr.s[1]))
-            tr.static = (chart_in and sp < 1.5) or (tr.in_static and sp < 0.5) or (tr.slow_since is not None and
+            tr.static = (chart_in and sp < float(c["static_off_v"])) or (tr.in_static and sp < 0.5) or (tr.slow_since is not None and
                                                                    T - tr.slow_since >= float(c["static_s"]))
             tr.cls = classify(tr)
             tr.conf = confidence(tr, T)
@@ -843,6 +849,10 @@ class Tracker:
         f["degraded"] = sorted(k for k in ("radar", "lidar") if health.get(k, "OFF") != "OK" or k in stale)
         f["stale"] = stale
         f["time_skew"] = sorted(k for k, v in skews.items() if v is not None and abs(v) > 0.1)
+        if self.counts["time_jump"] != self.tj_seen:          # round 2 M-1: a refused batch time = U11 too
+            self.tj_seen, self.tj_until = self.counts["time_jump"], self.T + float(c["err_hold_s"])
+        if self.tj_until is not None and self.T <= self.tj_until:
+            f["time_skew"].append("clock")
         f["conflicts"] = self.conflicts()
         own = self.own
         nmov = 0
