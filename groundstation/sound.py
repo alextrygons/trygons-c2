@@ -719,11 +719,23 @@ class SoundSystem:
         if name in tts.ENGINES:
             settings.put("voice_engine", name)
             tts.set_prefer(name)
+            if name == "piper":
+                self.set_piper_allowed(True)        # choosing Piper on the sound page IS the explicit opt-in (W141)
+            if os.environ.get("TRYGONS_SOUND") != "off":
+                self.prepare_all(i18n.LANGS)
+
+    def set_piper_allowed(self, on):
+        """W141: the per-PC opt-in for the NON-COMMERCIAL Piper voices; every sentence is made again."""
+        on = bool(on)
+        if on != tts.piper_allowed() or on != bool(settings.get("voice_piper_allowed")):
+            settings.put("voice_piper_allowed", on)
+            tts.set_piper_allowed(on)
             if os.environ.get("TRYGONS_SOUND") != "off":
                 self.prepare_all(i18n.LANGS)
 
     def apply_settings(self):
-        tts.set_prefer(settings.get("voice_engine", "piper"))
+        tts.set_prefer(settings.get("voice_engine", tts.DEFAULT_ENGINE))
+        tts.set_piper_allowed(bool(settings.get("voice_piper_allowed", False)))
         sc = self.sched
         sc.volume = float(settings.get("volume", 80))
         sc.mute_advisory = bool(settings.get("mute_advisory"))
@@ -811,9 +823,21 @@ class SoundSystem:
         sc.acked.clear()
         sc.queue = []
 
+    def _voice_notice(self):
+        """W141: no voice at all for the voice language (no Windows voice, Piper not allowed) = ONE station notice
+        (text only, never an alarm); said again only after the language / engine changes."""
+        if not tts.windows_known():
+            tts.lookup_background()
+            return
+        key = (self.voice_lang, tts.prefer(), tts.piper_allowed())
+        if tts.engine(self.voice_lang) is None and getattr(self, "_noticed", None) != key and                 hasattr(self.app, "event"):
+            self._noticed = key
+            self.app.event(i18n.T("snd.no_voice_notice"))
+
     def _tick(self):
         try:
             if self.app is not None:
+                self._voice_notice()
                 self.sched.set_warnings(self.app.lamps.unacked_codes(WARNING) if self.app.t is not None or
                                         self.app.lamps.no_data else [])
             self.sched.tick(self.warn_item)

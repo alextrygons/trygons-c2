@@ -132,6 +132,8 @@ def build(parent, app):
         def run():
             snd.set_engine(name)
             missing = name == "windows" and tts.engine(snd.voice_lang, "windows") != "windows"
+            if name == "piper":
+                snd.set_piper_allowed(True)
             try:
                 note.after(0, lambda: note.configure(text=T("snd.engine_win_none") if missing
                                                      else T("snd.engine_changed")))
@@ -139,6 +141,12 @@ def build(parent, app):
                 pass
         threading.Thread(target=run, daemon=True).start()
     st["set_engine"] = set_engine
+    # W141: the Piper voices are non-commercial - a visible warning beside the choice
+    warn = tk.Label(vf, font=F_TXT, bg=BG, fg=C["caution"] if "caution" in C else C["fg"], justify="left",
+                    anchor="w", wraplength=900)
+    i18n.bind(warn, "snd.piper_warning")
+    warn.grid(row=6, column=0, columnspan=6, sticky="w", padx=4)
+    st["piper_warning"] = warn
 
     def samples():
         folder = os.path.join(snd.lib.cache, "samples")

@@ -163,12 +163,16 @@ On a new PC, install:
      (python.org Python: pip install pillow). Without it the driver screen
      still works, only plainer.
 
-  g) The voices for the spoken callouts (Greek + English, offline, about
-     130 MB, into tools\bin\piper, not in git):
-       C:\msys64\ucrt64\bin\python.exe tools\get_piper.py
-     Then restart the ground station. The first start makes all spoken
-     sentences once in the background (about 1 minute per language) and
+  g) The voices for the spoken callouts: by default the Windows voice of the
+     language (nothing to install for English; Greek needs the Greek speech
+     pack: Windows Settings - Time & language - Speech - Add voices). The
+     first start makes all spoken sentences once in the background and
      keeps them in groundstation\sound_cache\. Details: chapter 5D.
+     OPTIONAL, internal development only (W141): the offline Piper voices
+     are fine-tunes of NON-COMMERCIAL voices, so they are not used unless
+     you ask for them (about 130 MB, into tools\bin\piper, not in git):
+       C:\msys64\ucrt64\bin\python.exe tools\get_piper.py --allow-noncommercial
+     and then choose "Piper" on the Sound page.
 
   Check in a terminal (VS Code: Terminal -> New Terminal):
        gcc --version
@@ -963,20 +967,27 @@ SOUND PAGE (screen 2, Tools - Sound): sound on / off, volume, mute advisories, m
   from the screens), which voice is installed, "Make the voice cache now",
   "My recordings folder", and the list of every sound and callout: select
   one and play it in Greek or English, or "Play all".
-THE VOICES: Piper, a free offline neural text-to-speech (MIT licence),
-  with a Greek voice (el_GR-rapunzelina-low) and an English one
-  (en_GB-alan-medium). Chosen because it is free, needs no internet, has a
-  Greek voice (Windows only has one after installing a Greek speech pack)
-  and also runs on the gateway PC. Install: chapter 3 g). Without Piper
-  the ground station uses an installed Windows voice for that language, or
-  tones only. Every callout is said as one sentence and all of them are
+THE VOICES (W141, owner 2026-11-11): the DEFAULT is the Windows voice of the
+  language (the modern "OneCore" voices like the Greek "Microsoft Stefanos",
+  and the old SAPI ones; Windows has a Greek voice only after installing a
+  Greek speech pack). No Windows voice for a language = ONE notice in the
+  event list and NO speech for it (tones and the screen text only) - the
+  station never switches to Piper by itself. Piper (free, offline, with a
+  Greek voice el_GR-rapunzelina-low and an English one en_GB-alan-medium) is
+  an explicit opt-in, because both voices are fine-tunes of voices trained
+  on NON-COMMERCIAL data: use them for internal development only, never in a
+  product that is sold (docs/licences.md section 5). Install:
+  tools\get_piper.py --allow-noncommercial (it prints this warning and
+  refuses without the flag). Every callout is said as one sentence and all of them are
   made once in advance (groundstation\sound_cache\, not in git) so a
   callout starts at once; garbled takes are made again by themselves.
-VOICE CHOICE (step 13o): Tools - Sound - "Voice": Piper (AI, offline; the
-  default) or the Windows voice (e.g. the Greek "Microsoft Stefanos": Windows
+VOICE CHOICE (step 13o): Tools - Sound - "Voice": the Windows voice (the
+  default) or Piper (AI, offline; choosing it is the opt-in and the page
+  shows the NON-COMMERCIAL warning all the time); the Windows voice (e.g. the Greek "Microsoft Stefanos": Windows
   Settings - Time & language - Speech - Add voices - Greek; the modern voices
   are found too, not only the old SAPI ones). No Windows voice for the
-  language = Piper speaks (the page says so). Piper now runs with calmer
+  language = no speech unless Piper was chosen (the page and the event list
+  say so). Piper runs with calmer
   settings (less "wobble" at the start of a sentence) and every sentence
   starts with a short silence. A new voice or new settings: every phrase AND
   the guided tour are deleted and made again by themselves in the background
@@ -3489,8 +3500,11 @@ FUTURE IDEAS
   English, I want the other      Language menu; on the driver screen L.
   Some text stays English        it comes from the gateway and has no "gw."
                                  line in lang\el.txt yet: add one (5A).
-  No voice, only tones           Sound tab shows "NO VOICE": run
-                                 python tools\get_piper.py, restart.
+  No voice, only tones           Sound tab shows "NO VOICE": add the
+                                 Windows voice of the language (Settings -
+                                 Speech - Add voices); Piper only for
+                                 internal use: get_piper.py
+                                 --allow-noncommercial, choose Piper.
   A callout says it wrong        change its "say." line in lang\el.txt /
                                  en.txt (whole phrase, numbers as words), or
                                  put a recording in groundstation\sounds\.

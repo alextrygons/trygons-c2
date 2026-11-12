@@ -2702,7 +2702,7 @@ def as21():
         pr[0] == "LINK PROBLEMS: data older than 0.3 s means idle and neutral. After 5 s without the link: STANDBY. " \
                  "It NEVER starts again by itself." and \
         "After 5 s without the link: STANDBY. It NEVER starts again by itself." in pr
-    # limits2 (two ahead) needs the limiting word to RESTRICT a shared word: en:185 / en:235 / en:299 were glued to
+    # limits2 (two ahead) needs the limiting word to RESTRICT a shared word: en:186 / en:236 / en:300 were glued to
     # unrelated sentences by shared generic words and then refused over the cap
     out["limits2: shared words alone are not enough - 'steer only while the GPS' does not limit 'Only STANDBY, "
         "TRAINING and HEADING LOCK'"] = not A.limits2(
@@ -2851,9 +2851,9 @@ def as21():
         IX.following(PS2, 3) == [] and [p["id"] for p in IX.following(PS2, 1)] == []
     ps_en = IX.load("en")["passages"]
     by_en = {p["id"]: i for i, p in enumerate(ps_en)}
-    out["real index: the UNCREWED HDG LOCK definition (en:199 ..) and SCR (en:87 -> en:88) are chained; el:147 "
+    out["real index: the UNCREWED HDG LOCK definition (en:200 ..) and SCR (en:87 -> en:88) are chained; el:147 "
         "(the next passage = another heading) is not"] = \
-        [a["id"] for a in IX.following(ps_en, by_en["en:199"])] == ["en:200", "en:201"] and \
+        [a["id"] for a in IX.following(ps_en, by_en["en:200"])] == ["en:201", "en:202"] and \
         [a["id"] for a in IX.following(ps_en, by_en["en:87"])][:1] == ["en:88"] and \
         IX.following(ps_el, [i for i, p in enumerate(ps_el) if p["id"] == "el:147"][0]) == []
     out["index.following on the real index: the same chapter, heading and term, never a tour stop"] = all(
@@ -3372,8 +3372,8 @@ def as25():
         return bad
 
     def never_alone_bad(spec):
-        """AM4-r6 MED-2: statements whose EXCEPTION follows (el:296 «Μιλά ένα άτομο κάθε φορά» -> «Εξαίρεση ο
-        ΚΥΒΕΡΝΗΤΗΣ ...», en:439 "One person at a time" -> "The CAPTAIN is the exception") are NEVER offered without
+        """AM4-r6 MED-2: statements whose EXCEPTION follows (el:297 «Μιλά ένα άτομο κάθε φορά» -> «Εξαίρεση ο
+        ΚΥΒΕΡΝΗΤΗΣ ...», en:440 "One person at a time" -> "The CAPTAIN is the exception") are NEVER offered without
         it - joined (within the cap) or not offered at all; the exception sentence itself may stand alone."""
         bad = []
         for e in spec.get("never_alone", []):
@@ -3991,6 +3991,8 @@ def as33():
         temps.append(p)
         return fd, p
     saved = (tts._win, tts._PS_SPEAK_SAPI, tts.piper_bin, tts.piper_voice)
+    _allowed = tts.piper_allowed()
+    tts.set_piper_allowed(True)                 # W141: Piper counts only after the opt-in
     tts.tempfile.mkstemp = mkstemp_rec
     t0 = time.time()
     try:
@@ -4011,6 +4013,7 @@ def as33():
     finally:
         tts.tempfile.mkstemp = real_mkstemp
         tts._win, tts._PS_SPEAK_SAPI, tts.piper_bin, tts.piper_voice = saved
+        tts.set_piper_allowed(_allowed)
     took = time.time() - t0
     pid = 0
     try:
@@ -4418,6 +4421,8 @@ import json, os, sys, tempfile, time
 sys.path.insert(0, sys.argv[1])
 forbid = set(json.loads(sys.argv[2]))
 import asstvoice, sound                                     # the voice + the sound system (module level)
+import tts
+tts._win = {"el": ("rt", "Test"), "en": ("rt", "Test")}   # W141: a known Windows voice (the default engine)
 clk = [1000.0]
 snd = sound.SoundSystem(player=sound.NullPlayer(), clock=lambda: clk[0], library=sound.Library(cache=tempfile.mkdtemp()))
 snd.sched.enabled = True
@@ -4495,7 +4500,12 @@ def as27():
     import alerts
     import asstvoice
     import sound
+    import tts
     from assistant import qlog, show
+    # W141: the default engine is the Windows voice; this test uses a fake synth but asstvoice asks tts.engine()
+    # first, so give it known Windows voices (restored at the end)
+    _win_saved = tts._win
+    tts._win = {"el": ("rt", "Test"), "en": ("rt", "Test")}
     clk = Clock()
     player = sound.NullPlayer()
     snd = sound.SoundSystem(player=player, clock=clk, library=sound.Library(cache=tempfile.mkdtemp()))
@@ -4946,6 +4956,7 @@ def as27():
     mut = voice_cycle_fresh(mutate=True)
     out["fresh process mutation: a forbidden import IS caught"] = "hud" in (mut.get("forbidden") or [])
     del mods0
+    tts._win = _win_saved
     report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s; fresh %s" % (
         out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:],
         {k: fresh.get(k) for k in ("whys", "forbidden", "error", "stderr") if fresh.get(k)}))

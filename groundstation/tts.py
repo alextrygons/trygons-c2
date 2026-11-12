@@ -1,17 +1,19 @@
 """Offline speech for the ground station's voice callouts (section D4). No internet.
 
-Engines (step 13o, owner 2026-10-31 F: the engine is a SOUND SETTING, "voice_engine"):
+Engines (step 13o, owner 2026-10-31 F: the engine is a SOUND SETTING, "voice_engine";
+W141, owner 2026-11-11: the DEFAULT is the Windows voice, Piper only with an explicit opt-in):
   1. Piper (https://github.com/rhasspy/piper, MIT): free offline neural voices,
      a GREEK one (el_GR-rapunzelina-low) and an ENGLISH one (en_GB-alan-medium).
-     Install: python tools/get_piper.py  (-> tools/bin/piper/, not in git), or set
+     Install: python tools/get_piper.py --allow-noncommercial (-> tools/bin/piper/, not in git), or set
      PIPER_BIN (piper.exe) + PIPER_VOICES (folder with the .onnx voices).
-     The default. Step 13o: calmer settings (PIPER_TUNE: lower noise_scale / noise_w - the
+     NOT the default: the two voices are fine-tunes of NON-COMMERCIAL voices (docs/licences.md 5). It counts
+     as an engine only after set_piper_allowed(True) (the per-PC setting voice_piper_allowed); never silently.
+     Step 13o: calmer settings (PIPER_TUNE: lower noise_scale / noise_w - the
      owner heard a "sick" voice in the first seconds of every sentence with the model's
      defaults) and a short lead-in silence (LEAD_IN_MS) with a fade-in in front of every file.
   2. The Windows voices: the modern ones (Windows.Media.SpeechSynthesis = the "OneCore"
      voices, e.g. the Greek "Microsoft Stefanos" of an installed Greek speech pack) and
-     the classic SAPI 5 ones (System.Speech). Chosen with voice_engine = "windows"; used
-     as well when Piper is missing.
+     the classic SAPI 5 ones (System.Speech). The DEFAULT (voice_engine = "windows").
   3. None: the callouts are tones only (the screen still shows everything).
 
 synth(lang, [(text, wav_path), ...]) makes every file in ONE engine run (the
@@ -41,17 +43,32 @@ PIPER_TUNE = {"noise_scale": 0.333, "noise_w": 0.333, "length_scale": 1.05}     
 LEAD_IN_MS = 250                        # silence in front of every sentence (13o)
 FADE_MS = 30                            # fade-in of the first speech samples (no click / burst at the start)
 
-_prefer = "piper"
+PIPER_WARNING = ("WARNING: the Piper voices (el_GR-rapunzelina-low, en_GB-alan-medium) are fine-tunes of voices "
+                 "trained on NON-COMMERCIAL data. Use them for internal development only, never in a product that is "
+                 "sold (docs/licences.md section 5, W141).")
+DEFAULT_ENGINE = "windows"
+_prefer = DEFAULT_ENGINE
+_piper_allowed = False
 
 
 def set_prefer(name):
-    """The engine chosen in the sound settings ("piper" / "windows"); unknown = piper."""
+    """The engine chosen in the sound settings ("piper" / "windows"); unknown = windows (the default)."""
     global _prefer
-    _prefer = name if name in ENGINES else "piper"
+    _prefer = name if name in ENGINES else DEFAULT_ENGINE
 
 
 def prefer():
     return _prefer
+
+
+def set_piper_allowed(on):
+    """The per-PC opt-in (setting voice_piper_allowed): without it Piper is never used, not even as a fallback."""
+    global _piper_allowed
+    _piper_allowed = bool(on)
+
+
+def piper_allowed():
+    return _piper_allowed
 
 
 def piper_bin():
@@ -165,7 +182,8 @@ def windows_voices():
     except (OSError, subprocess.SubprocessError):
         _win_retry_t = time.time() + WIN_RETRY_S   # review 13o L3: unknown, NOT "no voices" - retried later
         return {}
-    _win = found_v
+    if _win is None:                            # a result published meanwhile (another thread / a test) wins
+        _win = found_v
     return _win
 
 
@@ -193,7 +211,7 @@ def available(lang, wait=False):
     only when they are already known - otherwise they are looked up in the background and Windows does not count
     yet (never a PowerShell run on the Tk thread)."""
     out = []
-    if piper_bin() and piper_voice(lang):
+    if _piper_allowed and piper_bin() and piper_voice(lang):
         out.append("piper")
     if windows_known() or wait:
         if lang in windows_voices():
@@ -204,7 +222,8 @@ def available(lang, wait=False):
 
 
 def engine(lang, choice=None):
-    """Which engine speaks this language: the chosen one when it can, else the other one, else None."""
+    """Which engine speaks this language: the chosen one when it can, else the other one (Piper only when it was
+    explicitly allowed), else None = text only."""
     have = available(lang)
     want = choice or _prefer
     if want in have:

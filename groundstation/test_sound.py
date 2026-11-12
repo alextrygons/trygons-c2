@@ -389,6 +389,7 @@ def main():
            "found %s; session %s" % (bad, touched or "never touched the link"))
     voice_tests()
     review_13o_tests()
+    w141_tests()
     i18n.set_lang("en", save=False)
     bad_n = results.count(False)
     print("SOUND TESTS: %d passed, %d failed" % (len(results) - bad_n, bad_n))
@@ -405,6 +406,8 @@ def voice_tests():
     the lead-in silence, the tuned Piper settings, the voice samples."""
     import settings
     saved = (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin, tts.piper_voice)
+    saved_allowed = tts.piper_allowed()
+    tts.set_piper_allowed(True)                            # W141: Piper counts only after the opt-in; these tests need it
     env_sound = os.environ.get("TRYGONS_SOUND")            # (review 13o L7: restored afterwards)
     try:
         # S11 the engine follows the setting; a missing Windows voice falls back to Piper (and back)
@@ -428,12 +431,12 @@ def voice_tests():
         snd.set_engine("nonsense")
         snd.set_engine("piper")
         p2 = (settings.get("voice_engine"), tts.prefer())
-        tts.set_prefer("bad")
+        tts.set_prefer("bad")                                   # unknown = the DEFAULT, windows (W141)
         report("S11 the voice engine is a sound setting (piper / windows): followed when it can speak the language, "
                "else the other one; a different engine = a different voice id; saved per PC",
                a == ("piper", "windows") and ida != idb and "Stefanos" in idb and b == "piper" and c == "windows" and
                d == (None, None) and p1 == ("windows", "windows") and p2 == ("piper", "piper") and
-               tts.prefer() == "piper",
+               tts.prefer() == "windows",
                "with both %s, ids differ %s; no Windows voice -> %s; no Piper -> %s; none -> %s; setting %s / %s" % (
                    a, ida != idb, b, c, d, p1, p2))
 
@@ -522,6 +525,7 @@ def voice_tests():
             tts.synth = fake
             tts.piper_bin = lambda: "piper.exe"
             tts.piper_voice = lambda lang: "el.onnx"
+        _join_lookup()                                      # a lookup thread of an earlier step must not fill _win meanwhile
         tts._win = {}                                       # no Windows Greek voice here
         got = sound.make_samples(folder, "el")
         files = {o: sorted(os.listdir(os.path.join(folder, o))) if os.path.isdir(os.path.join(folder, o)) else []
@@ -542,6 +546,7 @@ def voice_tests():
     finally:
         (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin,
          tts.piper_voice) = saved
+        tts.set_piper_allowed(saved_allowed)
         if env_sound is None:
             os.environ.pop("TRYGONS_SOUND", None)
         else:
@@ -554,7 +559,9 @@ def review_13o_tests():
     import ast
     import threading
     import time as _t
+    _join_lookup()
     saved = (tts._win, tts._win_retry_t, tts._ps, tts._prefer, tts.piper_bin, tts.piper_voice)
+    tts.set_piper_allowed(True)
     try:
         # S15 (M1) a slow synth batch holds the library lock (a new voice remakes hundreds of sentences): playing a
         # sound from the page returns at once (tone now, the voice made in the background)
@@ -649,6 +656,72 @@ def review_13o_tests():
                "quoted %s" % (quick, known_during, after, calls_ps, got, tts.windows_known(), kept, quoted))
     finally:
         (tts._win, tts._win_retry_t, tts._ps, tts._prefer, tts.piper_bin, tts.piper_voice) = saved
+
+
+def _join_lookup():
+    """The background Windows-voice lookup (tts.lookup_background) may still run from an earlier step: wait for it."""
+    for _ in range(5):
+        t = tts._win_bg
+        if t is None or not t.is_alive():
+            break
+        t.join(60)
+
+
+def w141_tests():
+    """S17 (W141, owner 2026-11-11): the default voice engine is the Windows voice; Piper is refused without the
+    explicit opt-in (never a silent fallback); the warning text is on the page, in the tools and in the manuals."""
+    import subprocess
+    import settings
+    _join_lookup()
+    saved = (tts._win, tts._prefer, tts._piper_allowed, tts.piper_bin, tts.piper_voice)
+    try:
+        tts.piper_bin = lambda: "piper.exe"
+        tts.piper_voice = lambda lang: "el_GR-rapunzelina-low.onnx"
+        tts.set_prefer("bogus")
+        default_ok = tts.prefer() == "windows" == tts.DEFAULT_ENGINE
+        tts.set_piper_allowed(False)
+        tts._win = {"el": ("rt", "Microsoft Stefanos")}
+        no_piper = tts.available("el") == ["windows"] and tts.engine("el", "piper") == "windows"
+        tts._win = {}
+        none_text = tts.engine("el") is None and tts.engine("el", "piper") is None and tts.voice_id("el") is None
+        r = tts.synth("el", [("x", os.path.join(TMP, "w141.wav"))])
+        no_synth = r == 0 and not os.path.exists(os.path.join(TMP, "w141.wav"))
+        tts.set_piper_allowed(True)
+        opt_in = tts.engine("el", "piper") == "piper" and tts.engine("el") == "piper"   # windows missing, Piper allowed
+        # the settings default + a fresh setting file
+        sdef = settings.DEFAULTS["voice_engine"] == "windows" and settings.DEFAULTS["voice_piper_allowed"] is False
+        # the sound system applies the opt-in setting and the page choice of Piper sets it
+        os.environ["TRYGONS_SOUND"] = "off"
+        snd = sound.SoundSystem(player=sound.NullPlayer(), library=sound.Library(cache=os.path.join(TMP, "c17")))
+        settings.put("voice_engine", "windows")
+        settings.put("voice_piper_allowed", False)
+        snd.apply_settings()
+        applied = tts.prefer() == "windows" and not tts.piper_allowed()
+        snd.set_engine("piper")
+        chose = tts.piper_allowed() and settings.get("voice_piper_allowed") is True
+        snd.set_engine("windows")
+        # the warning: lang keys, tts text, the tools refuse without the flag and print it
+        warn = "NON-COMMERCIAL" in i18n.TL("en", "snd.piper_warning") and "ΜΗ ΕΜΠΟΡΙΚΑ" in i18n.TL("el", "snd.piper_warning")
+        warn = warn and "NON-COMMERCIAL" in tts.PIPER_WARNING
+        notice = bool(i18n.TL("en", "snd.no_voice_notice")) and bool(i18n.TL("el", "snd.no_voice_notice"))
+        tool = {}
+        for t in ("get_piper.py", "make_voice.py"):
+            args = [sys.executable, os.path.join(os.path.dirname(HERE), "tools", t)]
+            if t == "make_voice.py":
+                args += ["--engine", "piper"]
+            o = subprocess.run(args, capture_output=True, timeout=60, env=dict(os.environ))
+            txt = (o.stdout + o.stderr).decode("utf-8", "replace")
+            tool[t] = o.returncode == 2 and "NON-COMMERCIAL" in txt and "--allow-noncommercial" in txt
+        ok = default_ok and no_piper and none_text and no_synth and opt_in and sdef and applied and chose and warn and             notice and all(tool.values())
+        report("S17 (W141) the default voice engine is windows; Piper only with the explicit opt-in (never a silent "
+               "fallback: no Windows voice + no opt-in = no voice, nothing made); the non-commercial warning is on the "
+               "page and in both tools, which refuse without --allow-noncommercial",
+               ok, "default %s, no piper %s, none %s, no synth %s, opt-in %s, settings %s, applied %s, chose %s, "
+               "warning %s, notice %s, tools %s" % (default_ok, no_piper, none_text, no_synth, opt_in, sdef, applied,
+                                                   chose, warn, notice, tool))
+    finally:
+        tts._win, tts._prefer, tts._piper_allowed, tts.piper_bin, tts.piper_voice = saved
+        os.environ.pop("TRYGONS_SOUND", None)
 
 
 if __name__ == "__main__":

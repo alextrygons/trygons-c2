@@ -19,24 +19,24 @@
     "without the exception words both statements are offered alone)."
   ],
   "must": [
-    {"lang": "en", "id": "en:277", "pick": "ROLE SWAP: either side asks", "must": null},
-    {"lang": "en", "id": "en:220", "pick": "CONFIRM only answers a request from the PC", "must": "It counts only with the stick centred", "more": true},
-    {"lang": "en", "id": "en:185", "pick": "Only STANDBY, TRAINING and HEADING LOCK", "must": null},
-    {"lang": "en", "id": "en:299", "pick": "Only the HELM station's relay commands", "must": null},
-    {"lang": "en", "id": "en:235", "pick": "Gear changes go idle -> neutral -> gear", "must": "FORWARD <-> REVERSE always through NEUTRAL"},
+    {"lang": "en", "id": "en:278", "pick": "ROLE SWAP: either side asks", "must": null},
+    {"lang": "en", "id": "en:221", "pick": "CONFIRM only answers a request from the PC", "must": "It counts only with the stick centred", "more": true},
+    {"lang": "en", "id": "en:186", "pick": "Only STANDBY, TRAINING and HEADING LOCK", "must": null},
+    {"lang": "en", "id": "en:300", "pick": "Only the HELM station's relay commands", "must": null},
+    {"lang": "en", "id": "en:236", "pick": "Gear changes go idle -> neutral -> gear", "must": "FORWARD <-> REVERSE always through NEUTRAL"},
     {"lang": "el", "id": "el:122", "pick": "Ξεκινά ΜΟΝΟ με \"ΕΝΑΡΞΗ AUTO\"", "must": null},
     {"lang": "el", "id": "el:147", "pick": "Κατευθείαν σε ΚΛΕΙΔΩΜΑ ΠΟΡΕΙΑΣ: ΜΟΝΟ χωρίς πλήρωμα", "must": null},
     {"lang": "en", "id": "en:141", "pick": "TRIGGER (stick button 1) = answer with the selected choice", "must": "It counts only when the question has been shown"},
-    {"lang": "en", "id": "en:238", "pick": "LINK TIME (\"max time without connection\"", "must": "Only the captain holding HELM can change it", "more": true},
+    {"lang": "en", "id": "en:239", "pick": "LINK TIME (\"max time without connection\"", "must": "Only the captain holding HELM can change it", "more": true},
     {"lang": "el", "id": "el:149", "pick": "Όσο είναι πάνω από 3 s", "must": "ΠΟΤΕ δεν ισχύει κοντά στην ακτή"},
     {"lang": "en", "id": "en:154", "pick": "A copilot's question for the captain appears here", "must": null},
     {"lang": "el", "id": "el:154", "pick": "Κάθε χρήστης στη βάση χρηστών του gateway", "must": "Μόνο αυτός μπορεί να ζητήσει ΤΗΛΕΧΕΙΡΙΣΜΟ"},
-    {"lang": "en", "id": "en:308", "pick": "The e-stop cuts the thruster power", "must": "Never in the FIRST TEST build"},
+    {"lang": "en", "id": "en:309", "pick": "The e-stop cuts the thruster power", "must": "Never in the FIRST TEST build"},
     {"lang": "el", "id": "el:216", "pick": "Το κομβίο έκτακτης ανάγκης κόβει το ρεύμα τους", "must": "Ποτέ στην έκδοση ΠΡΩΤΗΣ ΔΟΚΙΜΗΣ"},
-    {"lang": "en", "id": "en:368", "pick": "After 5 s without the link: STANDBY.", "must": "It NEVER starts again by itself", "more": true},
-    {"lang": "en", "id": "en:392", "pick": "RED one impact harder than the limit", "must": null},
-    {"lang": "en", "id": "en:429", "pick": "Things sitting on the water", "must": "IT NEVER STEERS THE BOAT"},
-    {"lang": "en", "id": "en:188", "pick": "Pressed: STANDBY at once, alarm EMERGENCY STOP", "must": "It does NOT cut the servo power"},
+    {"lang": "en", "id": "en:369", "pick": "After 5 s without the link: STANDBY.", "must": "It NEVER starts again by itself", "more": true},
+    {"lang": "en", "id": "en:393", "pick": "RED one impact harder than the limit", "must": null},
+    {"lang": "en", "id": "en:430", "pick": "Things sitting on the water", "must": "IT NEVER STEERS THE BOAT"},
+    {"lang": "en", "id": "en:189", "pick": "Pressed: STANDBY at once, alarm EMERGENCY STOP", "must": "It does NOT cut the servo power"},
     {"lang": "el", "id": "el:178", "pick": "Είναι το μόνο κομμάτι της ακαδημίας", "must": "Δεν στέλνει ποτέ τίποτα που οδηγεί", "more": true},
     {"lang": "el", "id": "el:267", "pick": "Ε ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ η συστοιχία 12 V", "must": "ΜΟΝΟ ενημέρωση"},
     {"lang": "el", "id": "el:269", "pick": "Ε ΠΛΑΚΕΤΑ ΡΕΛΕ ΣΙΩΠΗΛΗ", "must": "ΜΟΝΟ ενημέρωση"},
@@ -44,15 +44,15 @@
     {"lang": "en", "id": "en:88", "pick": "Not enough free disk (under 2 GB)", "must": null}
   ],
   "known_limits": [
-    {"lang": "en", "id": "en:189", "pick": "Ground station, tab \"Bench\".", "not_with": "Only the laptop on the USB cable",
+    {"lang": "en", "id": "en:190", "pick": "Ground station, tab \"Bench\".", "not_with": "Only the laptop on the USB cable",
      "why": "the limit stands under the NEXT heading (WHO / WHEN): a statement and its limits never cross a heading (W126 default NO); the 'Only the laptop ...' sentence is offered on its own"},
     {"lang": "en", "id": "en:87", "pick": "It starts again by itself at the next start if it was on.", "not_with": null,
      "why": "opens with a pronoun: never offered alone (LOW-2); its antecedent is a pronoun sentence too, so no unit holds it"}
   ],
   "never_alone": [
-    {"lang": "el", "id": "el:296", "pick": "Μιλά ένα άτομο κάθε φορά: η πύλη δίνει το μεγάφωνο", "limit": "Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ή η ΚΥΒΕΡΝΗΤΡΙΑ",
+    {"lang": "el", "id": "el:297", "pick": "Μιλά ένα άτομο κάθε φορά: η πύλη δίνει το μεγάφωνο", "limit": "Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ή η ΚΥΒΕΡΝΗΤΡΙΑ",
      "why": "the horn: 'first wins' has the captain's take-over as its exception (owner W54) - said alone it is wrong; statement + exception = ~70 words > the cap 60 = the statement is not offered (W116), the exception alone is"},
-    {"lang": "en", "id": "en:439", "pick": "One person at a time: the gateway gives the horn", "limit": "The CAPTAIN is the exception",
+    {"lang": "en", "id": "en:440", "pick": "One person at a time: the gateway gives the horn", "limit": "The CAPTAIN is the exception",
      "why": "the same statement in the English manual; statement + exception over the cap = not offered, the exception alone is"}
   ]
 }

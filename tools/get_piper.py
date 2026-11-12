@@ -1,8 +1,9 @@
 """Download Piper (offline neural text-to-speech) + a GREEK and an ENGLISH voice
 into tools/bin/piper/ (not in git). The ground station speaks its callouts with it.
 
-    python tools/get_piper.py            Windows build (this PC)
-    python tools/get_piper.py --linux    linux x86_64 build
+    python tools/get_piper.py --allow-noncommercial            Windows build (this PC)
+    python tools/get_piper.py --allow-noncommercial --linux    linux x86_64 build
+(refused without --allow-noncommercial: the voices are non-commercial fine-tunes, W141)
 
 Piper: https://github.com/rhasspy/piper (MIT licence), works without internet.
 Voices (https://huggingface.co/rhasspy/piper-voices, see each voice's MODEL_CARD):
@@ -32,7 +33,18 @@ def fetch(url):
         return r.read()
 
 
+WARNING = ("WARNING (W141): the Piper voices el_GR-rapunzelina-low and en_GB-alan-medium are fine-tunes of voices\n"
+           "trained on NON-COMMERCIAL data (RyanSpeech CC BY-NC-SA 4.0, Blizzard 2013, ...). Internal development only,\n"
+           "never in a product that is sold. The station default is the Windows voice; Piper is used only after the\n"
+           "explicit opt-in on the Sound page. See docs/licences.md section 5.")
+
+
 def main():
+    if "--allow-noncommercial" not in sys.argv:
+        print(WARNING)
+        print("\nRefused: run again with --allow-noncommercial to download Piper and its voices.")
+        return 2
+    print(WARNING + "\n")
     linux = "--linux" in sys.argv or os.name != "nt"
     os.makedirs(os.path.join(DEST, "voices"), exist_ok=True)
     if linux:

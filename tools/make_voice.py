@@ -6,7 +6,8 @@
   python tools/make_voice.py --samples  only the voice samples: 5 sentences per option into
                                         groundstation/sound_cache/samples/<lang>/<option>/ (+ README.txt)
   --lang el                             one language only
-  --engine piper|windows                use this engine (and save it as the sound setting)
+  --engine piper|windows                use this engine (and save it as the sound setting); the default is
+                                        windows. Piper needs --allow-noncommercial (non-commercial voices, W141)
 
 The station does the same by itself in the background (at its start: the callouts + the tour of the voice
 language; Tools -> Sound: "Voice" / "Voice samples"). Display only: nothing goes to a boat.
@@ -31,10 +32,19 @@ def main(argv=None):
     ap.add_argument("--samples", action="store_true", help="only the voice samples")
     ap.add_argument("--lang", choices=i18n.LANGS)
     ap.add_argument("--engine", choices=tts.ENGINES)
+    ap.add_argument("--allow-noncommercial", action="store_true",
+                    help="needed for Piper: its voices are non-commercial fine-tunes (W141, docs/licences.md 5)")
     a = ap.parse_args(argv)
+    if a.engine == "piper" or (settings.get("voice_engine") == "piper" and not a.engine):
+        if not a.allow_noncommercial:
+            print(tts.PIPER_WARNING)
+            print("Piper is refused without --allow-noncommercial.")
+            return 2
+        print(tts.PIPER_WARNING)
+        tts.set_piper_allowed(True)
     if a.engine:
         settings.put("voice_engine", a.engine)
-    tts.set_prefer(settings.get("voice_engine", "piper"))
+    tts.set_prefer(settings.get("voice_engine", tts.DEFAULT_ENGINE))
     langs = [a.lang] if a.lang else list(i18n.LANGS)
     lib = sound.Library()
     for lg in langs:
@@ -43,7 +53,7 @@ def main(argv=None):
             print(lg, "samples ->", folder, sound.make_samples(folder, lg), flush=True)
             continue
         if not tts.engine(lg):
-            print(lg, "NO VOICE (python tools/get_piper.py)")
+            print(lg, "NO VOICE (no Windows voice for this language; Piper only with --allow-noncommercial)")
             continue
         t0 = time.time()
         texts = lib.all_sentences(lg)

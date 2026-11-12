@@ -101,13 +101,17 @@ tools/get_vision_python.py PACKAGES, groundstation/requirements.txt (minimum ver
 | onnxruntime.dll (inside the Piper release) | as in that release | https://github.com/microsoft/onnxruntime | MIT | yes |
 | voice el_GR-rapunzelina-low (Greek) | piper-voices v1.0.0 | https://huggingface.co/rhasspy/piper-voices | repo: MIT; its MODEL_CARD: dataset CC0, but "Finetuned from U.S. English Ryan voice" - the Ryan voice's dataset (RyanSpeech) is **CC BY-NC-SA 4.0** | **check / NO for now** (weights derived from a non-commercial dataset) |
 | voice en_GB-alan-medium (English) | piper-voices v1.0.0 | same | repo: MIT; MODEL_CARD: dataset = Mycroft mimic3 apope ("All Rights Reserved"), "Finetuned from U.S. English lessac voice" - the lessac (Blizzard 2013) data licence is **non-commercial** | **check / NO for now** |
-| the alternative voice engine "windows" (gs_settings voice_engine; WinRT OneCore / SAPI voices) | the PC's Windows | Microsoft | part of the Windows licence | yes (used through the OS) |
+| the DEFAULT voice engine "windows" (gs_settings voice_engine; WinRT OneCore / SAPI voices) | the PC's Windows | Microsoft | part of the Windows licence | yes (used through the OS) |
 | the owner's RECORDED Greek tour clips (academy/tour_voice/el) | committed | the owner | the owner's own recordings | yes |
 
 FINDING (W141): BOTH Piper voices are fine-tunes of voices trained on NON-COMMERCIAL data, so their commercial use is
 not clear even though the piper-voices repository is tagged MIT. The safe commercial path today is the "windows" voice
-engine (already a station setting) or a voice trained only on CC0 / CC BY data. Not changed in AM7 (a station
-default, the owner decides).
+engine or a voice trained only on CC0 / CC BY data. DECIDED (owner 2026-11-11, W141, step W141): the station default
+voice_engine is now "windows"; Piper is used only with an explicit per-PC opt-in (choosing Piper on the Sound page, which
+sets gs_settings voice_piper_allowed; the page shows the non-commercial warning), a missing Windows voice = one station
+notice and no speech (never a silent switch to Piper), tools/get_piper.py and tools/make_voice.py (Piper) refuse without
+--allow-noncommercial and print the warning (like get_llm.py --allow-restricted). The recorded Greek tour clips
+(academy/tour_voice/el) are the owner's own recordings and stay.
 
 ## 6. Vision, video, ADS-B, UAV, CAN, other programs
 
