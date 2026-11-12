@@ -358,6 +358,10 @@ class Gateway:
         import struct as _st
         if ftype == proto.T_SET_MODE:
             return self.check_hdg_shore(st, payload)
+        if ftype == proto.T_HARBOUR:
+            if payload[:1] in (bytes([proto.HARB_START]), bytes([proto.HARB_RESUME])):
+                self.hplan.note_start()                     # the planner's kind-4 pre-start window (HX5 review MED-2)
+            return None
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
         elif ftype == proto.T_PROG_WP and len(payload) >= 18 and getattr(st, "prog_up", None):

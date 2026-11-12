@@ -262,7 +262,7 @@ def hp8_report():
 
 
 # --- HP9 random: corridor / cap / never raised -----------------------------------------------------------------------
-def hp9():
+def hp9(planner_mod=P, quiet=False):
     rng = random.Random(9)
     bad = []
     n = 0
@@ -279,7 +279,7 @@ def hp9():
         e0 = rng.uniform(-corr + 2.5, corr - 2.5)
         flags = {"unsure": rng.choice([[], [], ["U2 radar LOST"], ["U9 crowded (21 moving range tracks)"]]),
                  "cycle_age_s": 0.1}
-        d = P.Planner().plan(10.0, inp(tracks, x=e0, y=rng.uniform(-40, 50), h=rng.uniform(-30, 30), corr=corr,
+        d = planner_mod.Planner().plan(10.0, inp(tracks, x=e0, y=rng.uniform(-40, 50), h=rng.uniform(-30, 30), corr=corr,
                                        route_kn=route, kn=rng.uniform(0, 5), flags=flags))
         if d["stop"]:
             continue
@@ -295,6 +295,8 @@ def hp9():
         # independent: follow the heading 40 s with the AURIX's slew + the own guidance, the line inside corr
         if abs(d["offset"]) > corr:
             bad.append("planned line outside the corridor")
+    if quiet:
+        return bad
     report("HP9 random: inside the corridor, cap <= min(route, 5 kn, degraded), never above", not bad and n > 50,
            "%d moving decisions, %s" % (n, bad[:4]))
 
@@ -480,6 +482,7 @@ class FakeGw:
         self.lat, self.lon = simworld.xy_to_ll(37.82, 23.60, 0.0, 0.0)
         self.mode = proto.MODE_AUTO
         self.profile = proto.PROFILE_CREWED
+        self.telem_rx = time.time()
 
     def own(self):
         return {"fresh": True, "lat": self.lat, "lon": self.lon, "heading": 0.0, "sog": 4.0, "unc": 2.0,
@@ -506,7 +509,9 @@ def hp11():
     hp.on_stat(stat(0, route=True))
     a_pre_auto = hp.active()
     gw.mode = proto.MODE_STANDBY
-    a_pre = hp.active()
+    no_window = hp.active()                            # review MED-2: no START asked = no pre-start kind 4
+    hp.note_start()
+    a_pre = hp.active() and not no_window
     pre_modes = []
     for m, prof in ((proto.MODE_REMOTE, proto.PROFILE_UNCREWED), (proto.MODE_HDG_LOCK, proto.PROFILE_UNCREWED),
                     (proto.MODE_MANEUVER, proto.PROFILE_UNCREWED), (proto.MODE_DP, proto.PROFILE_CREWED)):
@@ -515,6 +520,9 @@ def hp11():
     gw.mode, gw.profile = proto.MODE_HDG_LOCK, proto.PROFILE_CREWED
     a_pre = a_pre and hp.active() and not any(pre_modes)
     gw.mode = proto.MODE_STANDBY
+    hp.start_mono -= 31.0
+    a_pre = a_pre and not hp.active()                  # the window lapsed (30 s)
+    hp.note_start()
     hp.on_stat(stat(0, route=False))
     a_none = hp.active()
     hp.on_stat(stat(4))
@@ -562,13 +570,20 @@ def hp11():
     hp4 = P.HarbourPlanner(gw4)
     hp4.on_stat(stat(1))
     rq4 = hp4.fold({"kind": 0, "heading": None, "cap_kn": None, "reason": 0, "alarm": 0}, gw4.own())
+    gw6 = FakeGw()
+    gw6.telem_rx = time.time() - 1.0                   # U12: the own pose 1 s old (gw.own() still "fresh": 3 s)
+    hp6 = P.HarbourPlanner(gw6)
+    hp6.on_stat(stat(1))
+    rq6 = hp6.fold({"kind": 0, "heading": None, "cap_kn": None, "reason": 0, "alarm": 0}, gw6.own())
+    old_pose = bool(rq6["hflags"] & 1)
     hp5 = P.HarbourPlanner(FakeGw())
     base = {"kind": proto.NAV_CAP, "heading": None, "cap_kn": 3.0, "reason": 8, "alarm": 8}
     untouched = hp5.fold(dict(base), FakeGw().own()) == base
-    det.append("gate %s real %s route %s untouched %s" % (gate, gate_real, bool(rq4["hflags"] & 1), untouched))
+    det.append("gate %s real %s route %s untouched %s old pose %s" % (gate, gate_real, bool(rq4["hflags"] & 1),
+                                                                      untouched, old_pose))
     report("HP11 the gateway glue (active, fold, frame, sim gate, audit, el / en line)",
            act_ok and clear and shallow and lowcap and frame_ok and text_ok and gate and gate_real and
-           rq4["hflags"] & 1 and untouched, "; ".join(det))
+           rq4["hflags"] & 1 and untouched and old_pose, "; ".join(det))
 
 
 def hp12():
@@ -614,6 +629,9 @@ def hp13():
             if re.search(r"^\s*(import|from)\s+(aurix|stations|socket)\b", src, re.M) or ".send(" in src and \
                     fn in ("planner.py", "colregs.py"):
                 bad.append(fn)
+    if (P.NAV_HARBOUR, P.MODE_STANDBY, P.MODE_MANUAL, P.MODE_HDG_LOCK, P.PROFILE_CREWED) != (
+            proto.NAV_HARBOUR, proto.MODE_STANDBY, proto.MODE_MANUAL, proto.MODE_HDG_LOCK, proto.PROFILE_CREWED):
+        bad.append("planner.py's proto constants differ")
     report("HP13 writer check: only gateway.py builds GW_NAVREQ; harbour/ imports no aurix / stations / socket",
            not bad, "bad %s" % bad)
 
@@ -712,10 +730,16 @@ def hp16():
     m3b = mutant("m = math.hypot(px - x, py - y) - r - half - mm", "m = math.hypot(px - x, py - y) - r - half")
     b3, _d = hp10(m3)
     b3b, _d = hp10(m3b)
-    ok = (not n1) and (not all(o2.values())) and bool(b3) and bool(b3b)
+    m4 = mutant('        cap = min(float(inp.get("route_kn") or 0.0), float(c["max_kn"]))',
+                '        cap = float(inp.get("route_kn") or 0.0)')
+    m5 = mutant('        usable = corr - 0.5 * float(c["own_beam_m"]) - 1.0 - float(c["edge_margin_m"])',
+                '        usable = corr + 6.0')
+    b4, b5 = hp9(m4, quiet=True), hp9(m5, quiet=True)
+    ok = (not n1) and (not all(o2.values())) and bool(b3) and bool(b3b) and bool(b4) and bool(b5)
     report("HP16 mutations: no steer_ok gate / no unsure STOP / no distance check -> caught", ok,
-           "steer_ok gate removed: camera turn caught %s; unsure: %d not stopped; distance removed: %d / %d failures"
-           % (not n1, sum(1 for v in o2.values() if not v), len(b3), len(b3b)))
+           "steer_ok gate removed: camera turn caught %s; unsure: %d not stopped; distance removed: %d / %d failures; "
+           "cap removed: %d, corridor widened: %d" % (not n1, sum(1 for v in o2.values() if not v), len(b3), len(b3b),
+                                                     len(b4), len(b5)))
 
 
 def main():

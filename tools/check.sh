@@ -437,7 +437,7 @@ echo "== harbour planner (HX5): velocity-obstacle planner in the corridor + COLR
 grep -E "^\[FAIL\]|HARBOUR PLANNER TESTS|passed" "$TEMP/harbour_planner_tests.txt"
 ( PYTHONIOENCODING=utf-8 "$PY" tests/acceptance/storm_harbour.py --episodes 30 --seed 101 > "$TEMP/harbour_storm.txt" 2>&1 ) || { echo "HARBOUR STORM FAILED"; fail=1; }
 grep -E "^FAIL|HARBOUR STORM" "$TEMP/harbour_storm.txt"
-( PYTHONIOENCODING=utf-8 "$PY" tests/acceptance/storm_harbour.py --mutation-check --episodes 15 --seed 1 > "$TEMP/harbour_storm_mut.txt" 2>&1 ) || { echo "HARBOUR STORM MUTATION CHECK FAILED"; fail=1; }
+( PYTHONIOENCODING=utf-8 "$PY" tests/acceptance/storm_harbour.py --mutation-check --episodes 25 --seed 1 > "$TEMP/harbour_storm_mut.txt" 2>&1 ) || { echo "HARBOUR STORM MUTATION CHECK FAILED"; fail=1; }
 grep -E "mutation|MUTATION CHECK" "$TEMP/harbour_storm_mut.txt"
 strays_check "test_harbour_planner"
 echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"

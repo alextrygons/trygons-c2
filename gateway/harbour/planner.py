@@ -32,6 +32,10 @@ import time
 from . import colregs
 
 KN = 0.514444
+# groundstation/proto.py values (this package imports no proto / aurix: test_harbour_sensors HS9; HP13 checks them)
+NAV_HARBOUR = 4
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK = 0, 1, 2
+PROFILE_CREWED = 1
 
 DEFAULTS = {
     "min_moving_m": 15.0, "min_static_m": 8.0,          # W145
@@ -48,7 +52,12 @@ DEFAULTS = {
     "unc_m": 5.0, "corr_m": 10.0, "lease_ms": 1000,
     "moving_mps": 0.5, "turn_deg": 3.0, "narrow_ahead_m": 40.0,
     "stat_max_age_s": 1.0,
-    "slow_horizon_s": 15.0,                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
+    "slow_horizon_s": 15.0,
+    "own_max_age_s": 0.5,
+    "start_window_s": 30.0,                              # review MED-2: the pre-start kind-4 only this long after a
+                                                         # station's START / RESUME (ACCEPT + the CONFIRM window)
+    "tentative_ahead_m": 30.0,                           # review MED-1: a tentative range track this close ahead
+    "vessel_moving_mps": 0.2,                            # a vessel-class track faster than this = MOVING (15 m)                                # U12: the own position / heading older than this = STOP                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
 }                                                        # judged over this shorter time = slow on; else STOP
 
 # The explanation line (design 7.5): key -> (el, en); the same keys in groundstation/lang el.txt / en.txt (HP test).
@@ -161,8 +170,26 @@ class Planner:
         # a TENTATIVE range track (radar / LiDAR hits, not confirmed yet: <= 1 s LiDAR, <= 4 s radar; spray, sea
         # clutter, a new object) is not planned around until it is confirmed - else every spray return would latch a
         # HOLD. Camera-only / AIS-only tracks (never "confirmed": no range hits) ARE obstacles (slow / STOP only).
-        dec["tentative"] = sum(1 for t in tracks if _tentative(t))
+        tent = [t for t in tracks if _tentative(t)]
+        dec["tentative"] = len(tent)
         tracks = [t for t in tracks if not _tentative(t)]
+        # review MED-1: a tentative range return is never ignored entirely - one within tentative_ahead_m ahead in the
+        # corridor band, or within min_static_m of the hull anywhere, SLOWS the boat to degraded_kn (never a turn,
+        # never a STOP by itself: a spray / clutter return would latch a HOLD); confirmed, it is planned around
+        own0 = inp.get("own") or {}
+        leg0 = inp.get("leg")
+        if tent and own0.get("x") is not None and leg0 is not None:
+            (lax, lay), (lbx, lby) = leg0
+            ll = math.hypot(lbx - lax, lby - lay) or 1.0
+            ux0, uy0 = (lbx - lax) / ll, (lby - lay) / ll
+            cw = float(inp.get("corr_m") or c["corr_m"]) + float(c["min_static_m"])
+            for t in tent:
+                dx, dy = t["x"] - float(own0["x"]), t["y"] - float(own0["y"])
+                along, lat = dx * ux0 + dy * uy0, abs(dx * uy0 - dy * ux0)
+                hull = math.hypot(dx, dy) - 3.0 - 0.5 * max(t.get("len_m") or 0.0, t.get("beam_m") or 0.0)
+                if (0.0 <= along <= float(c["tentative_ahead_m"]) and lat <= cw) or hull < float(c["min_static_m"]):
+                    slow.append("tentative range return %.0f m ahead - slowing" % max(0.0, along))
+                    break
         degraded = [k for k in ("radar", "lidar") if (inp.get("health") or {}).get(k) != "OK"]
         if degraded:
             dec["hflags"] |= 0x02
@@ -246,7 +273,8 @@ class Planner:
                                    corr + float(c["min_static_m"]) + 2.0, now)
         movers = []
         for t in tracks:
-            if t.get("static") or float(t.get("speed") or 0.0) <= float(c["moving_mps"]):
+            mv = float(c["vessel_moving_mps"] if t.get("cls") == "vessel" else c["moving_mps"])
+            if t.get("static") or float(t.get("speed") or 0.0) <= mv:
                 hs = 0.5 * max(t.get("len_m") or 0.0, t.get("beam_m") or 0.0)
                 stat.append(((t["x"] - ax) * ux + (t["y"] - ay) * uy, (t["x"] - ax) * nx + (t["y"] - ay) * ny,
                              hs + 2.0 * float(t.get("sd_m") or 0.0), t))
@@ -509,6 +537,10 @@ class HarbourPlanner:
         self.was_active = False
         self.decisions = 0
         self.stops = 0
+        self.start_mono = None          # review MED-2: the last station START / RESUME (the pre-start window)
+
+    def note_start(self):
+        self.start_mono = time.monotonic()
 
     # --- inputs -----------------------------------------------------------------------------------------------
     def on_stat(self, d):
@@ -526,20 +558,20 @@ class HarbourPlanner:
         if st in RUNNING:
             return True
         o = o if o is not None else self.gw.own()
-        import proto
         # waiting for the captain's START: only in the modes whose navreq does not matter (STANDBY, MANUAL, CREWED
         # HDG LOCK) - never in UNCREWED HDG LOCK / REMOTE / MANEUVER / AUTO / DP, where the kind 1 / 2 lease is
         # needed (a kind-4 request is inert there on the AURIX = their lease would lapse)
-        pre = o.get("mode") in (proto.MODE_STANDBY, proto.MODE_MANUAL) or (
-            o.get("mode") == proto.MODE_HDG_LOCK and o.get("profile") == proto.PROFILE_CREWED)
-        return bool(self.stat.get("harb_route")) and st == 0 and pre
+        pre = o.get("mode") in (MODE_STANDBY, MODE_MANUAL) or (
+            o.get("mode") == MODE_HDG_LOCK and o.get("profile") == PROFILE_CREWED)
+        win = self.start_mono is not None and time.monotonic() - self.start_mono <= float(
+            self.planner.c["start_window_s"])
+        return bool(self.stat.get("harb_route")) and st == 0 and pre and win
 
     def real_link(self):
         a = str((self.gw.cfg or {}).get("aurix", ""))
         return not (a.startswith("tcp:127.0.0.1") or a.startswith("tcp:localhost") or a.startswith("tcp:[::1]"))
 
     def _inputs(self, o):
-        import proto
         from . import simworld
         gw = self.gw
         block = []
@@ -551,7 +583,10 @@ class HarbourPlanner:
                 gw.audit("harbour", what="refused", why=self.gate)
         d = gw.telem_fresh() or {}
         tr = hs.tracker
-        own = {"fresh": bool(o.get("fresh")) and o.get("lat") is not None, "heading": o.get("heading"),
+        # U12: gw.own() is "fresh" up to 3 s (TELEM_MAX_AGE_S) - far too old at 5 kn in a harbour: own_max_age_s
+        age = time.time() - float(getattr(gw, "telem_rx", 0.0) or 0.0)
+        own = {"fresh": bool(o.get("fresh")) and o.get("lat") is not None and
+               0.0 <= age <= float(self.planner.c["own_max_age_s"]), "heading": o.get("heading"),
                "sog_kn": o.get("sog"), "unc": o.get("unc"), "gps_ok": d.get("pos_source") == 1}
         if own["fresh"] and tr.origin is not None:
             own["x"], own["y"] = simworld.ll_to_xy(tr.origin[0], tr.origin[1], o["lat"], o["lon"])
@@ -628,7 +663,6 @@ class HarbourPlanner:
         """Gateway.nav_compose: while active, EVERY cap of `req` (shallow / collision / vision) folds into ONE kind-4
         request (the lowest cap keeps its reason; hflags b5 shallow / b6 collision / b7 vision). A folded cap below
         the in-gear idle speed = STOP (HX2 note). The collision avoider's heading is NOT used (the planner steers)."""
-        import proto
         if not self.active(o):
             self.inactive()
             return req
@@ -653,7 +687,7 @@ class HarbourPlanner:
         if stop:
             hf |= 0x01
             cap = 0.0
-        return {"kind": proto.NAV_HARBOUR, "heading": hdg, "cap_kn": cap, "reason": reason,
+        return {"kind": NAV_HARBOUR, "heading": hdg, "cap_kn": cap, "reason": reason,
                 "alarm": int(req.get("alarm") or 0), "hflags": hf, "nearest_m": dec["nearest_m"],
                 "n_tracks": dec["n_tracks"], "lease_ms": int(self.planner.c["lease_ms"])}
 

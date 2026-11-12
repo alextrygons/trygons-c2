@@ -171,7 +171,9 @@ class Station:
 # the commands the gateway checks itself before forwarding (Gateway.check_prog: shallow water 114, geofence 120,
 # route not checked 121); step 13q2d: SET_MODE (HDG LOCK = the UNCREWED entry from REMOTE / MANEUVER)
 PROG_CHECK_TYPES = (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT, proto.T_AUTO_START, proto.T_AUTO_RESUME,
-                    proto.T_AUTO_RETURN, proto.T_DP, proto.T_SET_MODE)
+                    proto.T_AUTO_RETURN, proto.T_DP, proto.T_SET_MODE, proto.T_HARBOUR)
+# (T_HARBOUR, step HX5 review MED-2: never refused there - a START / RESUME only opens the planner's short pre-start
+#  window, Gateway.check_prog -> HarbourPlanner.note_start)
 
 
 def _uav_flying_captain(srv, st):

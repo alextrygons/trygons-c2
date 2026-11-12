@@ -645,6 +645,24 @@ No app / hal / AURIX change (HX2's firmware covers everything the planner needs 
   swimmer inside the LiDAR's blind zone (< ~18 m) is never seen (residual risk, MANUAL); the static map's coverage at
   the boat is not judged (U10 = contents, HX4 note); a tentative range track is ignored for up to its confirmation
   time.
+- Review of 9eb0818 (opus, tools/api_review.py; findings in the owner's private reviews folder) fixed in HX5-r:
+  MED-1 a tentative range return is never ignored entirely: within tentative_ahead_m 30 m ahead in the corridor band
+  (+ min_static) or within 8 m of the hull = slow to degraded_kn 2 (never a turn, never a STOP by itself); MED-2 the
+  pre-start kind-4 fold only for start_window_s 30 s after a station's T_HARBOUR START / RESUME (stations
+  PROG_CHECK_TYPES -> Gateway.check_prog -> HarbourPlanner.note_start; never refused there) and only in STANDBY /
+  MANUAL / CREWED HDG LOCK - the rest of the trip nav_compose is unchanged; the own pose older than own_max_age_s
+  0.5 s = U12 STOP (gw.own() alone allows 3 s); a vessel-class track faster than 0.2 m/s = MOVING (15 m); the
+  package imports no proto (local constants, HP13 compares them; HS9). Storm: I87 also checks the CAUSE (every
+  track the planner turned for steer_ok with a fresh range hit: radar <= 2 s, LiDAR <= 0.5 s), I88 also during the
+  HOLD's coast-down towards a static object and 15 m for a vessel > 0.2 m/s, a lost sensor goes SILENT first and
+  LOST only after the HealthJudge's lost_s (radar 4 s, LiDAR 1 s), injected stale tracker / no pose / a blocked
+  route = STOP (I90, a separate planner), a tracker step without flags = FAIL; the cap / corridor mutants are caught by
+  HP16 (through HP9; the AURIX-like boat clamps them again in the closed loop); check.sh mutation check 25 episodes. NOT fixed
+  (note for the owner / the flash gate): MED-3 the sim gate trusts the "aurix" link string (tcp to loopback = the
+  simulator) - a real board behind a local TCP relay would pass; an AURIX identity (sim / board) in a frame needs
+  FIRMWARE (a new field: TELEM2 is full) = a later step; until then the operating rule: never "sim": true on a boat.
+  LOW notes: HP9's corridor check uses the planner's own offset (the storm I89h is the closed-loop one); a heading-only
+  collision request in harbour keeps only its flag (the avoider's AUTO request always carries a cap).
 
 ## 8. Supervision UI + teach and repeat (HX6, DISPLAY + requests)
 
