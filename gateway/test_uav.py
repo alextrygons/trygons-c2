@@ -2092,6 +2092,7 @@ def ua22_battery():
             return w.find(lambda e, i=seq[0]: e.get("id") == i and e.get("ev") == "cmd", 10)
         fl.drones[0].sky = True
         until(lambda: fl.drones[0].fix >= 3, 6)
+        time.sleep(2.5)                                # UAV-r1: the router's gps_ok needs the fix + EKF heard (1 Hz)
         req(slot=1, via="usb", command=176, params=[1, 4])
         w.send({"op": "hatch", "open": True})
         arm = req(slot=1, via="usb", command=400, params=[1, 0])
