@@ -2392,3 +2392,16 @@ trend.not_connected = Not connected – no values
 trend.hl = TREND: {name} {arrow}
 trend.ev_on = TREND: {name} {arrow} {a} → {b} {unit}
 trend.error = Trends: error {e}
+# harbour planner explanation line (step HX5; gateway/harbour/planner.py WHY - the same text)
+harb.why_clear = ROUTE CLEAR
+harb.why_avoid = AVOIDING AN OBSTACLE
+harb.why_slow_obstacle = OBSTACLE AHEAD - slowing
+harb.why_camera_only = OBSTACLE AHEAD (camera / AIS only) - slowing
+harb.why_narrow = NARROW PASSAGE - slowing
+harb.why_degraded = SENSOR DEGRADED - slowing
+harb.why_head_on = HEAD-ON - TURNING TO STARBOARD
+harb.why_giveway_stbd = GIVING WAY TO A VESSEL ON STARBOARD
+harb.why_standon_port = VESSEL ON PORT - STAND-ON
+harb.why_overtaking = OVERTAKING A VESSEL - keeping clear
+harb.why_overtaken = BEING OVERTAKEN - stand-on
+harb.why_stop = UNSURE - STOP

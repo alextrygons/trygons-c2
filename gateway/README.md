@@ -996,3 +996,18 @@ the simulated basin; the ThinkPad L390 run with 4 cameras + vision is still open
 | tracks | 47 (26 steer_ok, 29 confirmed) |
 | manager in the gateway incl. the tracker | 4.3 % of one core (HX3 without the tracker: 1.4 %) |
 | latency gateway clock - sensor time at the fusion | p50 170 ms, p99 500 ms (radar 300 ms modelled + up to one 200 ms tick) |
+
+## 29. Harbour planner - avoidance, COLREGs, "unsure = STOP" (step HX5)
+
+`gateway/harbour/planner.py` + `gateway/harbour/colregs.py` (CLAUDE.md Z, docs/harbour_design.md 7a). It STEERS the
+boat inside harbour autonomy, so it is part of the next flash-gate review. It runs ONLY while the AURIX's own
+HARBOUR_STAT says harbour autonomy runs (the captain started it with START + CONFIRM) or a gateway-checked harbour
+route waits for the start. Its one output is the kind-4 navigation request that `Gateway.nav_compose` already sends
+(5 Hz, lease 1 s; every other speed cap folded into it). It steers around an object only when radar or LiDAR
+confirmed it; a camera-only / AIS-only object may only slow / stop the boat. Any doubt (a sensor lost, conflicting
+tracks, no free path in the corridor, a late cycle, no checked route, GPS) = STOP = the AURIX holds (idle + neutral)
+until the captain resumes. With `"harbour": {"sim": true}` and a REAL AURIX link (not tcp:127.0.0.1) every decision
+is STOP. Optional config: `"harbour": {"planner": {"min_moving_m": 15, "min_static_m": 8, "max_kn": 5,
+"degraded_kn": 2, "narrow_kn": 3, ...}}` (defaults W144 / W145). Status: gw_status "harbour" "planner" (the
+explanation line in Greek + English). Tests: `python test_harbour_planner.py`; the storm:
+`python ../tests/acceptance/storm_harbour.py`.

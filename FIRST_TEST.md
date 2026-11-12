@@ -413,6 +413,10 @@ with a harbour route uploaded through the gateway and the simulated planner send
 - c) harb_llgrace_s reads 0 and PARAM_SET refuses any other value (W147 not answered): a lost link in harbour =
      today's near-shore kill.
 - d) Write down the HARBOUR_STAT frames (5 Hz) seen by the gateway log for the record.
+- e) (step HX5) The gateway's planner: with the SIMULATED sensors ("harbour": {"sim": true}) and the real AURIX on
+     the UART the gateway refuses the planner (every request STOP, audit "harbour" refused) - check that START is
+     refused (NO_LEASE / planner STOP). The planner on a real boat needs the real radar / LiDAR (W148) and the HX6
+     screens; the sea plan (empty harbour first, the captain on board with the onboard joystick) = HX7.
 
 ## 6. UAV magazine + loudhailer bench (BEFORE the first UAV flight; owner answers 2026-11-04, step WA)
 

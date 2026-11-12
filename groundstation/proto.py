@@ -940,6 +940,15 @@ def p_gw_navreq(seq, kind, reason=0, alarm=0, heading=None, cap_kn=None, lease_m
                        0xFFFF if cap_kn is None else max(0, min(600, int(round(cap_kn * 10)))), lease_ms)
 
 
+def p_gw_navreq_harbour(seq, reason, alarm, heading, cap_kn, lease_ms, hflags, nearest_m, n_tracks):
+    """GW_NAVREQ kind 4 (step HX2 / HX5, link.c gw_navreq): the 10-byte head (always a heading AND a cap, lease
+    500..3000 ms) + u8 hflags | u8 nearest_m (255 none) | u8 n_tracks = 13 bytes."""
+    lease = max(500, min(3000, int(lease_ms)))
+    return p_gw_navreq(seq, NAV_HARBOUR, reason, alarm, 0.0 if heading is None else heading,
+                       0.0 if cap_kn is None else cap_kn, lease) + bytes(
+        [int(hflags) & 0xFF, max(0, min(255, int(nearest_m))), max(0, min(255, int(n_tracks)))])
+
+
 def p_gw_shore(flags, dist_m):
     """GW_SHORE (gateway -> AURIX, 1 Hz): b0 near shore, b1 valid; distance m (0xFFFF unknown)."""
     return struct.pack("<BH", flags & 0xFF, max(0, min(0xFFFF, int(dist_m))))

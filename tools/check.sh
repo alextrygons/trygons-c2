@@ -432,6 +432,14 @@ echo "== harbour perception (HX4): the fusion tracker (radar + LiDAR + camera + 
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_tracker.py > "$TEMP/harbour_tracker_tests.txt" 2>&1 ) || { echo "HARBOUR TRACKER TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|HARBOUR TRACKER TESTS|passed" "$TEMP/harbour_tracker_tests.txt"
 strays_check "test_harbour_tracker"
+echo "== harbour planner (HX5): velocity-obstacle planner in the corridor + COLREGs + unsure = STOP, steering only on radar / LiDAR-confirmed tracks, 15 / 8 m, the cap, the kind-4 navreq glue (sim gate, fold, 5 Hz lease), mutations; a short avoidance storm (I86h-I90) + its mutation check"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_planner.py > "$TEMP/harbour_planner_tests.txt" 2>&1 ) || { echo "HARBOUR PLANNER TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR PLANNER TESTS|passed" "$TEMP/harbour_planner_tests.txt"
+( PYTHONIOENCODING=utf-8 "$PY" tests/acceptance/storm_harbour.py --episodes 30 --seed 101 > "$TEMP/harbour_storm.txt" 2>&1 ) || { echo "HARBOUR STORM FAILED"; fail=1; }
+grep -E "^FAIL|HARBOUR STORM" "$TEMP/harbour_storm.txt"
+( PYTHONIOENCODING=utf-8 "$PY" tests/acceptance/storm_harbour.py --mutation-check --episodes 15 --seed 1 > "$TEMP/harbour_storm_mut.txt" 2>&1 ) || { echo "HARBOUR STORM MUTATION CHECK FAILED"; fail=1; }
+grep -E "mutation|MUTATION CHECK" "$TEMP/harbour_storm_mut.txt"
+strays_check "test_harbour_planner"
 echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"
 ( PYTHONIOENCODING=utf-8 "$PY" demo/test_sar_demo.py > "$TEMP/sardemo_tests.txt" 2>&1 ) || { echo "SAR DEMO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SAR DEMO TESTS" "$TEMP/sardemo_tests.txt"

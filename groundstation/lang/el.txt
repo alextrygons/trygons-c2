@@ -2396,3 +2396,16 @@ trend.not_connected = Δεν υπάρχει σύνδεση – δεν υπάρχ
 trend.hl = ΤΑΣΗ: {name} {arrow}
 trend.ev_on = ΤΑΣΗ: {name} {arrow} {a} → {b} {unit}
 trend.error = Τάσεις: σφάλμα {e}
+# harbour planner explanation line (step HX5; gateway/harbour/planner.py WHY - the same text)
+harb.why_clear = ΕΛΕΥΘΕΡΗ ΔΙΑΔΡΟΜΗ
+harb.why_avoid = ΑΠΟΦΥΓΗ ΕΜΠΟΔΙΟΥ
+harb.why_slow_obstacle = ΕΜΠΟΔΙΟ ΜΠΡΟΣΤΑ – επιβράδυνση
+harb.why_camera_only = ΕΜΠΟΔΙΟ ΜΠΡΟΣΤΑ (κάμερα / AIS μόνο) – επιβράδυνση
+harb.why_narrow = ΣΤΕΝΟ ΠΕΡΑΣΜΑ – επιβράδυνση
+harb.why_degraded = ΑΙΣΘΗΤΗΡΑΣ ΣΕ ΥΠΟΒΑΘΜΙΣΗ – επιβράδυνση
+harb.why_head_on = ΑΝΤΙΘΕΤΗ ΠΟΡΕΙΑ – ΣΤΡΟΦΗ ΔΕΞΙΑ
+harb.why_giveway_stbd = ΔΙΝΩ ΔΡΟΜΟ ΣΕ ΣΚΑΦΟΣ ΔΕΞΙΑ
+harb.why_standon_port = ΣΚΑΦΟΣ ΑΡΙΣΤΕΡΑ – ΔΙΑΤΗΡΩ ΠΟΡΕΙΑ
+harb.why_overtaking = ΠΡΟΣΠΕΡΝΩ ΣΚΑΦΟΣ – κρατώ απόσταση
+harb.why_overtaken = ΜΕ ΠΡΟΣΠΕΡΝΑ ΣΚΑΦΟΣ – διατηρώ πορεία
+harb.why_stop = ΑΒΕΒΑΙΟΤΗΤΑ – ΣΤΑΣΗ

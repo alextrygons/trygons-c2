@@ -31,6 +31,7 @@ import osdep
 from audit import Audit
 from adsbmgr import AdsbManager
 from harbour.manager import HarbourSensors
+from harbour.planner import HarbourPlanner
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from geofence import Geofence
@@ -71,6 +72,7 @@ class Gateway:
         self.aurix.on(proto.T_TIME, self.time.on_time)
         self.aurix.on(proto.T_TELEMETRY, self._on_telem)
         self.aurix.on(proto.T_TELEM2, self._on_telem2)
+        self.aurix.on(proto.T_HARBOUR_STAT, self._on_harbour_stat)
         self.telem = None               # latest AURIX telemetry (dict)
         self.telem_rx = 0.0             # when it arrived (time.time(); 13q2c LOW-1: telem_fresh)
         self.telem2 = {}
@@ -126,6 +128,8 @@ class Gateway:
         self.charts = chart.Charts(cfg.get("charts_dir"))
         self.shallow = Shallow(cfg.get("shallow"), self.charts)
         self.prog_wps = None            # the last AUTO program accepted through the gateway: [(lat, lon)]
+        self.prog_kn = None             # ... its leg speeds (kn), same order (step HX5: the harbour route speed)
+        self.prog_pending_kn = None
         self.prog_pending = None        # ... checked here, waiting for the AURIX's ACK of the PROG_COMMIT
         self.prog_ack_new = False       # a commit ACK came after the latest telemetry (prog_gw not shown yet)
         self.nav_seq = 0
@@ -184,6 +188,9 @@ class Gateway:
         except Exception:                               # the harbour sensors never stop the gateway
             log.exception("harbour: the sensors could not be set up - switched off")
             self.harbour = HarbourSensors({"enabled": False}, self)
+        # harbour planner (step HX5): the kind-4 navreq through nav_compose ONLY while the AURIX's HARBOUR_STAT says
+        # harbour autonomy runs (or a checked harbour route waits for the captain's START)
+        self.hplan = HarbourPlanner(self, cfg.get("harbour") if isinstance(cfg.get("harbour"), dict) else None)
         # U3: routes -> missions, the launch sequence (the captain's YES / NO), STOP, the captain's HATCH CLOSE
         for k, fn in (("uav_route", self.uav.route_msg), ("uav_launch_prepare", self.uav.prepare_msg),
                       ("uav_launch_stop", self.uav.stop_msg), ("uav_hatch_close", self.uav.hatch_close_msg),
@@ -354,8 +361,9 @@ class Gateway:
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
         elif ftype == proto.T_PROG_WP and len(payload) >= 18 and getattr(st, "prog_up", None):
-            i, la, lo = _st.unpack_from("<Bii", payload)
+            i, la, lo, kn = _st.unpack_from("<Biif", payload)
             st.prog_up["wps"][i] = (la / 1e7, lo / 1e7)
+            st.prog_up.setdefault("kn", {})[i] = kn
         elif ftype == proto.T_PROG_COMMIT and getattr(st, "prog_up", None):
             up = st.prog_up
             wps = [up["wps"][k] for k in sorted(up["wps"])]
@@ -368,6 +376,7 @@ class Gateway:
                 self.audit("program_refused", station=st.id, user=st.user, why=why)
                 return 120, why
             self.prog_pending = wps                         # the AURIX's ACK makes it the program (prog_committed)
+            self.prog_pending_kn = [up.get("kn", {}).get(k) for k in sorted(up["wps"])]
         elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_AUTO_RETURN) or (
                 ftype == proto.T_DP and len(payload) >= 2 and payload[0] == proto.DP_START and
                 payload[1] & 0x7F == proto.DP_TRIP):
@@ -451,6 +460,7 @@ class Gateway:
         the boat's program now (the DP TRIP / AUTO checks use them)."""
         if result == 0 and self.prog_pending is not None:
             self.prog_wps = self.prog_pending
+            self.prog_kn = self.prog_pending_kn
             self.prog_ack_new = True        # the telemetry still in hand is older than this program
         self.prog_pending = None
 
@@ -636,7 +646,8 @@ class Gateway:
         if fence:                                          # (uh_check: outside, or nearer the edge than the uncertainty)
             req["alarm"] |= ALM_FENCE
         self.nav_state = dict(self.avoider.status(), shallow=sh, fence_out=fence)
-        return req
+        # harbour autonomy (step HX5): every cap above folds into the ONE kind-4 request while the AURIX runs it
+        return self.hplan.fold(req, o)
 
     # --- camera obstacle detection (Part 2) -------------------------------------------
     async def vision_loop(self):
@@ -705,12 +716,19 @@ class Gateway:
         st.send({"t": "avoid_ack", "ok": ok, "text": text})
 
     def nav_send(self, req):
-        key = (req["kind"], req["heading"] and round(req["heading"], 1), req["cap_kn"], req["reason"], req["alarm"])
+        key = (req["kind"], req["heading"] and round(req["heading"], 1), req["cap_kn"], req["reason"], req["alarm"],
+               req.get("hflags"))
         if key != self.nav_last:
             self.nav_seq = (self.nav_seq + 1) & 0xFF
             self.nav_last = key
             self.audit("navreq", seq=self.nav_seq, nav_kind=req["kind"], heading=req["heading"], cap_kn=req["cap_kn"],
                        reason=req["reason"], alarm=req["alarm"])
+        if req["kind"] == proto.NAV_HARBOUR:
+            self.aurix.send(proto.T_GW_NAVREQ, proto.p_gw_navreq_harbour(
+                self.nav_seq, req["reason"], req["alarm"], req["heading"], req["cap_kn"], req["lease_ms"],
+                req["hflags"], req["nearest_m"], req["n_tracks"]))
+            self.nav_sent += 1
+            return
         self.aurix.send(proto.T_GW_NAVREQ, proto.p_gw_navreq(self.nav_seq, req["kind"], req["reason"], req["alarm"],
                                                              req["heading"], req["cap_kn"], 3000))
         self.nav_sent += 1
@@ -745,6 +763,12 @@ class Gateway:
             except Exception:
                 log.exception("navigation request")
             await asyncio.sleep(self.cfg.get("nav_s", 0.5))
+
+    def _on_harbour_stat(self, f):
+        try:
+            self.hplan.on_stat(proto.decode_harbour_stat(f.payload))
+        except ValueError:
+            return
 
     def _on_telem2(self, f):
         self.telem2 = proto.decode_telem2(f.payload)
@@ -817,6 +841,11 @@ class Gateway:
                 self.harbour.tick()
             except Exception:                               # the harbour sensors never stop the gateway
                 log.exception("harbour")
+            try:
+                if self.hplan.active():
+                    self.nav_tick()                         # step HX5: the kind-4 request at 5 Hz (lease 1 s)
+            except Exception:
+                log.exception("harbour planner")
             await asyncio.sleep(0.2)
 
     async def uav_loop(self):
@@ -944,7 +973,7 @@ class Gateway:
                 "hail": self.hail.status(),
                 "uav": self.uav.status(), "sar": self.sar.status(),
                 "adsb": self.adsb.status(self.net.data_saver()),
-                "harbour": self.harbour.status()}
+                "harbour": dict(self.harbour.status(), planner=self.hplan.status())}
 
     async def run(self):
         self._stop = asyncio.Event()

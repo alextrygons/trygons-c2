@@ -573,6 +573,79 @@ One line per decision, Greek + English (lang keys harb.why_*), e.g. «ΔΙΝΩ �
 επιβράδυνση 2 kn», «ΚΑΓΙΑΚ ΜΠΡΟΣΤΑ (κάμερα μόνο) – επιβράδυνση», «ΑΒΕΒΑΙΟΤΗΤΑ: χάθηκε το LiDAR –
 ΣΤΑΣΗ»; in the navreq reason byte (code) + gw_status / harbour_view (text) + the audit log.
 
+### 7a. As built (HX5) - the planner, COLREGs, "unsure = STOP" and the kind-4 output
+
+No app / hal / AURIX change (HX2's firmware covers everything the planner needs - no gap found). Gateway only.
+- gateway/harbour/planner.py: Planner (PURE: no I/O, `now` given, deterministic) + HarbourPlanner (the gateway glue,
+  in the gateway thread: tracks() / tracker_flags() read there, the HX4 no-lock note). gateway/harbour/colregs.py
+  (PURE: classify / encounters).
+- DEVIATION from 7.1 (the same idea, sampled differently): a candidate = a LATERAL OFFSET LINE inside the usable
+  corridor (corr - beam / 2 - 1 m - edge_margin_m 2 m: HX2's note "never lead the boat to the edge") every 1.5 m + the
+  current xte (= the STRAIGHT candidate, heading = the leg track) x speeds cap x {1, 0.75, 0.5, 0.35}; the proposal =
+  leg track + atan((offset - xte) / 15 m), clamped to +-45 deg (inside the AURIX's 60). Every candidate is simulated
+  40 s at dt 1 s with the AURIX's 8 deg/s slew, the boat's turn rate (0.6 deg/s per kn: ~2.4 deg/s at 4 kn, HX2 note),
+  the speed coming down with a 6 s constant (the coast-down: W147 note). A candidate path never leaves the usable
+  corridor (or comes back to it), so a plan inside the corridor is guaranteed by construction (HP9, storm I89h).
+- Distances: HULL TO HULL - own boat a 3 m disc (half of 6 m), the object half its size + 2 sigma (position sd, the
+  velocity sd grown for at most unc_t_s 10 s); >= min_moving_m 15 for a moving track (> 0.5 m/s, not static), >=
+  min_static_m 8 for static tracks and the static map (chart + LiDAR cells sampled every 1 m in the band ahead,
+  bucketed by along-track distance; a large static track checked at every step).
+- M0-3: a TURN = a proposal > 3 deg off the leg track (as 7.2); allowed only when EVERY track that blocks the straight
+  candidate (at any speed) is steer_ok, and with a sensor degraded (U2) seen by a sensor still OK; otherwise only the
+  straight candidate (slower) or STOP. A TENTATIVE range track (radar / LiDAR hits, not confirmed: <= 1 s LiDAR,
+  <= 4 s radar) is not planned around until it is confirmed - else every spray / clutter return latched a HOLD
+  (measured in HP15: a LiDAR spray return 7 m off the bow stopped the boat at once). Camera-only / AIS-only tracks
+  (never "confirmed" by the tracker) ARE obstacles (slow / STOP only).
+- "Slow, then STOP": nothing feasible over 40 s = the slowest STRAIGHT candidate judged over slow_horizon_s 15 s
+  (creeping on while the danger is far); that fails too = STOP (U5). A cap below min_move_kn 1.5 kn is never sent:
+  STOP instead (HX2 note: below the in-gear idle speed only idle). Narrow places (a static object within corr +
+  min_static of the line in the next 40 m) = cap narrow_kn 3 (W144); turning costs x3 when 2 x corr < 3 x min_static
+  (always with the defaults: slowing preferred).
+- COLREGs (7.3) for steer_ok moving vessels / unknown with CPA < 30 m within 40 s: HEAD_ON / CROSS_STBD (give way:
+  hflags b2) / CROSS_PORT (stand-on) / OVERTAKING (give way, any side) / OVERTAKEN (stand-on) / AMBIGUOUS (an unknown
+  aspect = velocity sd > half the speed; two classes at once) = slow to 2 kn, STOP after ambig_stop_s 3 s (U8). A port
+  turn is infeasible in every class but OVERTAKING. In a +-10 m corridor a 15 m pass of a moving vessel is mostly
+  impossible: the planner then gives way by slowing / STOP (HP2 / HP3).
+- Unsure (7.4) -> STOP in the same cycle: U1, U3 (pos_source 1 + unc <= 5 m), U4 (a cycle > 0.4 s after the last =
+  STOP held 1 s; the budget 150 ms per plan, over = STOP; an exception = STOP "U4 planner error"), U5, U7 (a confirmed
+  / camera / AIS track inside 8 m), U10, U11, U12 (no fresh position / heading), the tracker's stale / no pose / input
+  rejected / overload / error / not started / cycle older than 0.5 s, ANY unknown unsure reason (fail closed), no
+  checked route leg / the boat's route not the gateway's copy (prog_gw + count + the leg speeds kept from PROG_WP),
+  the sim gate. U2 / U9 = cap degraded_kn 2; U6 = 2 kn, STOP after conflict_stop_s 3 s; U8 as above.
+- Output: HarbourPlanner.fold() at the END of Gateway.nav_compose: while ACTIVE every cap of nav_compose (shallow,
+  collision, vision) folds into ONE kind-4 request (cap = the lowest, the reason byte kept, hflags b5 / b6 / b7; a
+  folded cap < 1.5 kn = STOP); the avoider's AUTO heading is not used (the planner steers). ACTIVE = the AURIX's own
+  HARBOUR_STAT fresh (< 1 s) AND (state RUN / SLOW / HOLD, or OFF with a gateway-checked harbour route stored and the
+  boat in STANDBY / MANUAL / CREWED HDG LOCK = waiting for the captain's START (never in UNCREWED HDG LOCK / REMOTE /
+  MANEUVER / AUTO / DP: their kind 1 / 2 lease is needed - a kind-4 request is inert there): the entry needs a fresh kind-4 request without STOP).
+  Otherwise nav_compose is unchanged (kind 0-3, HA-fold). Gateway.nav_send builds the 13-byte frame
+  (proto.p_gw_navreq_harbour) with lease 1000 ms; harbour_loop calls nav_tick every 0.2 s while active (5 Hz; HP12);
+  no fresh telemetry = nothing sent = the AURIX's lease HOLD. The captain starts it (T_HARBOUR START + CONFIRM: HX2; a
+  copilot's START = the captain's ACCEPT); nothing here starts or resumes anything.
+- The sim gate: harbour "sim" with an AURIX link that is not tcp:127.0.0.1 / localhost = every decision STOP + audit
+  "harbour" what "refused" (HP11).
+- Explanation (7.5): WHY keys harb.why_* (el + en in groundstation/lang, HP14) + the detail; gw_status "harbour"
+  "planner" {active, stat, gate, stop, why, text_el, text_en, cap_kn, heading, reasons, colregs, turn, decisions,
+  stops, errors, ms}; audit kind "harbour" on every CHANGE of decision (stop / why / reasons / cap / heading in 5 deg
+  steps), not 5 per second. The HX6 UI shows it.
+- Measured: a plan with synthetic tracks 1.4-1.6 ms on the development PC; the storm's closed loop (sensors + tracker
+  + planner) ~3 s per simulated 60 s episode.
+- Tests gateway/test_harbour_planner.py HP1-HP16 (stage gateway-misc) + the AVOIDANCE STORM
+  tests/acceptance/storm_harbour.py (I86h planner cap, I87 a turn away from the line only with a steer_ok track within
+  200 m, I88 15 / 8 m hull to hull to every SEEN world object or a HOLD begun in time, I89h corridor, I90 every
+  STOP-class unsure / both sensors lost = STOP in the same cycle; random worlds + sensor faults; reach counters;
+  --mutation-check: the steer_ok gate / the unsure STOP / the distance check removed each FAIL it). check.sh: 30
+  episodes + a 15-episode mutation check; RUN_ACCEPTANCE quick 200 episodes + mutation check 40, full 600.
+- DEVIATION from 9.2: the storm runs the gateway modules in-process against a kinematic boat that follows the AURIX's
+  validation rules (Boat in test_harbour_planner.py), not the autopilot_sim server - the AURIX side of the invariants
+  (I85, I86, I89 (a), I91, I92) is storm.c's (HX2); the end-to-end runs with the real simulator + gateway = HX7's
+  scenario library (H1-H20).
+- Limits (for HX6 / HX7 / the owner): a +-10 m corridor rarely lets the planner pass a moving vessel at 15 m - it
+  stops and waits (the HOLD is latched: the captain RESUMEs); the turn model is the simulator's, not measured; a
+  swimmer inside the LiDAR's blind zone (< ~18 m) is never seen (residual risk, MANUAL); the static map's coverage at
+  the boat is not judged (U10 = contents, HX4 note); a tentative range track is ignored for up to its confirmation
+  time.
+
 ## 8. Supervision UI + teach and repeat (HX6, DISPLAY + requests)
 
 ### 8.1 Screens
