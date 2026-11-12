@@ -186,6 +186,10 @@ the black-box slot has 2 bytes left), monitor: nothing new (harbour only lowers 
     (sb_default_config = 0, no other writer; the sim / storm set it directly to test the mechanism) - the W147 commit
     raises the range and adds the STANDBY + CONFIRM path; LOW-3 storm oracle: I47's harbour clause uses the AURIX's why,
     I86 checks harb.cap_kn + the true SOG, I85 assumes the 3 s near-shore detection (open sea / fuzz excused).
+  - Round-2 review of b70fac4 (the last round): no HIGH; its MEDs were checked against the code - harb_entry has its own
+    checks (not auto_common_checks; HB1-HB13 pass), sb_program_set refuses a new program while AUTO / a DP TRIP runs, no
+    automatic path starts AUTO RETURN / a DP TRIP, steer_pause's flag is AUTO's own (auto_mode releases it every RUN step);
+    its LOW fixed: the harbour-route refusal comes after the held-stick NACK 8.
 
 ## 3. Lost link in harbour (M0-6) - FIRMWARE, SERIAL review
 

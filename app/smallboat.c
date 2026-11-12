@@ -3333,11 +3333,12 @@ static sb_result_t auto_common_checks(const sb_t *s)
 {
     if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: no AUTO */
     if (!s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
-    /* step HX2 review MED-1: a harbour route is driven ONLY by harbour autonomy (its lease / caps / corridor HOLD,
-     * CLAUDE.md Z M0-2) - never by plain AUTO START / RESUME / RETURN (HARBOUR START / RESUME instead) */
-    if (sb_program(s)->flags & PROG_F_HARBOUR) return SB_ERR_WRONG_MODE;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
     if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
+    /* step HX2 review MED-1: a harbour route is driven ONLY by harbour autonomy (its lease / caps / corridor HOLD,
+     * CLAUDE.md Z M0-2) - never by plain AUTO START / RESUME / RETURN (HARBOUR START / RESUME instead); after the
+     * held-stick answer (NACK 8 stays the answer to a held stick - round-2 LOW) */
+    if (sb_program(s)->flags & PROG_F_HARBOUR) return SB_ERR_WRONG_MODE;
     if (!sb_compass_ok(s) || !sb_gps_ok(s) || gear_fault(&s->gear)) return SB_ERR_PRECOND;
     return SB_OK;
 }
