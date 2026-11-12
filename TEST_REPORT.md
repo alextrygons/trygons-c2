@@ -1107,3 +1107,4 @@ detections 481 -> 226; clutter 1.1 -> 24.6 plots per sweep; the worker process: 
 "lost" fault, skew DEGRADED 0.3 s, a crash restarted in 1.7 s, a hang in 4.2 s (test limits: restart_s 1, silent_s 3),
 below-normal priority (0x4000). Load (tools/gateway_load.py --harbour, 60 s): radar worker 0.3 %, LiDAR worker
 0.6 %, the gateway-side manager 1.4 % of one core; latency p99 312 ms radar / 54 ms LiDAR (300 / 50 ms of it modelled).
+HX3-r (review fixes): HS1-HS10 pass again; swimmer at 25 m 244 raw / 244 after the worker's filter (400 scans), kayak 287 / 287; a worker with a missing Python = LOST "cannot start" in 0.1 s. Stage runs: docs OK (36 s); gateway-misc 553 s: harbour 10/10, UA22 failed once in the stage while the station stage ran in parallel (see the re-run); station: SR8 NVENC = the known environmental failure.

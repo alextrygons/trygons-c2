@@ -12,7 +12,8 @@ Frames (every one documented; the tracker reads only these):
   LidarObject {x, y, z (m, SENSOR frame: x ahead, y to STARBOARD, z up from the sensor), len_m, wid_m, hgt_m,
                n_points}  - after the worker's filter (own hull box, the water band, isolated spray < 3 m)
   batch  {ev "radar" | "lidar", seq, t (sensor time = the measurement, epoch s, gateway clock after the sync),
-          t_tx (the worker's clock when it sent it), pose, items [...], bad (items refused by validation)}
+          t_tx (the worker's clock when it sent it), pose, items [...] (nearest first), bad (items refused by
+          validation), capped (items over max_items: the farthest), sim (true = SIMULATED data)}
   status {ev "status", kind, driver, self "ok" | "degraded" | "offline", why, rate_hz, batches, t}
 
 Health (the gateway's judgement, HealthJudge - never the worker's word alone):
@@ -21,7 +22,9 @@ Health (the gateway's judgement, HealthJudge - never the worker's word alone):
   STARTING  the worker runs, no batch yet (start_s)
   OK
   DEGRADED  the worker says so, or the batch rate < half the nominal rate, or the time skew > skew_max_s (0.1 s),
+            or the pose > pose_dt_max_s (0.5 s) from the measurement, or the delivery delay > delay_max_s (0.2 s),
             or more than bad_frac_max of the items refused
+  (the manager judges every age on time.monotonic(): a GPS clock step never fakes an OK - HX3 review M1)
   LOST      no batch for lost_s, or the worker process gone / hung (restarted)
 A change = a NOTICE (manager.py), never an alarm, never a mode change, never anything sent to the AURIX. The planner
 (HX5) treats LOST / DEGRADED by its unsure list (design 7.4 U1 / U2).
@@ -39,17 +42,17 @@ DRIVERS = {"radar": ("sim", "mayara", "none"), "lidar": ("sim", "livox", "ouster
 
 DEFAULTS = {
     "radar": {"enabled": False, "driver": "sim", "rate_hz": 0.8, "lost_s": 4.0, "start_s": 8.0, "latency_s": 0.3,
-              "skew_max_s": 0.1, "bad_frac_max": 0.2, "min_range_m": 25.0, "max_range_m": 3000.0,
+              "skew_max_s": 0.1, "bad_frac_max": 0.2, "pose_dt_max_s": 0.5, "delay_max_s": 0.2, "min_range_m": 25.0, "max_range_m": 3000.0,
               "range_sd_m": 3.0, "range_sd_frac": 0.005, "brg_sd_deg": 1.0, "speed_sd_mps": 0.3,
               "drop_p": 0.02, "clutter_n": 1.0, "clutter_r_m": 250.0, "url": ""},
     "lidar": {"enabled": False, "driver": "sim", "rate_hz": 10.0, "lost_s": 1.0, "start_s": 8.0, "latency_s": 0.05,
-              "skew_max_s": 0.1, "bad_frac_max": 0.2, "range_10pct_m": 40.0, "range_80pct_m": 70.0,
+              "skew_max_s": 0.1, "bad_frac_max": 0.2, "pose_dt_max_s": 0.5, "delay_max_s": 0.2, "range_10pct_m": 40.0, "range_80pct_m": 70.0,
               "min_range_m": 0.1, "mount_h_m": 2.5, "vfov_min_deg": -7.0, "vfov_max_deg": 52.0, "pos_sd_m": 0.05,
               "pos_sd_frac": 0.002, "drop_p": 0.01, "spray_n": 2.0, "hull_len_m": 7.0, "hull_wid_m": 2.6,
               "mount_x_m": 1.0, "water_band_m": 0.3, "min_points": 2, "cluster_m": 0.5, "addr": ""},
 }
 COMMON = {"enabled": False, "sim": False, "world": "", "python": "", "restart_s": 5.0, "silent_s": 6.0,
-          "pose_hz": 5.0, "max_items": 400}
+          "max_items": 400}
 
 
 def merged(cfg):
@@ -88,7 +91,10 @@ def check_config(cfg):
         drv = c.get("driver", "sim")
         if drv not in DRIVERS[kind]:
             out.append(("error", "harbour.%s.driver %r: one of %s" % (kind, drv, ", ".join(DRIVERS[kind]))))
-        elif c.get("enabled") and drv not in ("sim", "none") and not cfg.get("sim"):
+        elif cfg.get("sim") and drv not in ("sim", "none"):
+            out.append(("warning", "harbour.sim is true: the %s driver %s is REPLACED by the SIMULATOR - never on "
+                                   "the boat" % (kind, drv)))
+        elif c.get("enabled") and drv not in ("sim", "none"):
             out.append(("warning", "harbour.%s.driver %s: a SKELETON only - the sensor is not chosen yet (W148), "
                                    "it stays OFFLINE" % (kind, drv)))
         for k, v in c.items():
@@ -143,9 +149,12 @@ def size_cls(m):
     return "small" if m < 3.0 else ("medium" if m < 12.0 else "large")
 
 
+FLAT_M = 0.15            # a water-surface return is flatter than this
+
+
 def lidar_filter(objs, c):
-    """The worker's LiDAR clean-up (design 5): drop the own hull box, the water band (an object whose top is below
-    water + water_band_m) and isolated spray (fewer than min_points points closer than 3 m). Sensor frame."""
+    """The worker's LiDAR clean-up (design 5): drop the own hull box, the water band (a FLAT object - height < 0.15 m
+    - whose top is below water + water_band_m) and isolated spray (fewer than min_points points closer than 3 m). Sensor frame."""
     hl, hw, mx = float(c["hull_len_m"]), float(c["hull_wid_m"]), float(c["mount_x_m"])
     water = -float(c["mount_h_m"])
     band = float(c["water_band_m"])
@@ -154,8 +163,10 @@ def lidar_filter(objs, c):
         bx = o["x"] + mx                               # boat frame: x from the hull's middle
         if abs(bx) <= hl / 2.0 + 0.2 and abs(o["y"]) <= hw / 2.0 + 0.2:
             continue                                   # own hull
-        if o["z"] + o["hgt_m"] / 2.0 < water + band:
-            continue                                   # the water surface band (+- 0.3 m)
+        if o["z"] + o["hgt_m"] / 2.0 < water + band and o["hgt_m"] < FLAT_M:
+            continue                                   # a FLAT return in the water band (+- 0.3 m): the surface
+        # (HX3 review H1: a low object that is not flat - a swimmer's head 0.3 m - is KEPT; judging the top alone
+        # dropped half of the swimmer detections at the noise edge)
         if o["n_points"] < int(c["min_points"]) and math.hypot(o["x"], o["y"]) < 3.0:
             continue                                   # spray
         out.append(o)
@@ -175,6 +186,9 @@ class HealthJudge:
         self.rx = []                    # receive times of the last batches (rate)
         self.last_rx = None
         self.skew = None
+        self.pose_dt = None
+        self.delay = None
+        self.spawn_fail = ""             # HX3 review M2: why the worker cannot start
         self.bad_frac = 0.0
         self.self_state, self.self_why = "ok", ""
         self.bad_since = None
@@ -197,6 +211,14 @@ class HealthJudge:
             self.skew = (float(b["t_tx"]) - float(b["t"])) - float(self.c["latency_s"])
         except (KeyError, TypeError, ValueError):
             self.skew = None
+        try:                            # HX3 review M3: the pose must belong to the measurement
+            self.pose_dt = abs(float(b["t"]) - float(b["pose"]["t"]))
+        except (KeyError, TypeError, ValueError):
+            self.pose_dt = None
+        try:                            # HX3 review L5: the delivery delay worker -> gateway (epoch clocks)
+            self.delay = float(b["t_rx_epoch"]) - float(b["t_tx"])
+        except (KeyError, TypeError, ValueError):
+            self.delay = None
         n = len(b.get("items") or []) + int(b.get("bad") or 0)
         self.bad_frac = (int(b.get("bad") or 0) / float(n)) if n else 0.0
 
@@ -210,6 +232,8 @@ class HealthJudge:
         if self.self_state == "offline":
             return self._set(OFFLINE, self.self_why or "driver not available", now)
         if self.spawn_t is None:
+            if self.spawn_fail:
+                return self._set(LOST, "worker cannot start: %s" % self.spawn_fail, now)
             if not self.ever:
                 return self._set(STARTING, "starting", now)
             return self._set(LOST, "worker not running", now)
@@ -230,6 +254,10 @@ class HealthJudge:
                 why.append("rate %.2f Hz (nominal %.2f)" % (rate, float(c["rate_hz"])))
         if self.skew is not None and abs(self.skew) > float(c["skew_max_s"]):
             why.append("time skew %.0f ms" % (self.skew * 1000.0))
+        if self.pose_dt is not None and self.pose_dt > float(c["pose_dt_max_s"]):
+            why.append("pose %.0f ms from the measurement" % (self.pose_dt * 1000.0))
+        if self.delay is not None and self.delay > float(c["delay_max_s"]):
+            why.append("delivery delay %.0f ms" % (self.delay * 1000.0))
         if self.bad_frac > float(c["bad_frac_max"]):
             why.append("%.0f %% invalid items" % (self.bad_frac * 100.0))
         if why:

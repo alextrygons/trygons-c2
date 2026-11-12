@@ -368,6 +368,17 @@ module - HS9 scans it and runs a worker with sockets trapped):
 - Tests gateway/test_harbour_sensors.py HS1-HS10 (tools/check.sh stage gateway-misc). The design's HS1-HS8 list is
   covered: HS1 interface, HS2 / HS3 objects vs the truth, HS3 / HS4 blind zones, HS4 drop-outs, HS5 faults, HS6 health
   incl. the time skew, HS7 the worker restart; + HS8 the skeleton, HS9 no AURIX / network, HS10 the world.
+- Review of 1fc5206 (opus, tools/api_review.py; findings: the owner's private reviews folder, review_1fc5206.txt) fixed in
+  HX3-r: H1 the water band removes only FLAT clusters (< 0.15 m high) - judging the top alone could drop a swimmer's
+  head at the noise edge; HS3 / HS4 now count the swimmer + kayak AFTER the filter as the worker sends them (= raw);
+  M1 every age / timer in the manager on time.monotonic() (a GPS clock step never fakes an OK or a restart); M2 a
+  worker that cannot start = LOST "worker cannot start: <error>" (no endless STARTING), the world goes to the worker
+  on stdin (op world, --wait-world), never on argv; M3 the pose time = the gateway's telemetry RECEIVE time
+  (gw.telem_rx), a batch whose pose is > pose_dt_max_s 0.5 s from its measurement = DEGRADED; L1 items nearest first,
+  the cap counted apart ("capped"); L2 a restart's kill never blocks the gateway loop (own thread); L3 every batch
+  carries "sim": true for simulated data + a check_config warning when "sim" replaces a configured real driver (a
+  refusal of sim with a real AURIX link = HX4 note); L4 dead code out; L5 the delivery delay worker -> gateway >
+  delay_max_s 0.2 s = DEGRADED.
 - NOT in HX3: the tracker / fusion / AIS association (HX4 - the world's AIS MMSI is there for it), the planner (HX5),
   any screen (HX6), real drivers (W148).
 

@@ -25,6 +25,8 @@ import time
 
 from harbour import sensors, simworld
 
+mono = time.monotonic          # HX3 review M1: every age / timer (a GPS clock step never fakes an OK)
+
 log = logging.getLogger("harbour")
 HERE = os.path.dirname(os.path.abspath(__file__))
 KN = 0.514444
@@ -55,7 +57,7 @@ class SensorProc:
         cmd = [c.get("python") or sys.executable, os.path.join(HERE, "%s_worker.py" % self.kind),
                "--cfg", json.dumps(self.c)]
         if self.c.get("driver") == "sim" and world_json:
-            cmd += ["--world-json", world_json]
+            cmd += ["--wait-world"]                     # the world goes on stdin (review M2: never argv)
         return cmd
 
     def spawn(self, world_json):
@@ -73,15 +75,20 @@ class SensorProc:
             finally:
                 if err is not None:
                     err.close()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             log.warning("harbour %s: the worker did not start: %s", self.kind, e)
+            with self.lock:
+                self.judge.spawn_fail = str(e)[:120] or e.__class__.__name__    # review M2: LOST, said why
             self.spawning = False
             return
         self.q = queue.Queue(maxsize=50)
         with self.lock:
             self.proc = p
-            self.status, self.last_line = {}, time.time()
-            self.judge.spawned(time.time())
+            self.status, self.last_line = {}, mono()
+            self.judge.spawn_fail = ""
+            self.judge.spawned(mono())
+        if world_json:
+            self.send({"op": "world", "world": json.loads(world_json)})
         self.starts += 1
         self.spawning = False
         threading.Thread(target=self._reader, args=(p,), daemon=True).start()
@@ -94,7 +101,7 @@ class SensorProc:
                     m = json.loads(line.decode("utf-8"))
                 except ValueError:
                     continue
-                now = time.time()
+                now = mono()
                 with self.lock:
                     if p is not self.proc:
                         return
@@ -104,10 +111,10 @@ class SensorProc:
                         self.status = m
                         self.judge.status_line(m)
                     elif ev == self.kind:
+                        m["t_rx_epoch"] = time.time()
                         self.judge.batch(now, m)
-                        m["t_rx"] = now
                         try:
-                            self.lat.append(now - float(m["t"]))
+                            self.lat.append(m["t_rx_epoch"] - float(m["t"]))
                         except (KeyError, TypeError, ValueError):
                             pass
                         self.latest = m
@@ -138,12 +145,19 @@ class SensorProc:
     def stop(self, wait=True):
         with self.lock:
             p, self.proc = self.proc, None
-            self.judge.gone(time.time())
+            self.judge.gone(mono())
         if p is None:
             return
+        if not wait:                                    # review L2: never block the gateway loop on a kill
+            threading.Thread(target=self._end, args=(p, False, self.q), daemon=True).start()
+            return
+        self._end(p, True, self.q)
+
+    @staticmethod
+    def _end(p, wait, q):
         try:
-            self.q.put_nowait(b'{"op": "stop"}\n')
-            self.q.put_nowait(None)
+            q.put_nowait(b'{"op": "stop"}\n')
+            q.put_nowait(None)
         except queue.Full:
             pass
         try:
@@ -188,7 +202,6 @@ class HarbourSensors:
         self.world_json = ""
         self.notices = collections.deque(maxlen=30)
         self.last_state = {k: None for k in sensors.KINDS}
-        self.pose_t = 0.0
         self.on_batch = []                  # HX4: the tracker's callback(kind, batch) - called in tick()
         self.errors = 0
         if self.enabled and self.sim:
@@ -210,22 +223,25 @@ class HarbourSensors:
             return None
         if not o or not o.get("fresh") or o.get("lat") is None or o.get("heading") is None:
             return None
-        p = {"t": time.time(), "lat": o["lat"], "lon": o["lon"], "heading": float(o["heading"]) % 360.0,
+        # review M3: the pose time = when the gateway RECEIVED that telemetry (gw.telem_rx), not this read
+        t_rx = getattr(self.gw, "telem_rx", None)
+        t = float(t_rx) if isinstance(t_rx, (int, float)) and t_rx > 0 else time.time()
+        p = {"t": t, "lat": o["lat"], "lon": o["lon"], "heading": float(o["heading"]) % 360.0,
              "sog": o.get("sog"), "cog": o.get("cog")}
         return p if sensors.valid_pose(p) else None
 
     def notice(self, text, level="info"):
-        self.notices.append({"t": round(time.time(), 1), "text": text, "level": level})
+        self.notices.append({"t": round(time.time(), 1), "text": text, "level": level})   # epoch: display only
         log.warning("harbour: %s", text)
 
     def tick(self, now=None):
         """5 Hz from the gateway: the own pose to the workers, the workers alive, the health, the notices."""
-        now = time.time() if now is None else now
+        now = mono() if now is None else now
         if not self.enabled:
             return
         pose = self.own_pose()
         if self.world is not None and not self.world_json and pose is not None:
-            self.world.place(pose["lat"], pose["lon"], now)      # the harbour around the boat's first position
+            self.world.place(pose["lat"], pose["lon"], time.time())      # the harbour around the boat's first position
             self.world_json = json.dumps(self.world.to_json())
         for kind, sp in self.procs.items():
             if not sp.c.get("enabled"):
@@ -245,7 +261,7 @@ class HarbourSensors:
                 sp.spawning = True
                 sp.next_start = now + float(self.cfg["restart_s"])
                 threading.Thread(target=sp.spawn, args=(self.world_json,), daemon=True).start()
-            if pose is not None and sp.proc is not None and now - self.pose_t >= 0.0:
+            if pose is not None and sp.proc is not None:
                 sp.send(dict(pose, op="pose"))
             with sp.lock:
                 st, why = sp.judge.judge(now)
@@ -264,7 +280,6 @@ class HarbourSensors:
                     except Exception:
                         self.errors += 1
                         log.exception("harbour: on_batch")
-        self.pose_t = now
 
     def fault(self, kind, name, on=True):
         """SIMULATOR only: inject a fault into a simulated sensor (tests, demo); refused for a real driver."""

@@ -84,6 +84,8 @@ def hs1():
             {"radar": {"driver": "x", "rate_hz": 0}, "lidar": {"lost_s": float("nan")}}) if e[0] == "error"]) >= 3,
         "osdep carries harbour errors": any("harbour.radar" in t for lvl, t in full if lvl == "error"),
         "size classes": [sensors.size_cls(v) for v in (1, 5, 30)] == ["small", "medium", "large"],
+        "sim over a real driver = warning": any("SIMULATOR" in t for lvl, t in sensors.check_config(
+            {"sim": True, "radar": {"enabled": True, "driver": "mayara"}}) if lvl == "warning"),
     }
     report("HS1 interface contract", all(checks.values()), ", ".join(k for k, v in checks.items() if not v) or
            "%d checks" % len(checks))
@@ -133,13 +135,25 @@ def hs3():
     sw_near = LidarSim(one("swimmer", x=0.0, y=11.0, h=0.3, len=0.6, beam=0.5, refl=0.15), c, seed=5, tag=True)
     sw_far = LidarSim(one("swimmer", x=0.0, y=26.0, h=0.3, len=0.6, beam=0.5, refl=0.15), c, seed=5, tag=True)
     near = sum(1 for _ in range(200) for o in sw_near.scan(0.0, pose_at(0, 0, 0)) if o["sim_id"] == "o")
-    far = sum(1 for _ in range(200) for o in sw_far.scan(0.0, pose_at(0, 0, 0)) if o["sim_id"] == "o")
+    far, far_f = 0, 0
+    for _ in range(400):                # HX3 review H1: raw vs AFTER the worker's filter
+        raw = sw_far.scan(0.0, pose_at(0, 0, 0))
+        far += sum(1 for o in raw if o["sim_id"] == "o")
+        far_f += sum(1 for o in sensors.lidar_filter(raw, c) if o["sim_id"] == "o")
+    ky = LidarSim(one("kayak", x=0.0, y=21.0, len=4.0, beam=0.7, h=0.4, refl=0.5), c, seed=6, tag=True)
+    k_raw = k_f = 0
+    for _ in range(300):
+        raw = ky.scan(0.0, pose_at(0, 0, 0))
+        k_raw += sum(1 for o in raw if o["sim_id"] == "o")
+        k_f += sum(1 for o in sensors.lidar_filter(raw, c) if o["sim_id"] == "o")
     ok = (len(xs) > 150 and abs(statistics.mean(xs) - 20.0) < 0.1 and abs(statistics.mean(ys) - 5.0) < 0.1 and
-          raw_hull == 200 and raw_spray > 100 and kept_bad == 0 and near == 0 and far > 50)
+          raw_hull == 200 and raw_spray > 100 and kept_bad == 0 and near == 0 and far > 100 and
+          far_f >= 0.95 * far and k_raw > 100 and k_f >= 0.95 * k_raw)
     report("HS3 LiDAR vs truth + filter + blind zone", ok,
            "n %d at x %.2f y %.2f (20, 5); raw hull %d spray %d water %d, kept after the filter %d; swimmer 10 m %d / "
-           "25 m %d of 200 scans" % (len(xs), statistics.mean(xs) if xs else 0, statistics.mean(ys) if ys else 0,
-                                      raw_hull, raw_spray, raw_water, kept_bad, near, far))
+           "25 m %d raw / %d after the filter of 400 scans; kayak 0.4 m %d / %d" % (
+               len(xs), statistics.mean(xs) if xs else 0, statistics.mean(ys) if ys else 0, raw_hull, raw_spray,
+               raw_water, kept_bad, near, far, far_f, k_raw, k_f))
 
 
 def hs4():
@@ -162,7 +176,8 @@ def hs4():
     beyond = sum(len(far.sweep(0.0, pose_at(0, 0, 0)) or []) for _ in range(100))
     lc = dict(sensors.DEFAULTS["lidar"], drop_p=0.0)
     sw = LidarSim(one("swimmer", x=0.0, y=26.0, h=0.3, len=0.6, beam=0.5, refl=0.15), lc, seed=8, tag=True)
-    pd = sum(1 for _ in range(2000) for o in sw.scan(0.0, pose_at(0, 0, 0)) if o["sim_id"] == "o") / 2000.0
+    pd = sum(1 for _ in range(2000) for o in sensors.lidar_filter(sw.scan(0.0, pose_at(0, 0, 0)), lc)
+             if o["sim_id"] == "o") / 2000.0                      # as the worker sends it (after the filter)
     drop_rate = drops / 3000.0
     ok = (abs(drop_rate - c["drop_p"]) < 0.01 and 0.8 < statistics.pstdev(rr) / sd_r_exp < 1.2 and
           0.8 < statistics.pstdev(bb) / c["brg_sd_deg"] < 1.2 and near == 0 and beyond == 0 and 0.45 < pd < 0.7)
@@ -205,8 +220,10 @@ def hs6():
     j = sensors.HealthJudge("lidar", c)
     seen = {}
 
-    def b(t, skew=0.0, bad=0, n=5):
-        return {"t": t - c["latency_s"] - skew, "t_tx": t, "items": [{}] * n, "bad": bad}
+    def b(t, skew=0.0, bad=0, n=5, pose_dt=0.0, delay=0.0):
+        tm = t - c["latency_s"] - skew
+        return {"t": tm, "t_tx": t, "items": [{}] * n, "bad": bad, "pose": {"t": tm - pose_dt},
+                "t_rx_epoch": t + delay}
     seen["start"] = j.judge(0.0)[0]
     j.spawned(0.0)
     seen["starting"] = j.judge(1.0)[0]
@@ -222,7 +239,6 @@ def hs6():
         t += 0.1
         j.batch(t, b(t))
     seen["held after lost"] = j.judge(t)[0]
-    seen["ok after 2 s"] = j.judge(t + 0.1)[0] if False else None
     for _ in range(25):
         t += 0.1
         j.batch(t, b(t))
@@ -236,6 +252,14 @@ def hs6():
         t += 0.3
         j.batch(t, b(t))
     seen["rate"] = j.judge(t)
+    t += 0.1
+    j.batch(t, b(t, pose_dt=0.8))
+    seen["pose old"] = j.judge(t)
+    j.batch(t, b(t, delay=0.5))
+    seen["delay"] = j.judge(t)
+    jf = sensors.HealthJudge("lidar", c)
+    jf.spawn_fail = "No such file"
+    seen["cannot start"] = jf.judge(0.0)
     j.status_line({"self": "degraded", "why": "sensor says"})
     seen["self"] = j.judge(t)
     j.status_line({"self": "offline", "why": "driver x"})
@@ -248,6 +272,9 @@ def hs6():
     ok = ok and seen["bad items"][0] == "DEGRADED" and "invalid" in seen["bad items"][1]
     ok = ok and seen["rate"][0] == "DEGRADED" and "rate" in seen["rate"][1]
     ok = ok and seen["self"][0] == "DEGRADED" and "sensor says" in seen["self"][1]
+    ok = ok and seen["pose old"][0] == "DEGRADED" and "pose" in seen["pose old"][1]
+    ok = ok and seen["delay"][0] == "DEGRADED" and "delivery" in seen["delay"][1]
+    ok = ok and seen["cannot start"][0] == "LOST" and "cannot start" in seen["cannot start"][1]
     report("HS6 health judgement", ok, json.dumps({k: v for k, v in seen.items()}, default=str)[:400])
 
 
@@ -320,13 +347,24 @@ def hs7():
         got["notices"] = (any("CRASHED" in x for x in texts) and any("HUNG" in x for x in texts) and
                           any(x.startswith("LIDAR LOST") for x in texts))
         got["latency"] = st["sensors"]["lidar"]["latency"]
+        lb = m.latest("radar")
+        rs = [i["range_m"] for i in (lb or {}).get("items", [])]
+        got["batch sim flag + nearest first"] = bool(lb and lb.get("sim") is True and "capped" in lb and
+                                                     rs == sorted(rs))
+        bad = HarbourSensors({"sim": True, "python": os.path.join(HERE, "no_such_python.exe"),
+                              "lidar": {"enabled": False}, "radar": {"start_s": 1.0}}, FakeGw())
+        try:
+            got["cannot start = LOST"] = run_until(bad, lambda: bad.health("radar")[0] == "LOST" and
+                                                   "cannot start" in bad.health("radar")[1], 8)
+        finally:
+            bad.stop()
         got["fault refused for a real driver"] = not HarbourSensors({"lidar": {"enabled": True, "driver": "livox"}},
                                                                     gw).fault("lidar", "lost")
     finally:
         m.stop()
     ok = (all(got.get(k) is not None for k in ("ok", "lost", "back", "skew", "degraded", "crash", "hang",
-                                               "no pose = lost"))
-          and got["new pid"] and got["notices"] and got["fault refused for a real driver"]
+                                               "no pose = lost", "cannot start = LOST"))
+          and got["new pid"] and got["batch sim flag + nearest first"] and got["notices"] and got["fault refused for a real driver"]
           and (got["prio"] in (None, 0x4000)))
     report("HS7 worker processes: health, notices, crash / hang restart", ok,
            json.dumps(got, default=str)[:500])

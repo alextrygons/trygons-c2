@@ -2,7 +2,8 @@
 
 Each sensor = its OWN process (like the vision / ADS-B workers): below-normal priority, ONE thread of work (no thread
 pools; OMP / MKL / OpenBLAS limited to 1 in case a vendor SDK pulls numpy in), JSON lines:
-  stdin   {"op": "pose", "t", "lat", "lon", "heading", "sog", "cog"}   the own boat (the gateway, 5 Hz)
+  stdin   {"op": "world", "world": {...}}                              the simulated world (sim, --wait-world)
+          {"op": "pose", "t", "lat", "lon", "heading", "sog", "cog"}   the own boat (the gateway, 5 Hz)
           {"op": "fault", "name": "lost" | "degraded" | "clutter" | "ghost" | "skew" | "crash" | "freeze" | "clear",
            "on": bool}                                                  (SIMULATOR only - the real drivers ignore it)
           {"op": "stop"}
@@ -22,7 +23,7 @@ for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXP
 from harbour import sensors, simworld  # noqa: E402
 
 out_lock = threading.Lock()
-POSE_MAX_AGE_S = 2.0
+POSE_MAX_AGE_S = 2.0      # pose["t"] = when the gateway RECEIVED the telemetry (HX3 review M3)
 
 
 def emit(obj):
@@ -54,6 +55,7 @@ class State:
         self.lock = threading.Lock()
         self.pose = None
         self.faults = {}
+        self.world = None
         self.stop = False
 
 
@@ -76,6 +78,8 @@ def stdin_reader(st):
                         st.faults = {}
                     elif isinstance(n, str):
                         st.faults[n] = m.get("on", True)
+                elif op == "world":
+                    st.world = m.get("world")
                 elif op == "stop":
                     st.stop = True
                     return
@@ -89,7 +93,8 @@ def run(kind, argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", default="{}", help="the harbour.<kind> config (JSON)")
     ap.add_argument("--world", default="", help="a world file (simworld.py) - simulator only")
-    ap.add_argument("--world-json", default="", help="the world itself (JSON; the gateway fixes its origin)")
+    ap.add_argument("--wait-world", action="store_true", help="wait for {op: world} on stdin (the gateway fixes "
+                    "its origin; never on the command line: HX3 review M2)")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args(argv)
     c = dict(sensors.DEFAULTS[kind])
@@ -100,19 +105,20 @@ def run(kind, argv=None):
     drv = c.get("driver", "sim")
     src = None
     why_off = ""
-    if drv == "sim":
-        if a.world_json:
-            d = json.loads(a.world_json)
+    def make_sim(d):
+        if d is not None:
             world = simworld.World(d.get("objects"), d.get("origin"), d.get("t0"))
         else:
             world = simworld.World.load(a.world) if a.world else simworld.World()
         if kind == "radar":
             from harbour.simradar import RadarSim
-            src = RadarSim(world, c, seed=a.seed or 11)
-        else:
-            from harbour.simlidar import LidarSim
-            src = LidarSim(world, c, seed=a.seed or 12)
-    else:
+            return RadarSim(world, c, seed=a.seed or 11)
+        from harbour.simlidar import LidarSim
+        return LidarSim(world, c, seed=a.seed or 12)
+    wait_world = drv == "sim" and a.wait_world          # HX3 review M2: the gateway sends the world on stdin
+    if drv == "sim" and not wait_world:
+        src = make_sim(None)
+    elif drv != "sim":
         sk = sensors.RealDriverSkeleton(kind, drv, c)
         _ok, why_off = sk.open()
     period = 1.0 / float(c["rate_hz"])
@@ -123,6 +129,11 @@ def run(kind, argv=None):
         now = time.time()
         with st.lock:
             pose, f = st.pose, dict(st.faults)
+        if src is None and wait_world:
+            with st.lock:
+                d = st.world
+            if d is not None:
+                src = make_sim(d)
         if f.get("crash"):
             os._exit(3)                                 # the test: a crashed worker
         if f.get("freeze"):
@@ -132,7 +143,9 @@ def run(kind, argv=None):
             next_status = now + 1.0
             sent_t = [t for t in sent_t if now - t <= 5.0]
             rate = (len(sent_t) - 1) / max(1e-3, sent_t[-1] - sent_t[0]) if len(sent_t) > 1 else 0.0
-            if src is None:
+            if src is None and wait_world:
+                self_st, why = "ok", "waiting for the world"
+            elif src is None:
                 self_st, why = "offline", why_off
             elif pose is None and now - t_start < POSE_MAX_AGE_S + 1.0:
                 self_st, why = "ok", "waiting for the own pose"
@@ -161,11 +174,15 @@ def run(kind, argv=None):
         if kind == "lidar":
             raw = sensors.lidar_filter(raw, c)
         valid = sensors.valid_plot if kind == "radar" else sensors.valid_object
-        items = [i for i in raw if valid(i)][:int(c.get("max_items", 400) or 400)]
+        good = [i for i in raw if valid(i)]
+        # HX3 review L1: nearest first, the cap counted apart (never "invalid")
+        good.sort(key=(lambda i: i["range_m"]) if kind == "radar" else (lambda i: i["x"] * i["x"] + i["y"] * i["y"]))
+        cap = int(c.get("max_items", 400) or 400)
+        items, capped = good[:cap], max(0, len(good) - cap)
         seq += 1
         batches += 1
         sent_t.append(now)
         t_stamp = t_meas + (0.4 if f.get("skew") else 0.0)
         emit({"ev": kind, "seq": seq, "t": round(t_stamp, 3), "t_tx": round(time.time(), 3), "pose": pose,
-              "items": items, "bad": len(raw) - len(items)})
+              "items": items, "bad": len(raw) - len(good), "capped": capped, "sim": drv == "sim"})
     return 0
