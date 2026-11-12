@@ -2,6 +2,9 @@
 
     python tools/gateway_load.py                 (10 min, 1080p main + 360p sub streams)
     python tools/gateway_load.py --minutes 3 --viewers 0
+    python tools/gateway_load.py --harbour --minutes 3   (step HX3: ONLY the harbour sensor workers - the simulated
+                                                      radar + LiDAR processes driven by a boat circling in the
+                                                      harbour; CPU per worker, the gateway-side manager, latency)
     python tools/gateway_load.py --uav 6 --uav-ai 2   (step U4: + the UAV magazine: 6 simulated VRX captures encoded
                                                       640x480 15 fps ~400 kbit/s into MediaMTX + the ring, the UAV AI
                                                       on 2 feeds - measured per part)
@@ -210,6 +213,64 @@ def camera(ffmpeg, i, src_video):
     return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def harbour_load(a):
+    """HX3: CPU of the two harbour sensor worker processes (simulated radar 0.8 Hz + LiDAR 10 Hz, the default harbour
+    world), the gateway-side manager (this process: HarbourSensors.tick at 5 Hz + the reader threads) and the latency
+    sensor time -> the gateway (p50 / p99 / max). The boat circles the basin (radius 40 m, 2 m/s)."""
+    import math
+    from harbour.manager import HarbourSensors
+    from harbour import simworld
+
+    class Gw:
+        t0 = time.time()
+
+        def own(self):
+            t = time.time() - self.t0
+            ang = t * 2.0 / 40.0
+            lat, lon = simworld.xy_to_ll(37.82, 23.60, 40.0 * math.sin(ang), 40.0 * math.cos(ang) - 40.0)
+            return {"fresh": True, "lat": lat, "lon": lon, "heading": (math.degrees(ang) + 90.0) % 360.0,
+                    "sog": 3.9, "cog": (math.degrees(ang) + 90.0) % 360.0}
+    m = HarbourSensors({"sim": True}, Gw())
+    secs = max(10.0, a.minutes * 60.0)
+    warm = min(a.warmup, 20.0)
+    t_end = time.time() + warm + secs
+    samples = {"radar": [], "lidar": [], "manager": []}
+    base, p0, wall0 = None, None, None
+    try:
+        while time.time() < t_end:
+            m.tick()
+            time.sleep(0.2)
+            now = time.time()
+            if base is None and now >= t_end - secs:
+                base = {k: proc_sample(p) for k, p in m.pids().items() if p}
+                p0, wall0 = time.process_time(), now
+                for sp in m.procs.values():
+                    sp.lat.clear()
+        cpu = {}
+        wall = time.time() - wall0
+        for k, p in m.pids().items():
+            s1 = proc_sample(p) if p else None
+            if s1 and base and base.get(k):
+                cpu[k] = {"cpu_pct_one_core": round(100.0 * (s1[0] - base[k][0]) / wall, 2),
+                          "rss_mb": round(s1[1] / 1e6, 1)}
+        cpu["manager"] = {"cpu_pct_one_core": round(100.0 * (time.process_time() - p0) / wall, 2)}
+        st = m.status()
+        res = {"seconds": round(wall), "cpu": cpu,
+               "latency": {k: v["latency"] for k, v in st["sensors"].items()},
+               "items": {k: v["items"] for k, v in st["sensors"].items()},
+               "rate_hz": {k: v["rate_hz"] for k, v in st["sensors"].items()},
+               "state": {k: v["state"] for k, v in st["sensors"].items()}, "restarts": {k: v["restarts"]
+                                                                                       for k, v in st["sensors"].items()}}
+    finally:
+        m.stop()
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, "harbour.json"), "w", encoding="utf-8") as f:
+        json.dump(res, f, indent=1)
+    print("HARBOUR %s" % json.dumps(res))
+    ok = all(v == "OK" for v in res["state"].values()) and not any(res["restarts"].values())
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--minutes", type=float, default=10.0)
@@ -219,7 +280,10 @@ def main():
     ap.add_argument("--uav", type=int, default=0, help="U4: N simulated UAV video captures (640x480 15 fps)")
     ap.add_argument("--uav-ai", type=int, default=0, help="U4: the UAV AI on this many of the UAV feeds")
     ap.add_argument("--uav-encoder", default="auto", help="auto (Quick Sync if it works) / x264")
+    ap.add_argument("--harbour", action="store_true", help="HX3: the harbour sensor workers alone (simulated)")
     a = ap.parse_args()
+    if a.harbour:
+        return harbour_load(a)
     ffmpeg, mtx, vpy = toolpaths.ffmpeg(), toolpaths.mediamtx(), toolpaths.vision_python()
     model = os.path.join(REPO, "gateway", "vision", "models", "ewasr_resnet18.onnx")
     video = os.path.join(REPO, "demo", "media", "sea.mp4")

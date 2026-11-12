@@ -1095,3 +1095,15 @@ Tests run alone: AS14, AS16-AS25, AS29 PASS (AS24 = the real qwen3-4b with the n
 | gateway | test_gateway.py | 1517 | 163 of 164 in the stage; G6 failed once in-stage (release code 103 instead of 7, timing), section G alone PASS (W50 rule); earlier stage run: section D crashed in 3 s once, passes alone |
 
 Sum about 57 min for the full gate; no stage over 25 min. Flakes seen in the FIRST (partly stale-tree) stage runs and passing alone / on the repeat (W50 rule, not weakened): academy AC31 s11_mob_search (failed 2x inside the stage, passes alone 2x and in the full-gate run), gateway-misc UA18a (event loop 594 ms, passes alone), gateway section D (crashed in 3 s once, passes alone). Real fixes found by the split runs: lang keys bench.stack_core0-2 (dynamic use) restored, test_screen2 S11 allows the product name "Mission Planner" (X1 button), tests/assistant/floor.json re-frozen (passage count only; floor unchanged 7.2), tour stop uav.tlog (voice_pending) + pictures, stackcheck POLLED_ONLY also from core1_main / core2_main (MED-A, selftest ST28 mutation).
+
+## HX3 - harbour sensors behind an interface, simulated radar + LiDAR (2026-11-12)
+
+gateway/test_harbour_sensors.py HS1-HS10 (stage gateway-misc): 10 passed. Measured against the world truth: radar
+range 299.4 m for 299.8 m (bias < 0.5 m), bearing 314.98 deg for 315.0 (relative to the bow), speed 2.03 for 2.0 m/s;
+range sd 5.41 for the modelled 5.50 m, bearing sd 1.02 for 1.0 deg, sweep drop 2.5 % for 2 %; nothing inside the 25 m
+blind zone or beyond 3000 m; LiDAR kayak at (19.99, 5.01) for (20, 5) m; a 0.3 m swimmer never seen at 10 m (under
+the -7 deg FOV), Pd 0.61 at 25 m; the filter keeps 0 of the hull / water / spray returns; degraded = noise x2.8,
+detections 481 -> 226; clutter 1.1 -> 24.6 plots per sweep; the worker process: OK in 0.6 s, LOST 1.0 s after a
+"lost" fault, skew DEGRADED 0.3 s, a crash restarted in 1.7 s, a hang in 4.2 s (test limits: restart_s 1, silent_s 3),
+below-normal priority (0x4000). Load (tools/gateway_load.py --harbour, 60 s): radar worker 0.3 %, LiDAR worker
+0.6 %, the gateway-side manager 1.4 % of one core; latency p99 312 ms radar / 54 ms LiDAR (300 / 50 ms of it modelled).

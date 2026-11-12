@@ -18,6 +18,14 @@
     "low_free_gb": 20.0,
     "full_free_gb": 2.0
   },
+  "harbour": {
+    "_help": "Harbour autonomy sensors (CLAUDE.md Z, docs/harbour_design.md 5a, step HX3): each sensor = its own worker process (gateway/harbour/radar_worker.py / lidar_worker.py). sim true = the SIMULATED radar + LiDAR from the harbour world (world = a file from demo/demo_world.py, '' = the built-in harbour around the boat's first position). driver: sim | mayara (radar) | livox / ouster (LiDAR) = SKELETONS ONLY until the owner chooses (W148): they stay OFFLINE. Health OK / DEGRADED / LOST = notices only, never an alarm or a mode change",
+    "enabled": false,
+    "sim": false,
+    "world": "",
+    "radar": {"enabled": false, "driver": "mayara", "url": "", "rate_hz": 0.8, "lost_s": 4.0, "latency_s": 0.3, "min_range_m": 25.0},
+    "lidar": {"enabled": false, "driver": "livox", "addr": "", "rate_hz": 10.0, "lost_s": 1.0, "latency_s": 0.05, "mount_h_m": 2.5}
+  },
   "adsb": {
     "_help": "ADS-B receive only (CLAUDE.md X K4, PF5): a 1090 MHz RTL-SDR + readsb / dump1090. source = its SBS port (30003) or Beast (30005, proto beast); decoder 'auto' = start readsb / dump1090 found by toolpaths.py (python tools/get_readsb.py), '' = it already runs; sim = a simulated helicopter (demo / tests). max_alt_ft / max_km = the display + warning filter",
     "enabled": false,

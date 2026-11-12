@@ -2,6 +2,11 @@
 streams (published to MediaMTX) and AIS traffic around the start position.
 Started and stopped by demo.py (START_DEMO.bat / STOP_DEMO.bat).
 
+The demo HARBOUR (step HX3): harbour_world() = the harbour the gateway's SIMULATED radar + LiDAR see
+(gateway/harbour/simworld.py objects: piers, moored boats, a vessel with AIS, a vessel / kayak / swimmer
+without AIS, a buoy), placed around the boat's first position; demo.py writes it to demo_run/harbour_world.json
+for the gateway ("harbour": {"sim": true, "world": ...}). No tracker / planner / screen yet (HX4-HX6).
+
 A command file lets demo.py add things while it runs:
   {"ship": {"lat":..., "lon":..., "sog":..., "cog":..., "name":...}}   one more AIS ship
 The front camera can show a video file instead of the test picture
@@ -19,6 +24,19 @@ sys.path.insert(0, os.path.join(HERE, "..", "gateway"))
 from simais import AisSim, Ship, traffic  # noqa: E402
 from simcam import SimCamera, ffmpeg_bin  # noqa: E402
 from ais import dist_m  # noqa: E402
+from harbour import simworld  # noqa: E402
+
+
+def harbour_world():
+    """The demo harbour (local metres around the boat's first position; origin / t0 fixed by the gateway)."""
+    objs = simworld.default_objects()
+    objs += [
+        {"id": "moored4", "kind": "moored", "x": -82.0, "y": 95.0, "len": 9.0, "beam": 3.2, "hdg": 0.0, "h": 2.0,
+         "rcs": 0.7, "refl": 0.5},
+        {"id": "tender", "kind": "vessel", "path": [[-60.0, 130.0], [60.0, 20.0]], "speed": 2.5, "len": 5.0,
+         "beam": 2.0, "h": 1.0, "rcs": 0.4, "refl": 0.4, "ais": None, "phase": 40.0},
+    ]
+    return {"origin": None, "t0": None, "objects": objs}
 
 
 def video_camera(url, path):

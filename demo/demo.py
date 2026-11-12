@@ -175,6 +175,16 @@ def vision_config():
             "camera": {"height_m": 2.0, "tilt_down_deg": -3.0, "hfov_deg": 70.0, "vfov_deg": 40.0, "yaw_deg": 0.0}}
 
 
+def harbour_world_file():
+    """demo_run/harbour_world.json = demo_world.harbour_world() (step HX3)."""
+    import demo_world
+    os.makedirs(RUN, exist_ok=True)
+    path = os.path.join(RUN, "harbour_world.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(demo_world.harbour_world(), f, indent=1)
+    return path
+
+
 def gateway_config(mtx, charts):
     from users import hash_pw
     names = ["FRONT-1", "FRONT-2", "REAR-LEFT", "REAR-RIGHT"]
@@ -214,6 +224,9 @@ def gateway_config(mtx, charts):
                 "video": {"enabled": True, "always": [1], "w": 320, "h": 240, "fps": 10, "kbps": 250}},
         # (PF5: the simulated ADS-B receiver - a helicopter crosses the area where the boat / UAVs are, 400 ft)
         "adsb": {"enabled": True, "sim": True},
+        # (HX3: the SIMULATED harbour radar + LiDAR - demo_world.harbour_world() around the boat's first position;
+        # health / notices in gw_status "harbour" only, no tracker / planner / screen yet)
+        "harbour": {"enabled": True, "sim": True, "world": harbour_world_file()},
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},

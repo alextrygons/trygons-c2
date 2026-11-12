@@ -324,6 +324,53 @@ gateway/harbour/sensors.py: one interface for every source, so the tracker never
   the vendor SDK; LiDAR via the vendor SDK (ouster-sdk / Livox-SDK2 Python bindings or a small C
   helper). Never on the AURIX.
 
+### 5a. As built (HX3) - sensors behind an interface + the SIMULATED radar / LiDAR
+
+Package gateway/harbour/ (no app / hal / AURIX change; nothing in it imports aurix.py / stations / proto or a network
+module - HS9 scans it and runs a worker with sockets trapped):
+- sensors.py = the interface: the frames pose / RadarPlot {range_m, brg_deg RELATIVE TO THE BOW, speed_mps, course_deg,
+  size_m, size_cls small / medium / large, strength} / LidarObject {x ahead, y STARBOARD, z up from the sensor, len_m,
+  wid_m, hgt_m, n_points} / batch {ev, seq, t sensor time, t_tx, pose, items, bad} / status {self ok | degraded |
+  offline, why, rate_hz}; validation (NaN / out of range / bad class = refused + counted in "bad", never used);
+  lidar_filter (own hull box, the water band +-0.3 m, isolated spray < 3 m); HealthJudge = the GATEWAY's judgement
+  from what it receives: OFF / OFFLINE / STARTING / OK / DEGRADED (the worker says so, rate < half nominal, time skew
+  |(t_tx - t) - latency_s| > 0.1 s, > 20 % invalid items) / LOST (no batch for lost_s: radar 4 s, LiDAR 1 s; worker
+  gone), back to OK only after 2 s good; check_config (osdep.check_config / gateway.py --check-config carries it);
+  RealDriverSkeleton = the place of the real drivers "mayara" (radar) / "livox" / "ouster" (LiDAR): UNTESTED, NOT
+  CHOSEN (W148) - they report OFFLINE with the reason and produce nothing.
+- worker.py + radar_worker.py / lidar_worker.py = OWN processes (below normal, 1 work thread, OMP / MKL threads 1),
+  JSON lines (stdin pose 5 Hz / fault (simulator only) / stop; stdout status 1 Hz + a batch per sweep / scan); ends when
+  stdin closes; a pose older than 2 s = no batch + self degraded "no own pose".
+- simworld.py = the scripted harbour (ENU metres from an origin; a breakwater + a quay, 3 moored boats, a ferry WITH AIS
+  (ping-pong path), a fishing boat, a kayak and a swimmer WITHOUT AIS, a buoy; positions a function of time only =
+  one truth for radar, LiDAR, tests and HX4); a world file (JSON) with origin null = placed at the own boat's FIRST
+  fresh position by the manager (both workers get the same world on their command line).
+- simradar.py: 0.8 Hz sweeps; Pd = rcs + 0.3 fading with range (small objects first), range sd 3 m + 0.5 %, bearing sd
+  1 deg, ARPA-like speed / course sd 0.3 m/s / 5 deg, a quay = a return every 15 m, the MINIMUM-RANGE blind zone 25 m
+  (HALO value NV: bench it), max 3000 m, a dropped sweep 2 %, sea clutter ~1 weak plot per sweep within 250 m.
+- simlidar.py: 10 Hz; range by reflectivity (40 m at 10 %, 70 m at 80 %), mounted 2.5 m above the water with a
+  -7..+52 deg vertical FOV = a LOW object close by is under the field of view (a swimmer closer than ~18 m is not
+  seen), points ~ visible area / range^2, a calm-water swimmer missed in ~40 % of the scans, the raw scan holds the own
+  hull, water returns and spray (removed by lidar_filter), drop 1 %.
+- Faults (both simulators, the manager's fault(kind, name): refused for a real driver): lost, degraded (radar noise x3 +
+  Pd x0.5; LiDAR range x0.5, Pd x0.7), clutter (radar x25; LiDAR rain / fog 20 spurious clusters within 15 m - they PASS
+  the filter: the tracker's problem, HX4), ghost (radar multipath at twice the strongest return's range with a speed;
+  LiDAR a phantom 12 m ahead), skew (timestamps +0.4 s), crash (exit), freeze (hang).
+- manager.py HarbourSensors (gateway.py: harbour_loop 5 Hz, gw_status "harbour" {enabled, sim, origin, sensors {radar,
+  lidar: state, why, driver, rate_hz, items, batches, starts, restarts, latency p50 / p99 / max, skew_ms}, notices}):
+  feeds the pose from gw.own() (FRESH telemetry only), restarts a crashed (exit) or hung (no line for silent_s 6 s)
+  worker after restart_s 5 s with a NOTICE ("RADAR WORKER CRASHED - restarting", "LIDAR LOST - no data for 1.2 s",
+  "RADAR OK"); notices only - never an alarm, a mode change or a frame to the AURIX; latest(kind) / health(kind) /
+  on_batch callbacks for HX4 / HX5. Config gateway.json "harbour" (config.example.json: disabled, real drivers named);
+  the demo: "harbour": {"sim": true, "world": demo_run/harbour_world.json} (demo_world.harbour_world()).
+- Measured (tools/gateway_load.py --harbour; numbers in gateway/README.md 27 + TEST_REPORT.md): CPU per worker,
+  the manager, latency sensor time -> gateway.
+- Tests gateway/test_harbour_sensors.py HS1-HS10 (tools/check.sh stage gateway-misc). The design's HS1-HS8 list is
+  covered: HS1 interface, HS2 / HS3 objects vs the truth, HS3 / HS4 blind zones, HS4 drop-outs, HS5 faults, HS6 health
+  incl. the time skew, HS7 the worker restart; + HS8 the skeleton, HS9 no AURIX / network, HS10 the world.
+- NOT in HX3: the tracker / fusion / AIS association (HX4 - the world's AIS MMSI is there for it), the planner (HX5),
+  any screen (HX6), real drivers (W148).
+
 ## 6. Perception (HX4) - the fused track data model
 
 ### 6.1 Track (gateway/harbour/tracker.py)

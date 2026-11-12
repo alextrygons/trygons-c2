@@ -251,6 +251,11 @@ def check_config(cfg, platform=None):
         out.append(("error", "storage.root %s is an Ubuntu path on Windows" % st["root"]))
     elif not is_windows(platform) and re.match(r"^[A-Za-z]:\\", st["root"]):
         out.append(("error", "storage.root %s is a Windows path on Ubuntu" % st["root"]))
+    try:                                                # the harbour sensors (step HX3): their own checks
+        from harbour import sensors as harbour_sensors
+        out += harbour_sensors.check_config(cfg.get("harbour"))
+    except ImportError:
+        pass
     if cfg.get("set_clock") and is_windows(platform):
         out.append(("warning", "set_clock: Windows keeps a GPS time offset instead of setting the clock "
                                "(logs and video still use GPS time)"))

@@ -30,6 +30,7 @@ from common import Clock, load_config, log, proto, setup_logging
 import osdep
 from audit import Audit
 from adsbmgr import AdsbManager
+from harbour.manager import HarbourSensors
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from geofence import Geofence
@@ -176,6 +177,13 @@ class Gateway:
         except Exception:                               # the ADS-B part never stops the gateway
             log.exception("adsb: could not be set up - switched off")
             self.adsb = AdsbManager({"enabled": False}, self)
+        # harbour sensors (CLAUDE.md Z, step HX3): radar + LiDAR workers (own processes; simulated until W148);
+        # health = notices in gw_status "harbour" only - nothing to the AURIX, no tracker / planner yet
+        try:
+            self.harbour = HarbourSensors(cfg.get("harbour"), self)
+        except Exception:                               # the harbour sensors never stop the gateway
+            log.exception("harbour: the sensors could not be set up - switched off")
+            self.harbour = HarbourSensors({"enabled": False}, self)
         # U3: routes -> missions, the launch sequence (the captain's YES / NO), STOP, the captain's HATCH CLOSE
         for k, fn in (("uav_route", self.uav.route_msg), ("uav_launch_prepare", self.uav.prepare_msg),
                       ("uav_launch_stop", self.uav.stop_msg), ("uav_hatch_close", self.uav.hatch_close_msg),
@@ -803,6 +811,14 @@ class Gateway:
                 log.exception("adsb")
             await asyncio.sleep(1.0)
 
+    async def harbour_loop(self):
+        while True:
+            try:
+                self.harbour.tick()
+            except Exception:                               # the harbour sensors never stop the gateway
+                log.exception("harbour")
+            await asyncio.sleep(0.2)
+
     async def uav_loop(self):
         while True:
             try:
@@ -927,7 +943,8 @@ class Gateway:
                 "vision": self.vision.status(self.net.data_saver()),
                 "hail": self.hail.status(),
                 "uav": self.uav.status(), "sar": self.sar.status(),
-                "adsb": self.adsb.status(self.net.data_saver())}
+                "adsb": self.adsb.status(self.net.data_saver()),
+                "harbour": self.harbour.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -950,6 +967,8 @@ class Gateway:
         self.uav.start(asyncio.get_running_loop())
         tasks.append(asyncio.create_task(self.uav_loop()))
         tasks.append(asyncio.create_task(self.adsb_loop()))
+        if self.harbour.enabled:
+            tasks.append(asyncio.create_task(self.harbour_loop()))
         if not rec_loop and ("AUDIO" in self.rec.cams or self.uav.tracks):
             tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio / UAV ring without cameras
         tasks.append(asyncio.create_task(self.sync.run()))
@@ -971,6 +990,7 @@ class Gateway:
             self.hail.stop()
             self.uav.stop()
             self.adsb.stop()
+            self.harbour.stop()
             await self.stations.stop()
             await self.web.stop()
             self.sync._close()

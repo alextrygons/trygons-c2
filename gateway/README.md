@@ -946,3 +946,30 @@ simulated VRX picture is a simple test pattern (the encoder's real work on a noi
 vision needs the CPU) and ~0.9 GB RAM for the six encoders: the gateway total ~2.1 GB of 8 GB. Quick Sync exists on
 the i5-8265U (UHD 620; VAAPI on Ubuntu): without it six x264 encoders would add ~1-2 logical CPUs. Run the same
 command on the ThinkPad itself (W26).
+
+## 27. Harbour sensors - radar + LiDAR behind one interface, simulated (step HX3)
+
+`gateway/harbour/` (CLAUDE.md Z, docs/harbour_design.md 5a). Each sensor runs in its OWN below-normal-priority
+process (`harbour/radar_worker.py`, `harbour/lidar_worker.py`); `harbour/manager.py` (HarbourSensors) starts them,
+feeds them the boat's pose from the FRESH AURIX telemetry (5 Hz), judges their health (OK / DEGRADED / LOST /
+STARTING / OFFLINE / OFF) and restarts a crashed or hung worker after 5 s. A change is a NOTICE in gw_status
+"harbour" only - never an alarm, never a mode change, nothing to the AURIX. No tracker, planner or screen yet
+(HX4-HX6).
+
+```json
+"harbour": {"enabled": true, "sim": true, "world": ""}
+```
+`sim` = both simulated sensors (`harbour/simradar.py`, `harbour/simlidar.py`) on the scripted harbour
+`harbour/simworld.py` (piers, moored boats, a ferry with AIS, a fishing boat / kayak / swimmer without AIS, a buoy),
+placed around the boat's first position; `world` = a world file (the demo writes demo_run/harbour_world.json). The
+real drivers (`"driver": "mayara"` radar, `"livox"` / `"ouster"` LiDAR) are SKELETONS: the owner has not chosen the
+sensors (W148), they stay OFFLINE "not chosen". `python gateway.py --check-config` checks the section.
+
+Measured 2026-11-12 on the development PC (`python tools/gateway_load.py --harbour --minutes 1`; the ThinkPad
+L390 measurement comes with HX4 together with the tracker, 4 cameras and vision):
+
+| part | CPU (% of one core) | RAM | latency sensor time -> gateway (p50 / p99 / max) |
+|---|---|---|---|
+| radar worker (0.8 Hz, ~30 plots per sweep) | 0.3 % | 19 MB | 307 / 312 / 312 ms (300 ms modelled radar latency + 7 ms) |
+| LiDAR worker (10 Hz) | 0.6 % | 19 MB | 51 / 54 / 54 ms (50 ms modelled + 2-4 ms) |
+| manager in the gateway (5 Hz tick + readers) | 1.4 % | - | - |

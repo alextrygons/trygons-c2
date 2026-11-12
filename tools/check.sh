@@ -389,7 +389,7 @@ strays_check "test_practical"
     stage_end academy
 }
 
-# ---- stage gateway-misc: avoidance, OS, setup, loudhailer, UAV magazine, SITL (N/A without it), ADS-B, SAR demo
+# ---- stage gateway-misc: avoidance, OS, setup, loudhailer, UAV magazine, SITL (N/A without it), ADS-B, harbour sensors, SAR demo
 stage_gateway_misc() {
     stage_begin gateway-misc
 echo "== avoidance planner tests"
@@ -424,6 +424,10 @@ echo "== ADS-B receive only (PF5): SBS / Beast parsing, aircraft state, filters,
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_adsb.py > "$TEMP/adsb_tests.txt" 2>&1 ) || { echo "ADS-B TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ADS-B TESTS" "$TEMP/adsb_tests.txt"
 strays_check "test_adsb"
+echo "== harbour sensors (HX3): the interface, simulated radar + LiDAR vs the world truth, noise / drop-outs, faults -> health + notices, worker crash / hang restart, the real-driver skeleton (W148), no AURIX / no network"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_sensors.py > "$TEMP/harbour_sensor_tests.txt" 2>&1 ) || { echo "HARBOUR SENSOR TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR SENSOR TESTS" "$TEMP/harbour_sensor_tests.txt"
+strays_check "test_harbour_sensors"
 echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"
 ( PYTHONIOENCODING=utf-8 "$PY" demo/test_sar_demo.py > "$TEMP/sardemo_tests.txt" 2>&1 ) || { echo "SAR DEMO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SAR DEMO TESTS" "$TEMP/sardemo_tests.txt"
