@@ -24,7 +24,13 @@ app/harbour.c + smallboat.c + link.c (CLAUDE.md Z "Step HX2 AS BUILT", docs/harb
   gateway port made a TELEMETRY gap 260 ms - the frame is now sent only while a harbour route is stored / harbour autonomy is on.
   (3) HB4: at 4 kn the boat overshoots the corridor edge rule (CORRIDOR HOLD is the backstop) - for HX5 / W146. (4) a cap below the
   in-gear idle speed (~1.5 kn) only reaches idle: the planner must STOP (HX5). (5) the drift cut vs a coast-down from 5 kn (W147).
-- Station: groundstation/test_harbour_proto.py HP0a-HP0d PASS (mirrors).
+- Station: groundstation/test_harbour_proto.py HP0a-HP0d PASS (mirrors); station stage: test_lang L2 (confirm.12 key, added)
+  fixed, SR8 (NVENC screen recording) = the known environmental failure.
+- Serial opus review (tools/api_review.py, review_417a0d8.txt): no HIGH; MED-1 (a harbour route could be driven by plain AUTO /
+  a DP TRIP without the harbour limits) FIXED - refused (HB13); MED-2 (steering left paused after RESUME) - auto_mode releases it
+  every RUN step (HB10 moving), now also explicitly in harb_begin; MED-3 (HOLD needs HELM) = as designed: every AURIX command is
+  HELM-only (R7), the gateway forwards a copilot's HOLD on the HELM's behalf without ACCEPT (proto.is_driving_cmd) - note.
+  LOWs (grace clamp at use, a cap below the in-gear idle, storm oracle details) = notes (docs/harbour_design.md 2.7).
 
 ## 0000000000000000. Talking manual - the prompt default (W129, step AM4-r8, 2026-11-08) + the prefix / Tools-label fix of the one-line places
 

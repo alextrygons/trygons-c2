@@ -169,7 +169,9 @@ the black-box slot has 2 bytes left), monitor: nothing new (harbour only lowers 
   - A kind-4 request is stored but INERT outside harbour autonomy: it never counts as AUTO's / UNCREWED HDG LOCK's /
     the shore override's lease (nav_fresh), never caps / steers (counted in harb.k4_idle).
   - AUTO PAUSE in harbour = HOLD USER; AUTO RESUME / SKIP / RETURN are refused while it runs (only HARBOUR RESUME +
-    CONFIRM leaves a HOLD); a plain AUTO START of a harbour route = plain AUTO (the HA-fold case).
+    CONFIRM leaves a HOLD). HX2 review MED-1: a route flagged HARBOUR is NEVER driven by plain AUTO START / RESUME /
+    RETURN or a DP TRIP (WRONG_MODE) - only harbour autonomy with its lease / caps / corridor; HX5's HA-fold test
+    therefore uses a plain (unflagged) route for "AUTO without harbour".
   - The speed's leg input is min(cruise target, the leg's set speed). Storm I86 found that AUTO's rough-water
     slow-down RAISED a target below nerv_min_kn (5 kn) to 5 kn; fixed for every AUTO (a slow-down never raises).
   - Found in HB4 (sim): at 4 kn the boat turns slowly (~2 deg/s), so a proposal steered to the corridor edge can
@@ -179,6 +181,11 @@ the black-box slot has 2 bytes left), monitor: nothing new (harbour only lowers 
     1 kn for ~10 s (the sim's 6 s speed constant) - with the shipped grace 0 nothing changes; W147 should look at it.
   - A cap below the in-gear idle speed (sim: 1.5 kn) can only bring the throttle to idle - the boat still makes its
     idle speed in forward; only the STOP flag / a cap < 0.05 kn (HOLD) stops it. HX5's planner sends STOP for that.
+  - Review notes (serial opus review of 417a0d8, not fixed): MED-3 the HOLD needs HELM like every AURIX command (R7; the
+    gateway forwards a copilot's HOLD without an ACCEPT); LOW-1 harb_ll_grace_s is limited only by PARAM_SET's 0..0 range
+    (sb_default_config = 0, no other writer; the sim / storm set it directly to test the mechanism) - the W147 commit
+    raises the range and adds the STANDBY + CONFIRM path; LOW-3 storm oracle: I47's harbour clause uses the AURIX's why,
+    I86 checks harb.cap_kn + the true SOG, I85 assumes the 3 s near-shore detection (open sea / fuzz excused).
 
 ## 3. Lost link in harbour (M0-6) - FIRMWARE, SERIAL review
 

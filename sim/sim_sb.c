@@ -19886,17 +19886,33 @@ static void harbour_tests(void)
         uint8_t r_ft = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
         bool b2 = hb_boat(&y, &g, 2142u, true, NULL, 8.0f);
         g.cap = 2.0f;                                               /* a kind-4 cap of 2 kn in PLAIN AUTO */
+        /* (review MED-1: a harbour route is never driven by plain AUTO - START / RESUME / RETURN refused, a DP TRIP
+         *  too; the plain AUTO below runs the same route uploaded WITHOUT the harbour flag) */
+        uint8_t r_harb_as = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        uint8_t r_harb_ret = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        uint8_t dpt[4] = { DP_ACT_START, DP_TRIP, 0u, 0u };
+        uint8_t r_harb_dp = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_DP, dpt, 4u);
+        {
+            prog_wp_t w[3];
+            hb_route(&y, w, 8.0f, 0.0);
+            hb_upload(&y, &g, w, 3, PROG_END_STOP, 0u);
+        }
         uint8_t r_as = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
         hb_confirm(&y, &g);
         bool plain = sb_mode(&y.sb) == MODE_AUTO && !sb_harbour_on(&y.sb);
         hb_run(&y, &g, 60000u);
         float sog = y.w.speed_kn;
         uint32_t idle = y.sb.harb.k4_idle;
-        snprintf(d, sizeof d, "FIRST TEST boat %s: START %u (7); plain AUTO on the harbour route (%u, %s): 40 s later %.1f "
-                 "kn (the kind-4 cap 2 kn not applied), %lu kind-4 requests counted inert; big boat: no harbour code path",
-                 b ? "ok" : "NO", r_ft, r_as, plain ? "plain" : "NO", sog, (unsigned long)idle);
-        test_report("HB13 harbour refused in FIRST TEST; a kind-4 request is inert outside harbour autonomy",
-                    b && r_ft == PROTO_R_WRONG_MODE && b2 && r_as == PROTO_R_OK && plain && sog > 5.0f && idle > 100u, d);
+        snprintf(d, sizeof d, "FIRST TEST boat %s: START %u (7); a harbour route: plain AUTO START %u / AUTO RETURN %u / DP "
+                 "TRIP %u (7 / 7 / 7); plain AUTO on the same route unflagged (%u, %s): 60 s later %.1f kn (the kind-4 cap "
+                 "2 kn not applied), %lu kind-4 requests counted inert; big boat: no harbour code path",
+                 b ? "ok" : "NO", r_ft, r_harb_as, r_harb_ret, r_harb_dp, r_as, plain ? "plain" : "NO", sog,
+                 (unsigned long)idle);
+        test_report("HB13 harbour refused in FIRST TEST; a harbour route never in plain AUTO / a DP TRIP; a kind-4 request "
+                    "is inert outside harbour autonomy",
+                    b && r_ft == PROTO_R_WRONG_MODE && b2 && r_harb_as == PROTO_R_WRONG_MODE &&
+                    r_harb_ret == PROTO_R_WRONG_MODE && r_harb_dp == PROTO_R_WRONG_MODE && r_as == PROTO_R_OK && plain &&
+                    sog > 5.0f && idle > 100u, d);
     }
 }
 

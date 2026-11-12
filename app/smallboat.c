@@ -3165,6 +3165,7 @@ static void harb_begin(sb_t *s, uint8_t k, bool resume)
     h->hold_safe = false;
     h->hold_emerg = false;
     h->back = false;
+    steer_pause(s, false, 0.0f);                    /* (review MED-2: the HOLD's held outboard is released at once) */
     autopilot_set_target(&s->ap, s->ap.heading);
     if (resume) h->resumes++; else h->starts++;
     harb_log(s, resume ? 2u : 1u, 0u);
@@ -3332,6 +3333,9 @@ static sb_result_t auto_common_checks(const sb_t *s)
 {
     if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: no AUTO */
     if (!s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
+    /* step HX2 review MED-1: a harbour route is driven ONLY by harbour autonomy (its lease / caps / corridor HOLD,
+     * CLAUDE.md Z M0-2) - never by plain AUTO START / RESUME / RETURN (HARBOUR START / RESUME instead) */
+    if (sb_program(s)->flags & PROG_F_HARBOUR) return SB_ERR_WRONG_MODE;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
     if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
     if (!sb_compass_ok(s) || !sb_gps_ok(s) || gear_fault(&s->gear)) return SB_ERR_PRECOND;
@@ -3686,6 +3690,7 @@ sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int
         if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;        /* centre the joystick */
         if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;    /* nobody could press CONFIRM */
         if (sub == DP_TRIP && !s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
+        if (sub == DP_TRIP && (sb_program(s)->flags & PROG_F_HARBOUR)) return SB_ERR_WRONG_MODE;   /* HX2 MED-1 */
         if (!dp_ok(s, sub, cont, !in_dp)) return SB_ERR_PRECOND;
         s->dp_req.sub = sub;
         s->dp_req.cont = cont;
