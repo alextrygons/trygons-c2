@@ -83,7 +83,7 @@ clamped by the parameters). harb.ll (lost link began in harbour, 3).
 - Station command PROTO_T_HARBOUR {u8 action 0 START / 1 RESUME / 2 HOLD, u8 corridor in 0.1 m units
   (0..255 = 0..25.5 m), u8 max_kn x10} through GW_CMD (proposal 0x3C: free - link.c dispatches the
   gateway-only frames by their exact type, no range check). The AURIX CLAMPS both station values:
-  harb.corr_m = min(frame, harb_corr_m), harb.max_kn = min(frame, harb_max_kn, HARB_MAX_KN_CEIL)
+  harb.corr_m = clamp(frame, 4 m, harb_corr_m) (a value below 4 m = NACK, round-2 LOW-3), harb.max_kn = min(frame, harb_max_kn, HARB_MAX_KN_CEIL)
   (review LOW-6; tested in HB3). A copilot's START / RESUME = the captain's ACCEPT (proto.DRIVING_CMDS);
   HOLD is free for every crew station (like AUTO PAUSE).
 - START / RESUME -> a pending CONF_HARBOUR (new confirm kind) answered within confirm_ms 10 s by the
@@ -141,7 +141,9 @@ Every step while harb.state is RUN / SLOW:
   HOLD / AUTO PAUSE) and the planned arrival use the normal rate_down; EVERY other HOLD reason
   (LEASE, PLANNER = the gateway's STOP incl. U5 / U7 an object too close, CORRIDOR, HEADING, GPS,
   COMPASS, LINK, FAULT) = emergency() = idle AT ONCE with no rate limit (sb emerg; storm I47 counts
-  these harbour HOLD reasons among its emergency conditions). Then NEUTRAL by the gear state machine, heading held (gyro if no compass) until idle +
+  these harbour HOLD reasons among its emergency conditions). The emergency is judged EVERY STEP from
+  the conditions in force, never from the stored first why: a fault arriving during a USER HOLD's
+  ramp makes it idle at once (round-2 LOW-1; I47 covers that case). Then NEUTRAL by the gear state machine, heading held (gyro if no compass) until idle +
   neutral, then the steering holds (OD-10). Alarm SB_ALM2_HARBOUR_STOP (0x100, an ordinary alarm,
   not an advisory: buzzer + SAVE). The mode stays AUTO (harb HOLD) so the captain sees why and can
   RESUME; the boat drifts at idle + neutral.
@@ -197,8 +199,9 @@ with a non-zero grace.
 - Gear during the grace: "neutral" is the existing confirmation (the neutral switch when fitted, else
   the gear state machine + the gear frame sent: servo.gear_sent, 13q2d); a DroneCAN gear servo has no
   position feedback, so a gear stuck in forward at idle is seen only by the neutral switch or a SOG
-  rise - HX2 adds to harb_ll_cut "SOG > 1 kn and rising for 10 s at idle + neutral during the grace"
-  = kill at once (W147 asks).
+  rise - HX2 adds to harb_ll_cut "trusted GPS SOG > harb_ll_drift_kn (1 kn TO CONFIRM) for 10 s at
+  idle + neutral during the grace" = kill at once - NO "rising" condition (a gear stuck in forward
+  settles at a steady 2-3 kn; round-2 MED-3; HB11 has a steady stuck-forward case; W147 asks).
 - Not changed: the open-sea rule (10 s), the LINK TIME override (13q1) outside harbour, the latch
   (power-on reset / remote restart), I31 / I38.
 
@@ -223,10 +226,14 @@ u8 hflags (b0 STOP, b1 degraded = a sensor lost, b2 give-way (COLREGs), b3 stati
 traffic), b4 camera-only obstacle slowing), u8 nearest_m (0..250, 255 none), u8 n_tracks.
 gw_navreq accepts kind 4 only with len >= 13; lease 500..3000 for kind 4. A harbour request never
 needs a cap = 0xFFFF check change: kind 4 always carries a cap (the route speed when nothing slows).
-Outside harbour autonomy a kind-4 request = ignored (counted), never applied. ONE navreq slot: while
-a harbour route is armed, Gateway.nav_compose FOLDS every other cap into the kind-4 frame (the
-shallow cap, the collision cap, a held vision cap - still never released silently: CLEAR SLOWDOWN)
-and sends nothing of kind 1 / 2; a kind 1 / 2 frame arriving in harbour = "another kind" = HOLD
+Outside harbour autonomy a kind-4 request = ignored (counted), never applied. ONE navreq slot: Gateway.nav_compose FOLDS every other cap into the kind-4 frame (the shallow
+cap, the collision cap, a held vision cap - still never released silently: CLEAR SLOWDOWN) ONLY
+while the AURIX's OWN fresh HARBOUR_STAT reports RUN / SLOW / HOLD (never on gateway-side state: a
+route "armed" on the gateway while the boat runs plain AUTO gets kind 1 / 2 as today - round-2
+MED-1; test HA-fold: a harbour route stored, AUTO started without HARBOUR, a held vision cap is
+still applied); the folded caps keep their reasons: the reason byte = the lowest cap's reason and
+hflags b5 shallow / b6 collision / b7 vision (+ the alarm byte as today: 8 OBSTACLE stays raised on
+the AURIX - round-2 LOW-4); a kind 1 / 2 frame arriving in harbour = "another kind" = HOLD
 (review LOW-3).
 
 ### 4.2 PROTO_T_HARBOUR_STAT (AURIX -> stations, NEW frame, 5 Hz; TELEM2 is FULL)
@@ -252,7 +259,9 @@ route, 11 NOT_CHECKED (121), 12 OUT_OF_CORRIDOR at entry, 13 TOO_FAST at entry, 
 harb_max_kn 5 (1..8, W144), harb_corr_m 10 (4..20, W146; the route's own value <= it),
 harb_corr_margin_m 2, harb_corr_stop_m 5 (2..10), harb_max_dev_deg 60 (20..90),
 harb_rot_dps 8 (2..15), harb_lease_ms 1000 (500..3000), harb_unc_m 5 (2..10),
-harb_back_kn 2, harb_ll_grace_s 0 until W147, then 60 (0 or 10..300). Gateway (gateway.json "harbour"): min_moving_m 15,
+harb_back_kn 2, harb_ll_grace_s: a compile-time range 0..0 until W147 is answered (PARAM_SET can't
+set any grace - round-2 MED-2); afterwards the ceiling = the owner-signed value and a change needs
+STANDBY + CONFIRM + a log entry, like thr_trav_s / CONF_THR_TRAVEL (OD-4). Gateway (gateway.json "harbour"): min_moving_m 15,
 min_static_m 8 (W145), horizon_s 40, cycle_ms 200, sensor stale limits, degraded_kn 2, narrow_kn 3.
 
 ### 4.6 Station <-> gateway JSON (HX5 / HX6)
@@ -409,9 +418,11 @@ for the gateway planner against the simulated world; next free numbers)
 - I87 never a heading change for a track that is not range_ok (gateway: the decision record).
 - I88 never closer than min_moving_m / min_static_m to any world object when the sensors saw it
   (world truth), except a HOLD already commanded (then the closing speed only from the object).
-- I89 beyond corr_m + harb_corr_stop_m (the storm's own xte from the world truth) => HOLD in the
-  same step, and no throttle above idle while beyond (drift at idle + neutral may carry the boat
-  further: allowed; review MED-5).
+- I89 (a) the AURIX-visible xte (its GPS) beyond corr_m + harb_corr_stop_m => HOLD in the same step:
+  the COMMANDED throttle = idle and the modelled thr_est never rising while beyond; (b) the
+  world-truth xte <= corr_m + harb_corr_stop_m + harb_unc_m unless a HOLD was already in force
+  (drift at idle + neutral may carry it further: allowed); the mutation "corridor clamp removed"
+  must fail it (review MED-5, round-2 LOW-2).
 - I90 every unsure condition U1-U12 -> STOP within its time (planner) and HOLD on the AURIX within
   lease + 1 step.
 - I91 STANDBY button / e-stop / joystick takeover win in the same step in harbour (as AUTO).
@@ -554,6 +565,10 @@ Furuno / Garmin open interfaces beyond Mayara's own list.
   I89 reworded); LOW-2 (the vision line) + LOW-5 (section B / I27 / I28 are amended by HX2 in the
   same commit as the code) in CLAUDE.md. Checked: alarm_bits2 is 32 bits (0x100 free), EV 32 free,
   0x90 / 0x3C free.
+- Round-2 review of c86eb46 (the last round, LOOP RULE 7): MED-1 (fold only on the AURIX's own
+  HARBOUR_STAT), MED-2 (grace range 0..0 until W147, then signed), MED-3 (no "rising" in the drift
+  kill) + LOW-1..LOW-4 folded in. Left for HX2 to prove in code: the gear reaches N while the mode
+  stays AUTO (harb HOLD), emergency() honoured outside STANDBY, the numbers free.
 
 ## 13. One-page sensor summary for the owner
 
