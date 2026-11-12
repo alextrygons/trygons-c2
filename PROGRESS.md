@@ -182,7 +182,7 @@ Harbour autonomy HX1-HX7 (owner 2026-11-12, spec VERBATIM in docs/owner_findings
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| HX1 | Design (opus): CLAUDE.md section Z "Harbour autonomy" + docs/harbour_design.md (rules M0, architecture = a SUB-STATE of MODE_AUTO, navreq kind 4 + HARBOUR_STAT 0x90, lost-link grace, radar + LiDAR comparison for the owner, planner method, tests); WAITING items W144-W149. HX2 may start now (sensors simulated until W148) | DONE | (pending) |
+| HX1 | Design (opus): CLAUDE.md section Z "Harbour autonomy" + docs/harbour_design.md (rules M0, architecture = a SUB-STATE of MODE_AUTO, navreq kind 4 + HARBOUR_STAT 0x90, lost-link grace, radar + LiDAR comparison for the owner, planner method, tests); WAITING items W144-W149. HX2 may start now (sensors simulated until W148) | DONE | 0491d5d + review fixes c86eb46, d214679 (opus api_review, 2 rounds) |
 | HX2 | FIRMWARE (opus, SERIAL review): harbour mode entry / exit (captain YES), harbour speed cap, corridor + turn-rate limits on navreq, lost-link M0-6; sim + storm | OPEN | |
 | HX3 | Sensors (opus): radar + LiDAR drivers behind an interface + SIMULATED radar / LiDAR in the sim + demo | OPEN | |
 | HX4 | Perception (opus): fusion tracker (radar + LiDAR + camera + AIS) + static map; tests with the simulated sensors | OPEN | |
