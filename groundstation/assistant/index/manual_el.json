@@ -8012,6 +8012,19 @@
 {
 "ch": "tour",
 "chapter": "Το μαγγέμα UAV",
+"heading": "Εξαγωγή .tlog",
+"id": "tour:el:uav.tlog",
+"kind": "tour",
+"lines": [
+0,
+0
+],
+"term": "",
+"text": "Το κουμπί ΕΞΑΓΩΓΗ .tlog γράφει την πτήση σε αρχείο που ανοίγει στο Mission Planner, για έλεγχο ή αναπαραγωγή μετά την πτήση."
+},
+{
+"ch": "tour",
+"chapter": "Το μαγγέμα UAV",
 "heading": "Ο νόμος",
 "id": "tour:el:uav.legal",
 "kind": "tour",
@@ -8025,7 +8038,7 @@
 ],
 "sources": {
 "MANUAL_EL.txt": "84681adc7219ea12f7091a3e0cd0af6a5d1710dde891c1e1baf5fb9e8d4ca0ae",
-"academy/content/tour.json": "e4464b2235485412b35a599069004cd30d67a8d402000a0612e6b2b90926facd",
+"academy/content/tour.json": "f8ff065be8ef6b2831e3fc7d31adb2c8532ce3a11998069bf83fbae8277daca5",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },
 "version": 3

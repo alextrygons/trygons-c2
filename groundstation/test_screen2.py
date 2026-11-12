@@ -792,7 +792,7 @@ ALLOWED = {"STANDBY", "AUTO", "ADS-B", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG"
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
            "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN",  # (13n3 GPX)
            "Windows", "Stefanos", "Microsoft",
-           "ArduPilot", "MAVLink", "sysid", "UAV-", "mAh",
+           "ArduPilot", "MAVLink", "sysid", "UAV-", "mAh", "Mission", "Planner",   # X1: the product name "Mission Planner" in the .tlog button
            "JOYSTICK", "GUIDED"}  # (U5: the owner's banner «JOYSTICK → UAV n»; GUIDED = an ArduPilot mode name)
            #  # (U2: the drones' autopilot / protocol / id, a drone's default name  # (13o: the Windows voice, a product + voice name)
 

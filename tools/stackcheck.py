@@ -116,19 +116,25 @@ POLLED_ONLY = {"tc_bno085:transfer": "the BNO085 packet read + report parse (inp
                "bno_accel_z": "the vertical-acceleration ring read"}
 
 
+OTHER_CORE_MAINS = ("core1_main", "core2_main")
+
+
 def check_polled(g, isrs, problems, names=POLLED_ONLY):
     """No interrupt routine reaches a POLLED_ONLY function; every listed one is in the graph."""
     present = set(g.self_b) | set(g.edges)
     for fn in sorted(names):
         if fn not in present:
             problems.append("POLLED_ONLY %s is not in the call graph (renamed? keep the list current)" % fn)
-    for isr in sorted(i for i in isrs if i in present):
+    # CL4 rest (review c522e77 MED-A): also NOT from the other cores' trees (a cross-core race on the shared statics)
+    roots = [(i, "interrupt " + i) for i in sorted(i for i in isrs if i in present)]
+    roots += [(m, "the %s tree (another core)" % m) for m in OTHER_CORE_MAINS if m in present]
+    for isr, what in roots:
         seen, todo = {isr}, [isr]
         while todo:
             f = todo.pop()
             if f in names:
-                problems.append("%s (%s) is reached from interrupt %s: it must run only from core 0's polled loop"
-                                % (f, names[f], isr))
+                problems.append("%s (%s) is reached from %s: it must run only from core 0's polled loop"
+                                % (f, names[f], what))
             for t in g.edges.get(f, ()):
                 if t not in seen:
                     seen.add(t)
@@ -572,7 +578,7 @@ def analyse(g, reserved, isrs, trap=None, label="GCC call graph", source=None, p
     lines.append("recursion: %s" % ("NONE (every function-pointer call resolved: %d call sites)" % len(g.indirect)
                                     if not cyc else "FOUND"))
     if polled is not None:
-        lines.append("polled only (never reached from an interrupt): %s" % ", ".join(sorted(polled)))
+        lines.append("polled only (never reached from an interrupt or from core1_main / core2_main): %s" % ", ".join(sorted(polled)))
     if source is not None:
         lines.append("pointer targets: INDIRECT checked against the source (%d targets in %d modules)%s" % (
             sum(len(v) for v in source[0].values()), len(source[0]),
@@ -735,6 +741,13 @@ def selftest():
     g.indirect["y_isr"] = "tc_fat32"
     check("ST26 ... also through a resolved pointer call (y_isr -> tc_sd:read_block) = FAIL",
           not analyse(g, res, isrs, polled={"tc_sd:read_block": "fixture"})[0])
+    for core in ("core1_main", "core2_main"):
+        g = base()
+        g.edges[core].add("b")
+        g.edges["b"].add("a")
+        ok, lines, _ = analyse(g, res, isrs, polled=pol)
+        check("ST28 %s reaching a POLLED_ONLY function (%s -> b -> a) = FAIL (cross-core)" % (core, core),
+              not ok and any("reached from the %s tree" % core in l for l in lines))
     check("ST27 a POLLED_ONLY name missing from the graph = FAIL (stale list)",
           not analyse(base(), res, isrs, polled={"gone": "fixture"})[0])
     print("STACKCHECK SELFTEST: %s" % ("PASS" if not fails else "FAIL (%d)" % len(fails)))

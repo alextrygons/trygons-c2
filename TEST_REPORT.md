@@ -1053,3 +1053,18 @@ el016 refused at all 8 versions, 0 in-manual tuning questions lost; the main lis
 unchanged except AS17's Greek can't-find 7 -> 8 of 10 (el140 refused again) - AS17 PASSES (it measures typed retrieval; it never
 needed the W84 recordings). Gate `assistant_index.py floor`: el 7 off-manual under / 86 in-manual over, en 4 / 33 = PASS.
 Tests run alone: AS14, AS16-AS25, AS29 PASS (AS24 = the real qwen3-4b with the network blocked), test_lang 6/6.
+
+## CL4 rest-2 - tools/check.sh split in stages (2026-11-12)
+
+`sh tools/check.sh` = every stage in sequence + a summary (a missing / crashed / timed-out stage = GATE: FAILED); `--list`, `--stage <name>` = one stage alone under a 45-minute watchdog (TRYGONS_STAGE_LIMIT_S 2700). Measured on the owner's laptop (one stage at a time, nothing else running):
+
+| stage | contents | seconds | result |
+|---|---|---|---|
+| docs | progress archive, python syntax, assistant index / eval / floor | 39 | OK |
+| firmware | sim all 392 + bridge 391 (1 N/A) + can 384 + can-fast 384 (8 N/A each), TriCore compile, writer checks, stackcheck (selftest PASS incl. ST28), memory, FAT32 2, NV 4, DroneCAN 19, api_review | 141 | OK |
+| station | chart 6, lang 6, boats 12, screen 2 29, look 26, track 12, screenrec 10, yesno 7, benchstack 7, hailer 8, trends 26, sound 17, uavui 16, sar 32, adsbui 9 | 747 | OK |
+| academy | assistant 36 (1 N/A), tour pictures, academy 56/56, practical 8/8 | 910 | OK |
+| gateway-misc | avoid 15, osdep 12, setup 53, loudhailer 22, uav 48 (1 N/A: pymavlink), SITL N/A (no pymavlink), adsb 14, sar demo OK | 553 | OK |
+| gateway | test_gateway.py | 1517 | 163 of 164 in the stage; G6 failed once in-stage (release code 103 instead of 7, timing), section G alone PASS (W50 rule); earlier stage run: section D crashed in 3 s once, passes alone |
+
+Sum about 57 min for the full gate; no stage over 25 min. Flakes seen in the FIRST (partly stale-tree) stage runs and passing alone / on the repeat (W50 rule, not weakened): academy AC31 s11_mob_search (failed 2x inside the stage, passes alone 2x and in the full-gate run), gateway-misc UA18a (event loop 594 ms, passes alone), gateway section D (crashed in 3 s once, passes alone). Real fixes found by the split runs: lang keys bench.stack_core0-2 (dynamic use) restored, test_screen2 S11 allows the product name "Mission Planner" (X1 button), tests/assistant/floor.json re-frozen (passage count only; floor unchanged 7.2), tour stop uav.tlog (voice_pending) + pictures, stackcheck POLLED_ONLY also from core1_main / core2_main (MED-A, selftest ST28 mutation).

@@ -604,7 +604,7 @@ def tour_tools(se, lang, man):
             pg = ap.uav_page
             wl = {"register": [b for _l, b in pg.rows], "fly": list(pg.b_fly), "prep": [pg.b_prep],
                   "stop": [pg.b_stop], "close": [pg.b_close], "logs": [pg.b_logs], "csv": [pg.b_csv],
-                  "gpx": [pg.b_gpx], "give": [pg.b_give]}
+                  "gpx": [pg.b_gpx], "tlog": [pg.b_tlog], "give": [pg.b_give]}
             for k, ws in wl.items():
                 u = union_px([widget_px(w, win) for w in ws])
                 if u:

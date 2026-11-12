@@ -11535,6 +11535,19 @@
 {
 "ch": "tour",
 "chapter": "The UAV magazine",
+"heading": "Export .tlog",
+"id": "tour:en:uav.tlog",
+"kind": "tour",
+"lines": [
+0,
+0
+],
+"term": "",
+"text": "The EXPORT .tlog button writes the flight to a file that opens in Mission Planner, to check or replay it after the flight."
+},
+{
+"ch": "tour",
+"chapter": "The UAV magazine",
 "heading": "The law",
 "id": "tour:en:uav.legal",
 "kind": "tour",
@@ -11548,7 +11561,7 @@
 ],
 "sources": {
 "MANUAL.txt": "3634c360ec4e7624713e3b24e8334db4619c11ba759cad8eb92b7a05012421b0",
-"academy/content/tour.json": "e4464b2235485412b35a599069004cd30d67a8d402000a0612e6b2b90926facd",
+"academy/content/tour.json": "f8ff065be8ef6b2831e3fc7d31adb2c8532ce3a11998069bf83fbae8277daca5",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },
 "version": 3

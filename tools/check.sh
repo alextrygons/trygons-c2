@@ -1,35 +1,74 @@
 #!/bin/sh
-# The test gate: run it before every commit (Git Bash, from anywhere):
-#     sh tools/check.sh
-# sim build without warnings, all sim tests (analog + USB bridge + DroneCAN servos worst-case / fast), TriCore
-# compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer / thruster-writer checks, the
-# expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
-# writer on PC disk images, the board's data-flash record log on a PC flash
-# image, the DroneCAN layer (dronecan.c + libcanard) against an independent
-# encoder, Python syntax, the gateway tests.
-# Ends with "GATE: OK" or "GATE: FAILED".
+# The test gate: run it before every commit (Git Bash, from anywhere).
+#     sh tools/check.sh                     the FULL gate = every stage below in sequence, then the summary
+#     sh tools/check.sh --list              the stages
+#     sh tools/check.sh --stage <name>      ONE stage alone (a partial check, never "GATE: OK")
+# CL4 rest (owner 2026-11-11): the gate is split in stages that each run well under 45 minutes (the owner's rule: kill any
+# test that runs longer than 45 minutes). Every stage runs as its OWN child shell under a watchdog (TRYGONS_STAGE_LIMIT_S,
+# default 2700 s = 45 min): over the limit = the stage's shell is killed + the processes it provably started are stopped
+# (its own strays state) and it is reported STALLED = a FAIL, never a pass. Every stage has its own strays.py
+# `mark --begin` / `check <suite>` / `report`; the final summary lists every stage with its result + seconds. A stage that
+# is missing, skipped (no result), crashed or timed out FAILS the full gate.
+# Together the stages are what the one script did before: sim build without warnings, all sim tests (analog + USB bridge +
+# DroneCAN servos worst-case / fast), TriCore compile of app/ + hal/ + Cpu*_Main.c, HAL / writer checks, stack check,
+# expected memory per core (CPU1 RAM below 60 %), FAT32 / data flash / DroneCAN PC checks, Python syntax, ground station,
+# academy, assistant, UAV / SAR / ADS-B and gateway tests.
+# Ends with "GATE: OK" or "GATE: FAILED" (full gate only).
 cd "$(dirname "$0")/.." || exit 1
 # Python: $PYTHON, else MSYS2's (MANUAL chapter 3), else "python" on the PATH
 PY=${PYTHON:-/c/msys64/ucrt64/bin/python.exe}
 [ -x "$PY" ] || PY=python
 fail=0
+STAGES="docs firmware station academy gateway-misc gateway"
+STAGE_LIMIT_S=${TRYGONS_STAGE_LIMIT_S:-2700}
 
 # CL3 (W10 / W11): no stray process. tools/strays.py knows THIS project's processes (python / pythonw, autopilot_sim,
 # mediamtx, ffmpeg, workers - by the repo folder in their command line, or a child of one; never another folder, never
-# the owner's other programs). What runs before the gate is listed and never blamed; after every suite what it LEFT
-# BEHIND is reported (name, PID, suite), stopped, and fails the gate at the end ("no leftover processes").
-# CL3-r: `mark --begin` puts THIS shell into the gate's job object, so only a process the suites PROVABLY started (in
+# the owner's other programs). What runs before a stage is listed and never blamed; after every suite what it LEFT
+# BEHIND is reported (name, PID, suite), stopped, and fails the stage at the end ("no leftover processes").
+# CL3-r: `mark --begin` puts THIS shell into the stage's job object, so only a process the suites PROVABLY started (in
 # the job, not a demo / station / gateway or a child of one) is ever stopped; anything else new is reported only, and
-# a process list / state file that can't be read fails the check loudly (nothing stopped). State file per repo folder.
-STRAYS_STATE="$TEMP/trygons_strays_gate_$("$PY" tools/strays.py tag).json"
+# a process list / state file that can't be read fails the check loudly (nothing stopped). State file per repo folder
+# AND per stage.
+TAG=$("$PY" tools/strays.py tag)
+RES="$TEMP/trygons_gate_$TAG"           # per-stage result files (one line: OK|FAILED|STALLED|CRASHED seconds)
+STRAYS_STATE="$TEMP/trygons_strays_gate_$TAG.json"
 strays_check() { "$PY" tools/strays.py check "$1" --state "$STRAYS_STATE" || { echo "LEFTOVER CHECK FAILED after: $1 (see the lines above)"; fail=1; }; }
-echo "== stray processes (CL3): selftest, what runs before the gate"
-"$PY" tools/strays.py selftest || { echo "STRAYS SELFTEST FAILED"; fail=1; }
-"$PY" tools/strays.py mark --begin --shell "$(cat /proc/$$/winpid 2>/dev/null)" --state "$STRAYS_STATE" || { echo "STRAYS MARK FAILED"; fail=1; }
+stage_begin() {
+    echo "== stage $1: stray processes (CL3): selftest, what runs before the stage"
+    "$PY" tools/strays.py selftest || { echo "STRAYS SELFTEST FAILED"; fail=1; }
+    "$PY" tools/strays.py mark --begin --shell "$(cat /proc/$$/winpid 2>/dev/null)" --state "$STRAYS_STATE" || { echo "STRAYS MARK FAILED"; fail=1; }
+}
+stage_end() {
+    echo "== stage $1: stray processes (CL3): leftovers of this stage"
+    "$PY" tools/strays.py report --state "$STRAYS_STATE" || { echo "NO-LEFTOVERS CHECK FAILED (tools/strays.py report)"; fail=1; }
+}
 
+# ---- stage docs: progress archive, python syntax, talking-manual index / question list / extract floor (fast)
+stage_docs() {
+    stage_begin docs
 echo "== progress archive (CL4a)"
 "$PY" tools/check_progress_archive.py || { echo "PROGRESS ARCHIVE CHECK FAILED"; fail=1; }
+# every Python file of the ground station / tools must at least parse
+for f in groundstation/*.py tools/*.py academy/*.py gateway/uav/*.py; do
+    "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
+done
+echo "python files parse"
+echo "== talking manual index (AM3, AM3-r MED-1): the COMMITTED groundstation/assistant/index/ must match the manuals / the tour / the parser - a stale index FAILS (rebuild: python tools/assistant_index.py build, then commit it); the question list (tests/assistant: all, in-sample, HELD-OUT)"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py check > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX STALE - run: python tools/assistant_index.py build, then commit the index (see $TEMP/asst_index.txt)"; fail=1; }
+cat "$TEMP/asst_index.txt"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py eval > "$TEMP/asst_eval.txt" 2>&1 || { echo "ASSISTANT QUESTION LIST BROKEN (see $TEMP/asst_eval.txt)"; fail=1; }
+cat "$TEMP/asst_eval.txt"
+echo "== talking manual extract score floor (AM4-r3 LOW-b, W112 / W117): the BM25 scores still separate what the floor was tuned on (tests/assistant/floor.json); moved = re-tune the floor on the TUNING part, then: python tools/assistant_index.py floor --write"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py floor > "$TEMP/asst_floor.txt" 2>&1 || { echo "ASSISTANT EXTRACT FLOOR: THE SEARCH SCORES MOVED - re-tune it (see $TEMP/asst_floor.txt)"; fail=1; }
+cat "$TEMP/asst_floor.txt"
+strays_check "assistant index / eval / floor"
+    stage_end docs
+}
 
+# ---- stage firmware: sim build + all sim tests (analog, bridge, DroneCAN worst / fast), TriCore compile, HAL / writer checks, stack check, memory, FAT32 / NV / DroneCAN PC checks, api_review
+stage_firmware() {
+    stage_begin firmware
 echo "== sim build"
 out=$(cmd //c "sim\\build_sim.bat" 2>&1)
 echo "$out" | grep -v "^Run it\|^Compiling"
@@ -234,11 +273,6 @@ mrc=$?
 sed -n '/RAM PER CORE/,$p' "$TEMP/mem_report.txt"
 [ $mrc -ne 0 ] && { echo "MEMORY CHECK FAILED"; fail=1; }
 
-# every Python file of the ground station / tools must at least parse
-for f in groundstation/*.py tools/*.py academy/*.py gateway/uav/*.py; do
-    "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
-done
-echo "python files parse"
 echo "== FAT32 writer of the board (PC disk images)"
 "$PY" tests/hal_pc/fat32_check.py > "$TEMP/fat32_tests.txt" 2>&1 || { echo "FAT32 TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|FAT32 TESTS|BUILD PROBLEM" "$TEMP/fat32_tests.txt"
@@ -253,6 +287,12 @@ echo "== API review tool (tools/api_review.py, fake client, no network)"
 "$PY" tools/test_api_review.py > "$TEMP/apirev_tests.txt" 2>&1 || { echo "API REVIEW TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|API REVIEW TESTS" "$TEMP/apirev_tests.txt"
 strays_check "test_api_review"
+    stage_end firmware
+}
+
+# ---- stage station: ground station tests (charts, lang, boats, screen 2, look, track, screenrec, yesno, accel, hailer, trends, sound, UAV / SAR / ADS-B station)
+stage_station() {
+    stage_begin station
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
@@ -297,19 +337,6 @@ echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛ
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
 strays_check "test_hailer"
-echo "== talking manual index (AM3, AM3-r MED-1): the COMMITTED groundstation/assistant/index/ must match the manuals / the tour / the parser - a stale index FAILS (rebuild: python tools/assistant_index.py build, then commit it); the question list (tests/assistant: all, in-sample, HELD-OUT)"
-PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py check > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX STALE - run: python tools/assistant_index.py build, then commit the index (see $TEMP/asst_index.txt)"; fail=1; }
-cat "$TEMP/asst_index.txt"
-PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py eval > "$TEMP/asst_eval.txt" 2>&1 || { echo "ASSISTANT QUESTION LIST BROKEN (see $TEMP/asst_eval.txt)"; fail=1; }
-cat "$TEMP/asst_eval.txt"
-echo "== talking manual extract score floor (AM4-r3 LOW-b, W112 / W117): the BM25 scores still separate what the floor was tuned on (tests/assistant/floor.json); moved = re-tune the floor on the TUNING part, then: python tools/assistant_index.py floor --write"
-PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py floor > "$TEMP/asst_floor.txt" 2>&1 || { echo "ASSISTANT EXTRACT FLOOR: THE SEARCH SCORES MOVED - re-tune it (see $TEMP/asst_floor.txt)"; fail=1; }
-cat "$TEMP/asst_floor.txt"
-strays_check "assistant index / eval / floor"
-echo "== talking manual (AM2 + AM3 + AM4): read-only proof AS1-AS3, real models offline AS4 + AS24 language model (N/A without them); ANSWER AS19-AS23 (post-check names + numbers, GPU guard, retrieval only, worker answer, get_llm pins, no llama-server), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval in-sample + held-out, worker find + stale index)"
-( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
-grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
-strays_check "test_assistant"
 echo "== trend panel TASEIS (TR2): ring buffer, sampler from real frames, graphs + click, palette + night, read-only proof TG6-TG9 (static, import graph, trapped senders, narrow view), CPU bounds; layout = test_screen2 S29"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_trends.py > "$TEMP/trend_tests.txt" 2>&1 ) || { echo "TREND TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|TREND TESTS" "$TEMP/trend_tests.txt"
@@ -318,18 +345,28 @@ echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"
 strays_check "test_sound"
-echo "== avoidance planner tests"
-( cd gateway && "$PY" test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
-strays_check "test_avoid"
-echo "== gateway PC on Ubuntu + Windows (serial names, config, install files)"
-( cd gateway && "$PY" test_osdep.py > "$TEMP/osdep_tests.txt" 2>&1 ) || { echo "OS TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
-strays_check "test_osdep"
-echo "== gateway one-command setup (13j): setup_all.sh with fake answers + stubbed commands (nothing changes), shellcheck / bash -n, no secret in the log"
-( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_setup.py > "$TEMP/setup_tests.txt" 2>&1 ) || { echo "SETUP TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|^ST1: shellcheck|SETUP TESTS" "$TEMP/setup_tests.txt"
-strays_check "test_setup"
+echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕΜΑ UAV», answers in the screen language"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"
+strays_check "test_uavui"
+echo "== Search and rescue on the station (PF3): MOB marker, alarm, SAVE, offers, stand-off route"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sar.py > "$TEMP/sar_tests.txt" 2>&1 ) || { echo "SAR STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|SAR STATION TESTS" "$TEMP/sar_tests.txt"
+strays_check "test_sar"
+echo "== ADS-B on the station (PF5): map, notices, voice, the proposal asked once and never automatic"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_adsbui.py > "$TEMP/adsbui_tests.txt" 2>&1 ) || { echo "ADS-B STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|ADS-B STATION TESTS" "$TEMP/adsbui_tests.txt"
+strays_check "test_adsbui"
+    stage_end station
+}
+
+# ---- stage academy: talking manual tests, tour pictures, academy, practical test
+stage_academy() {
+    stage_begin academy
+echo "== talking manual (AM2 + AM3 + AM4): read-only proof AS1-AS3, real models offline AS4 + AS24 language model (N/A without them); ANSWER AS19-AS23 (post-check names + numbers, GPU guard, retrieval only, worker answer, get_llm pins, no llama-server), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval in-sample + held-out, worker find + stale index)"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
+grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
+strays_check "test_assistant"
 echo "== guided tour pictures (13t): made again from the demo when the layout changed (tools/demo_screens.py --tour --if-stale)"
 PYTHONIOENCODING=utf-8 "$PY" tools/demo_screens.py --tour --if-stale > "$TEMP/tour_shots.txt" 2>&1 || { echo "TOUR PICTURES FAILED (see $TEMP/tour_shots.txt)"; fail=1; }
 grep -E "^tour pictures|TOUR PROBLEM" "$TEMP/tour_shots.txt"
@@ -342,6 +379,24 @@ echo "== academy practical test (step 21): read only + CONFIRM_ONLY (changes not
 PYTHONIOENCODING=utf-8 "$PY" academy/practical/test_practical.py > "$TEMP/practical_tests.txt" 2>&1 || { echo "PRACTICAL TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|PRACTICAL TESTS" "$TEMP/practical_tests.txt"
 strays_check "test_practical"
+    stage_end academy
+}
+
+# ---- stage gateway-misc: avoidance, OS, setup, loudhailer, UAV magazine, SITL (N/A without it), ADS-B, SAR demo
+stage_gateway_misc() {
+    stage_begin gateway-misc
+echo "== avoidance planner tests"
+( cd gateway && "$PY" test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
+strays_check "test_avoid"
+echo "== gateway PC on Ubuntu + Windows (serial names, config, install files)"
+( cd gateway && "$PY" test_osdep.py > "$TEMP/osdep_tests.txt" 2>&1 ) || { echo "OS TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
+strays_check "test_osdep"
+echo "== gateway one-command setup (13j): setup_all.sh with fake answers + stubbed commands (nothing changes), shellcheck / bash -n, no secret in the log"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_setup.py > "$TEMP/setup_tests.txt" 2>&1 ) || { echo "SETUP TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|^ST1: shellcheck|SETUP TESTS" "$TEMP/setup_tests.txt"
+strays_check "test_setup"
 echo "== loudhailer on the gateway (13r): first speaker wins, half duplex, recording in SAVE / KEEP, link priority, no effect on driving, failure = notice"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_loudhailer.py > "$TEMP/loudhailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER TESTS" "$TEMP/loudhailer_tests.txt"
@@ -358,31 +413,78 @@ if "$PY" tools/get_sitl.py --check > "$TEMP/sitl_check.txt" 2>&1; then
 else
   echo "SITL TESTS: N/A ($(cat "$TEMP/sitl_check.txt"))"
 fi
-echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕΜΑ UAV», answers in the screen language"
-( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"
-strays_check "test_uavui"
-echo "== Search and rescue on the station (PF3): MOB marker, alarm, SAVE, offers, stand-off route"
-( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sar.py > "$TEMP/sar_tests.txt" 2>&1 ) || { echo "SAR STATION TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|SAR STATION TESTS" "$TEMP/sar_tests.txt"
-strays_check "test_sar"
 echo "== ADS-B receive only (PF5): SBS / Beast parsing, aircraft state, filters, CPA geometry, warning levels, proposals, no receiver / no data, the simulated helicopter, receive-only proof"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_adsb.py > "$TEMP/adsb_tests.txt" 2>&1 ) || { echo "ADS-B TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ADS-B TESTS" "$TEMP/adsb_tests.txt"
 strays_check "test_adsb"
-echo "== ADS-B on the station (PF5): map, notices, voice, the proposal asked once and never automatic"
-( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_adsbui.py > "$TEMP/adsbui_tests.txt" 2>&1 ) || { echo "ADS-B STATION TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|ADS-B STATION TESTS" "$TEMP/adsbui_tests.txt"
-strays_check "test_adsbui"
 echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"
 ( PYTHONIOENCODING=utf-8 "$PY" demo/test_sar_demo.py > "$TEMP/sardemo_tests.txt" 2>&1 ) || { echo "SAR DEMO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SAR DEMO TESTS" "$TEMP/sardemo_tests.txt"
 strays_check "test_sar_demo"
+    stage_end gateway-misc
+}
+
+# ---- stage gateway: gateway/test_gateway.py (every section in its own process)
+stage_gateway() {
+    stage_begin gateway
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named
 strays_check "test_gateway"
-echo "== stray processes (CL3): leftovers of this run"
-"$PY" tools/strays.py report --state "$STRAYS_STATE" || { echo "NO-LEFTOVERS CHECK FAILED (tools/strays.py report)"; fail=1; }
+    stage_end gateway
+}
+
+# ---- driver
+do_stage() {            # run ONE stage in its own child shell under the watchdog; result -> $RES/<stage>.result
+    s=$1; mkdir -p "$RES"; rm -f "$RES/$s.result"
+    t0=$(date +%s)
+    echo; echo "######## STAGE $s (limit ${STAGE_LIMIT_S} s)"
+    timeout -k 30 "$STAGE_LIMIT_S" sh "$0" --run-stage "$s"; rc=$?
+    dt=$(( $(date +%s) - t0 ))
+    if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+        echo "STAGE $s: STALLED (over ${STAGE_LIMIT_S} s, killed) - a FAIL, never a pass"
+        # the stage's shell is gone: stop what it provably started (its own strays state), nothing else
+        "$PY" tools/strays.py check "stage $s watchdog" --state "$STRAYS_STATE" || true
+        echo "STALLED $dt" > "$RES/$s.result"
+    elif [ ! -f "$RES/$s.result" ]; then
+        echo "STAGE $s: CRASHED (exit $rc, no result written) - a FAIL"
+        echo "CRASHED $dt" > "$RES/$s.result"
+    fi
+    echo "######## STAGE $s: $(cut -d' ' -f1 "$RES/$s.result") in ${dt} s"
+    [ "$(cut -d' ' -f1 "$RES/$s.result")" = OK ]
+}
+summary() {             # aggregate EVERY stage: a missing result = FAIL
+    echo; echo "== gate summary"
+    ok=1
+    for s in $STAGES; do
+        if [ -f "$RES/$s.result" ]; then
+            st=$(cut -d' ' -f1 "$RES/$s.result"); sec=$(cut -d' ' -f2 "$RES/$s.result")
+        else st="MISSING"; sec=0; fi
+        printf '  %-14s %-8s %s s\n' "$s" "$st" "$sec"
+        [ "$st" = OK ] || ok=0
+    done
+    [ $ok -eq 1 ]
+}
+case "${1:-}" in
+    --list) for s in $STAGES; do echo "$s"; done; exit 0 ;;
+    --run-stage)            # internal: the child shell of do_stage
+        s=$2; fn="stage_$(echo "$s" | tr - _)"
+        case " $STAGES " in *" $s "*) ;; *) echo "unknown stage $s"; exit 2 ;; esac
+        mkdir -p "$RES"; t0=$(date +%s)
+        "$fn"
+        dt=$(( $(date +%s) - t0 ))
+        if [ $fail -eq 0 ]; then echo "OK $dt" > "$RES/$s.result"; else echo "FAILED $dt" > "$RES/$s.result"; fi
+        exit $fail ;;
+    --stage)
+        s=${2:-}
+        case " $STAGES " in *" $s "*) ;; *) echo "usage: sh tools/check.sh --stage <$(echo $STAGES | tr ' ' '|')>"; exit 2 ;; esac
+        do_stage "$s" && { echo "STAGE $s: OK (a partial check - the full gate needs every stage)"; exit 0; }
+        echo "STAGE $s: FAILED"; exit 1 ;;
+    "") ;;
+    *) echo "usage: sh tools/check.sh [--list | --stage <name>]"; exit 2 ;;
+esac
+rm -rf "$RES"
+for s in $STAGES; do do_stage "$s" || fail=1; done
+summary || fail=1
 [ $fail -eq 0 ] && echo "GATE: OK" || echo "GATE: FAILED"
 exit $fail

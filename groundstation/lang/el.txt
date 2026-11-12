@@ -880,6 +880,9 @@ bench.stack_line = {core}  χρήστη {user}   διακοπών {irq}
 bench.stack_val = {used} / {size} B ({pct} %)
 bench.stack_unknown = ? / {size} B (μετράει)
 bench.stack_overflow = ΓΕΜΑΤΗ / {size} B (ΥΠΕΡΧΕΙΛΙΣΗ)
+bench.stack_core0 = πυρήνας 0
+bench.stack_core1 = CPU1
+bench.stack_core2 = πυρήνας 2
 bench.stack_sim = (προσομοιωμένες τιμές - ο υπολογιστής δεν έχει στοίβες AURIX)
 bench.stack_none = χωρίς δεδομένα στοίβας (παλαιότερο λογισμικό AURIX)
 # κουμπιά πάνελ

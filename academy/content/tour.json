@@ -737,6 +737,19 @@
           "text_en": "Every flight is written to its own file. FLIGHT LOGS lists them and the export is CSV or GPX."
         },
         {
+          "id": "uav.tlog",
+          "voice_pending": true,
+          "show": "tools",
+          "target": "tab.uav",
+          "covers": [
+            "uav:tlog"
+          ],
+          "title_el": "Εξαγωγή .tlog",
+          "title_en": "Export .tlog",
+          "text_el": "Το κουμπί ΕΞΑΓΩΓΗ .tlog γράφει την πτήση σε αρχείο που ανοίγει στο Mission Planner, για έλεγχο ή αναπαραγωγή μετά την πτήση.",
+          "text_en": "The EXPORT .tlog button writes the flight to a file that opens in Mission Planner, to check or replay it after the flight."
+        },
+        {
           "id": "uav.legal",
           "show": "none",
           "target": "",

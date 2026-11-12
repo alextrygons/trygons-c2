@@ -878,6 +878,9 @@ bench.stack_line = {core}  user {user}   interrupt {irq}
 bench.stack_val = {used} / {size} B ({pct} %)
 bench.stack_unknown = ? / {size} B (measuring)
 bench.stack_overflow = FULL / {size} B (OVERFLOW)
+bench.stack_core0 = core 0
+bench.stack_core1 = CPU1
+bench.stack_core2 = core 2
 bench.stack_sim = (simulated values - the PC has no AURIX stacks)
 bench.stack_none = no stack data (older AURIX firmware)
 # panel buttons
