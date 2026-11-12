@@ -423,6 +423,74 @@ Tracker latency (sensor time -> track) and CPU at 2 sensors + 4 cameras + vision
 tools/gateway_load.py --harbour; budgets: tracker cycle < 30 ms p99, planner < 50 ms p99 on the
 ThinkPad L390.
 
+### 6a. As built (HX4) - the fusion tracker + the static map
+
+No app / hal / AURIX change; nothing is sent anywhere. Process model: the tracker is PURE Python and runs in the
+manager's 5 Hz tick in the gateway thread (HarbourSensors._track; no own process - measured far under the budget,
+below), fed every received batch at once; the sensor workers stay their own processes (5a).
+- gateway/harbour/tracker.py: Tracker.feed(kind, batch) (radar plots -> ENU with the polar covariance range sd 3 m +
+  0.5 % + size / 4, bearing sd 1 deg + size; LiDAR clusters sensor frame -> boat frame (+ mount_x) -> ENU, sd 0.25 m +
+  size / 4); a constant-velocity Kalman filter per track (q 0.3 m/s^2; an out-of-order batch is predicted back with
+  Q(|dt|)); the radar's ARPA speed / course = a VELOCITY update (sd 0.5 m/s - without it a radar-only moored boat's
+  velocity wandered to 0.9 m/s); gating chi2 13.8 confirmed / 9.21 tentative after a spatial-hash Euclidean pre-gate;
+  global nearest neighbour = Hungarian (own implementation) per connected component of the gated pairs; birth from
+  every unassociated range measurement (velocity from ARPA, else 0 +- 1.5 m/s); duplicate tracks merged (< 1.5 m,
+  < 1 m/s); camera(obstacles) (gw.vision.obstacles: rel / dist / range) = associated by BEARING (4 deg + half size,
+  range ratio 0.5..2) to a range-CONFIRMED track (adds C only, the position stays the range sensors'), else a
+  camera-only track (polar covariance, range sd >= 8 m or half the vision range interval); ais(targets)
+  (gw.ais.list(), stale ignored) = linked to a range-confirmed track within 30 m and 2 m/s (MMSI + class vessel; kept
+  by MMSI, unlinked beyond 90 m), else an AIS-only track (state = the report); cycle() = confirmation, steer_ok,
+  coasting, deletion, static, class, confidence, ghosts, the static-map accumulation, the flags.
+- DEVIATIONS from 6.1 (measured): steer_ok (= range_ok) per sensor - LiDAR >= 3 hits in 1 s, the last < 0.5 s (as
+  6.1); RADAR >= 3 hits in 4 s, the last < 2 s (a 0.8 Hz radar can never give 3 hits in 1 s). Confirmation: radar 3
+  hits in 4 s, LiDAR 5 hits in 1 s (10 Hz). Deletion: no range hit for radar 5 s / LiDAR 3 s (whichever saw it last),
+  camera / AIS-only 5 s; a tentative track not confirmed within 3 s + its window. steer_ok is decided in ONE function
+  (steer_ok_from) from the RANGE_SRC sources only (R, L); camera / AIS hits never count; a track whose range hits stop
+  loses steer_ok at once (coasting) but is KEPT until deleted.
+- Classes: vessel (AIS-linked, or >= 6 m moving), static (chart cell under the centroid, an accumulated LiDAR cell
+  while slow, or the average speed < 0.25 m/s for 20 s, hysteresis 0.5 m/s), small (1.5..6 m, moving / low / flat:
+  kayak, dinghy), person (person-like: < 1.5 m and low <= 0.6 m or flat), buoy (< 1.5 m, taller, static), unknown.
+  "surface" = most LiDAR hits flat in the water band; a flat cluster is tracked like any other (HX3 round 2 MED-1):
+  a LiDAR-confirmed paddleboard = steer_ok person-like. The water band is re-judged with the BNO085 attitude when
+  TELEM2 has it (att_roll / att_pitch: z_water = -h cos r cos p - x sin p + y sin r); it changes only the label.
+- CONSERVATIVE: a doubt makes an obstacle, never removes one: a radar multipath ghost (on the bearing of a nearer
+  track at ~2x its range, radar only) is KEPT, marked ghost_suspect and stays steer_ok; a LiDAR phantom is an obstacle.
+- gateway/harbour/staticmap.py: 0.5 m cells; chart layer (add_chart: the offline chart within 300 m - shallower than
+  the shallow limit or no data inside a charted area; add_segment: piers / breakwaters) never decays; LiDAR layer:
+  LiDAR-fresh static steer_ok tracks add weight to their footprint, decay tau 1 h, a cell counts at weight >= 20;
+  JSON save / load (no numpy on the gateway; the design's .npz = JSON; "static_file" in the harbour config = saved
+  every 5 min in a helper thread). A track whose centroid sits in a chart cell is static whatever its speed (a long
+  quay's radar returns slide along it).
+- Flags (tracker.flags() / HarbourSensors.tracker_flags(), gw_status "harbour" "tracker" {tracks, steer_ok,
+  confirmed, cycle_ms, latency_ms, counts, flags, unsure, static_cells}): range_lost (U1: neither sensor OK /
+  DEGRADED with data younger than stale_s radar 2.5 s / LiDAR 0.5 s), degraded [sensors not OK or stale] (U2), stale
+  {sensor: age}, time_skew (U11, > 0.1 s), conflicts (U6: ais_range_disagree > 20 m on an object < 50 m;
+  ais_without_range = an AIS track < 50 m not range-confirmed; camera_without_range = a camera track ahead
+  (+-30 deg) < 30 m not range-confirmed), clutter (U9: > 15 new range tracks / s within 25 m), crowded (U9: > 20
+  moving steer_ok tracks within 100 m), no_static_map (U10), no_pose, overload (> 300 tracks, sensor items over the
+  cap, a cycle > 30 ms), error (a tracker exception: held 5 s by the manager, the tick never stops), ghost_suspect,
+  attitude; "unsure" = the list of every active reason. The tracker never decides slow / stop - HX5 does.
+- Measured: HT12 (the default harbour, both sensors + camera + AIS, 60 s simulated) feed / cycle p50 0.12 ms, p99
+  0.61 ms, max 0.82 ms, 0.5 % of one core; tools/gateway_load.py --harbour (60 s, real worker processes, the boat
+  circling): the manager's tick incl. the tracker p50 0.8 ms / p99 9.9 ms / max 11.9 ms, 47 tracks (26 steer_ok),
+  the manager 4.3 % of one core (HX3: 1.4 %), latency gateway clock - sensor time at the fusion p50 170 / p99 500 ms
+  (the radar's 300 ms + up to one 200 ms tick). Budget 30 ms p99: met. The ThinkPad L390 run with 4 cameras + vision
+  is still open (R-H3).
+- Tests gateway/test_harbour_tracker.py HT1-HT16 (stage gateway-misc): HT1 single, HT2 the default harbour (ferry
+  AIS-linked, moored static, quay in the chart), HT3 crossing ids, HT4 head-on / overtaking, HT5 static map (LiDAR
+  layer, chart layer, save / load, decay), HT6 kayak / swimmer / buoy / flat board + the attitude band, HT7 sea
+  clutter never confirms, radar ghost kept + suspect, LiDAR rain = clutter flag with the swimmer still steer_ok, HT8
+  camera-only / AIS-only never steer_ok + conflicts, HT9 loss / degraded / stale / skew flags, HT10 AIS-range
+  conflict, HT11 lifetime, HT12 timing + the overload flag, HT13 determinism, HT14 read only (static + a run with
+  sockets trapped), HT15 mutations (camera / AIS as a range source, no fresh-hit rule), HT16 the manager.
+- Limits (for HX5 / the owner): LiDAR rain clutter DOES confirm clutter tracks (32 in 20 s in HT7) - they are
+  obstacles (conservative) and the clutter flag says U9; a radar-only extended object's track can slide along it
+  without a chart; the swimmer at the LiDAR's edge of view (1 point per scan, Pd 0.6) is steer_ok ~80 % of the time
+  (HT6: 41 / 50 ticks) - between, it is a track that is not steer_ok (slow / stop only); real sensors (W148) will need
+  the noise / gate values measured; the tracker's clock = the newest sensor / gateway epoch time, advanced by the gateway
+  clock in every cycle and never back (a stopped data flow ages every track out: HT9); the data ages for the flags
+  are monotonic (the manager).
+
 ## 7. Local planner (HX5, SERIAL review: it steers the boat)
 
 ### 7.1 Method

@@ -1108,3 +1108,19 @@ detections 481 -> 226; clutter 1.1 -> 24.6 plots per sweep; the worker process: 
 below-normal priority (0x4000). Load (tools/gateway_load.py --harbour, 60 s): radar worker 0.3 %, LiDAR worker
 0.6 %, the gateway-side manager 1.4 % of one core; latency p99 312 ms radar / 54 ms LiDAR (300 / 50 ms of it modelled).
 HX3-r (review fixes): HS1-HS10 pass again; swimmer at 25 m 244 raw / 244 after the worker's filter (400 scans), kayak 287 / 287; a worker with a missing Python = LOST "cannot start" in 0.1 s. Round 2: a 0.12 m paddleboard kept in 287 / 287 scans (272 marked surface); a pose 1 s old = DEGRADED. UAV tests alone after the stage: 49 passed (UA22 = the known load flake). Stage runs: docs OK (36 s); gateway-misc 553 s: harbour 10/10, UA22 failed once in the stage while the station stage ran in parallel (see the re-run); station: SR8 NVENC = the known environmental failure (every other station suite passed, 817 s); gateway stage OK 164 / 164 (1409 s).
+
+## HX4 - harbour perception: the fusion tracker + the static map (2026-11-13)
+
+gateway/test_harbour_tracker.py HT1-HT16 (stage gateway-misc): 16 passed, the HX3 simulators in-process, seeded.
+Single vessel: 1.1 m position error, velocity (-0.03, 1.90) for (0, 2) m/s; default harbour (40 s): ferry AIS-linked
+(MMSI) 3.2 m, fishing boat 0.1 m, the 3 moored boats static (0.8 / 2.0 / 0.8 m), 7 quay tracks static in the chart
+layer; crossing vessels keep their ids; head-on vy -1.93 (truth -2), overtaken vy 1.01 (1); static map: moored boats
+accumulated (3440 LiDAR cells), the chart layer, save / load, decayed after 6 h; kayak = small, swimmer = person,
+buoy = buoy, a flat 0.12 m board = person + surface, steer_ok in 50 / 41 / 50 / 50 of the last 50 ticks; sea clutter
+never confirmed; a radar ghost kept + ghost_suspect; LiDAR rain: the swimmer stays steer_ok, the clutter flag (30 new
+tracks / s) - 32 clutter tracks confirmed (obstacles, conservative); camera-only and AIS-only tracks never steer_ok
+(+ the conflicts camera_without_range / ais_without_range); LiDAR lost = U2, a radar skew = U11, both silent =
+range_lost U1 + the track coasting (not steer_ok), deleted after delete_s; an AIS position 40 m off = U6; timing p99
+0.61 ms (in-process), determinism, read only (sockets trapped: 0), mutations (camera / AIS as a range source, no
+fresh-hit rule) all caught. Load (tools/gateway_load.py --harbour, 60 s): tracker in the manager's tick p99 9.9 ms
+(budget 30), 47 tracks, the manager 4.3 % of one core.

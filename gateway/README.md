@@ -973,3 +973,26 @@ L390 measurement comes with HX4 together with the tracker, 4 cameras and vision)
 | radar worker (0.8 Hz, ~30 plots per sweep) | 0.3 % | 19 MB | 307 / 312 / 312 ms (300 ms modelled radar latency + 7 ms) |
 | LiDAR worker (10 Hz) | 0.6 % | 19 MB | 51 / 54 / 54 ms (50 ms modelled + 2-4 ms) |
 | manager in the gateway (5 Hz tick + readers) | 1.4 % | - | - |
+
+## 28. Harbour perception - the fusion tracker + the static map (step HX4)
+
+`gateway/harbour/tracker.py` + `gateway/harbour/staticmap.py` (CLAUDE.md Z, docs/harbour_design.md 6a). Pure
+Python inside the harbour manager's 5 Hz tick (no extra process). Every radar / LiDAR batch, the camera obstacles
+(`gw.vision.obstacles`) and the AIS targets (`gw.ais.list()`) become FUSED TRACKS (position, velocity, covariance,
+size, class vessel / static / small / person / buoy / unknown, confidence, sources R / L / C / A, steer_ok). Only
+radar or LiDAR hits make a track `steer_ok` (the planner may steer around it); a camera-only or AIS-only track may
+only slow / stop the boat. `HarbourSensors.tracks()` / `tracker_flags()` are the planner's (HX5) inputs; the flags
+(range sensors lost, degraded, stale, time skew, conflicting tracks, clutter / crowded, no static map, overload,
+tracker error) are always explicit and listed in gw_status "harbour" "tracker" "unsure". Nothing is sent to the
+AURIX. Optional config: `"harbour": {"tracker": {...}, "static_file": "<state>/harbour/<harbour>/static.json",
+"chart_radius_m": 300}`.
+
+Measured 2026-11-13 on the development PC (`python tools/gateway_load.py --harbour --minutes 1`; the boat circling
+the simulated basin; the ThinkPad L390 run with 4 cameras + vision is still open):
+
+| part | value |
+|---|---|
+| tracker in the manager's tick (feed + cycle) | p50 0.8 ms, p99 9.9 ms, max 11.9 ms (budget 30 ms p99) |
+| tracks | 47 (26 steer_ok, 29 confirmed) |
+| manager in the gateway incl. the tracker | 4.3 % of one core (HX3 without the tracker: 1.4 %) |
+| latency gateway clock - sensor time at the fusion | p50 170 ms, p99 500 ms (radar 300 ms modelled + up to one 200 ms tick) |

@@ -214,9 +214,10 @@ def camera(ffmpeg, i, src_video):
 
 
 def harbour_load(a):
-    """HX3: CPU of the two harbour sensor worker processes (simulated radar 0.8 Hz + LiDAR 10 Hz, the default harbour
+    """HX3 + HX4: CPU of the two harbour sensor worker processes (simulated radar 0.8 Hz + LiDAR 10 Hz, the default harbour
     world), the gateway-side manager (this process: HarbourSensors.tick at 5 Hz + the reader threads) and the latency
-    sensor time -> the gateway (p50 / p99 / max). The boat circles the basin (radius 40 m, 2 m/s)."""
+    sensor time -> the gateway (p50 / p99 / max); HX4: the tracker's cycle ms (p50 / p99 / max), its latency
+    (gateway clock - sensor time at the fusion) and the track counts (budget: cycle < 30 ms p99). The boat circles the basin (radius 40 m, 2 m/s)."""
     import math
     from harbour.manager import HarbourSensors
     from harbour import simworld
@@ -264,7 +265,10 @@ def harbour_load(a):
                "items": {k: v["items"] for k, v in st["sensors"].items()},
                "rate_hz": {k: v["rate_hz"] for k, v in st["sensors"].items()},
                "state": {k: v["state"] for k, v in st["sensors"].items()}, "restarts": {k: v["restarts"]
-                                                                                       for k, v in st["sensors"].items()}}
+                                                                                       for k, v in st["sensors"].items()},
+               # HX4: the fusion tracker in the manager's tick (per batch feed + per tick cycle, ms), its tracks
+               "tracker": {k: (st.get("tracker") or {}).get(k) for k in ("cycle_ms", "latency_ms", "tracks",
+                                                                         "steer_ok", "confirmed", "unsure")}}
     finally:
         m.stop()
     os.makedirs(OUT, exist_ok=True)
@@ -272,6 +276,8 @@ def harbour_load(a):
         json.dump(res, f, indent=1)
     print("HARBOUR %s" % json.dumps(res))
     ok = all(v == "OK" for v in res["state"].values()) and not any(res["restarts"].values())
+    p99 = ((res.get("tracker") or {}).get("cycle_ms") or {}).get("p99")
+    ok = ok and p99 is not None and p99 < 30.0
     return 0 if ok else 1
 
 

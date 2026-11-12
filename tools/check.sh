@@ -428,6 +428,10 @@ echo "== harbour sensors (HX3): the interface, simulated radar + LiDAR vs the wo
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_sensors.py > "$TEMP/harbour_sensor_tests.txt" 2>&1 ) || { echo "HARBOUR SENSOR TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|HARBOUR SENSOR TESTS" "$TEMP/harbour_sensor_tests.txt"
 strays_check "test_harbour_sensors"
+echo "== harbour perception (HX4): the fusion tracker (radar + LiDAR + camera + AIS) + the static map with the simulated sensors: association, crossing, static map, small craft / person-like, clutter / ghosts, camera / AIS-only never steer_ok, unsure flags, lifetime, timing, determinism, read only, mutations"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_tracker.py > "$TEMP/harbour_tracker_tests.txt" 2>&1 ) || { echo "HARBOUR TRACKER TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR TRACKER TESTS|passed" "$TEMP/harbour_tracker_tests.txt"
+strays_check "test_harbour_tracker"
 echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"
 ( PYTHONIOENCODING=utf-8 "$PY" demo/test_sar_demo.py > "$TEMP/sardemo_tests.txt" 2>&1 ) || { echo "SAR DEMO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SAR DEMO TESTS" "$TEMP/sardemo_tests.txt"

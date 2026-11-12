@@ -11,7 +11,11 @@ RULES (gateway/test_harbour_sensors.py checks them):
     for its unsure list U1 / U2);
   * a worker crash / hang = a notice + a restart after restart_s (5 s); the gateway never stops for a sensor;
   * the simulated world gets its origin from the own boat's FIRST fresh position (both sensors see the same world).
-No tracker here (HX4 reads latest() / on_batch).
+HX4: the fusion tracker (tracker.py) + the static map (staticmap.py) run HERE, in the gateway thread's tick (pure,
+no own process: design 6a - measured < 30 ms p99): every received batch is fused, then the camera obstacles
+(gw.vision.obstacles), the AIS targets (gw.ais.list()) and the attitude (TELEM2 att_roll / att_pitch); tracks() /
+tracker_flags() are the planner's (HX5) inputs; gw_status "harbour" "tracker" = the summary + the flags. Still READ
+ONLY: nothing goes to the AURIX.
 """
 import collections
 import json
@@ -23,7 +27,7 @@ import sys
 import threading
 import time
 
-from harbour import sensors, simworld
+from harbour import sensors, simworld, staticmap, tracker
 
 mono = time.monotonic          # HX3 review M1: every age / timer (a GPS clock step never fakes an OK)
 
@@ -205,6 +209,19 @@ class HarbourSensors:
         self.no_rx_logged = False
         self.on_batch = []                  # HX4: the tracker's callback(kind, batch) - called in tick()
         self.errors = 0
+        tc = self.cfg.get("tracker") if isinstance(self.cfg.get("tracker"), dict) else {}
+        self.static = staticmap.StaticMap()
+        self.static_file = self.cfg.get("static_file") or ""
+        if self.static_file and os.path.exists(self.static_file):
+            try:
+                self.static = staticmap.StaticMap.load(self.static_file)
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                log.warning("harbour: static map %s not usable (%s) - a new one", self.static_file, e)
+        self.static_saved = mono()
+        self.chart_done = False
+        self.tracker = tracker.Tracker(tc, static_map=self.static)
+        self.tracker_err = 0
+        self.tracker_err_until = 0.0
         if self.enabled and self.sim:
             w = self.cfg.get("world") or ""
             try:
@@ -250,6 +267,8 @@ class HarbourSensors:
         if self.world is not None and not self.world_json and pose is not None:
             self.world.place(pose["lat"], pose["lon"], time.time())      # the harbour around the boat's first position
             self.world_json = json.dumps(self.world.to_json())
+        if self.tracker.origin is None and self.world is not None and self.world.origin:
+            self.tracker.set_origin(*self.world.origin)       # before the first batch is fused
         for kind, sp in self.procs.items():
             if not sp.c.get("enabled"):
                 continue
@@ -281,12 +300,96 @@ class HarbourSensors:
                     self.notice("%s %s%s" % (kind.upper(), st, (" - " + why) if why else ""), lvl)
                 self.last_state[kind] = st
             for b in pend:
+                t0 = time.perf_counter()
+                try:
+                    self.tracker.feed(kind, b, now=time.time())
+                except Exception:
+                    self._tracker_failed(now)
+                self.tracker.note_ms((time.perf_counter() - t0) * 1000.0)
                 for fn in list(self.on_batch):
                     try:
                         fn(kind, b)
                     except Exception:
                         self.errors += 1
                         log.exception("harbour: on_batch")
+
+        self._track(now, pose)
+
+    def _tracker_failed(self, now):
+        self.tracker_err += 1
+        self.tracker_err_until = now + 5.0          # the flag is held 5 s (the planner must see it)
+        log.exception("harbour: tracker")
+
+    def _track(self, now, pose):
+        """The camera + AIS + attitude into the tracker, then its cycle (maintenance + flags). Never raises."""
+        tr = self.tracker
+        t0 = time.perf_counter()
+        try:
+            if tr.origin is None:
+                if self.world is not None and self.world.origin:
+                    tr.set_origin(*self.world.origin)
+                elif pose is not None:
+                    tr.set_origin(pose["lat"], pose["lon"])
+            if tr.origin is not None and not self.chart_done:
+                self.chart_done = True
+                charts = getattr(self.gw, "charts", None)
+                if charts:
+                    lim = 2.0
+                    try:
+                        lim = float(self.gw.shallow.limit())
+                    except Exception:
+                        pass
+                    self.static.add_chart(charts, tr.origin, float(self.cfg.get("chart_radius_m", 300.0)), 2.0, lim)
+            t_ep = time.time()
+            vis = getattr(self.gw, "vision", None)
+            if pose is not None and vis is not None:
+                tr.camera(list(getattr(vis, "obstacles", None) or []), pose, t_ep)
+            ais = getattr(self.gw, "ais", None)
+            if ais is not None and hasattr(ais, "list"):
+                tr.ais(ais.list(), t_ep)
+            t2 = getattr(self.gw, "telem2", None) or {}
+            att = None
+            if isinstance(t2.get("att_roll"), (int, float)) and isinstance(t2.get("att_pitch"), (int, float)):
+                att = (float(t2["att_roll"]), float(t2["att_pitch"]))
+            health, ages, skews = {}, {}, {}
+            for kind, sp in self.procs.items():
+                with sp.lock:
+                    health[kind] = sp.judge.state if sp.c.get("enabled") else sensors.OFF
+                    ages[kind] = None if sp.judge.last_rx is None else now - sp.judge.last_rx
+                    skews[kind] = sp.judge.skew
+            tr.cycle(health=health, ages=ages, skews=skews, attitude=att, no_pose=pose is None,
+                     error=now < self.tracker_err_until, now=t_ep)
+        except Exception:
+            self._tracker_failed(now)
+            try:
+                tr._flags = dict(tr._flags or {})
+                u = [x for x in (tr._flags.get("unsure") or []) if x != "tracker error"] + ["tracker error"]
+                tr._flags.update({"error": True, "unsure": u})
+            except Exception:
+                pass
+        tr.note_ms((time.perf_counter() - t0) * 1000.0)
+        if self.static_file and now - self.static_saved > 300.0:
+            self.static_saved = now
+            js = self.static
+            threading.Thread(target=self._save_static, args=(js,), daemon=True).start()
+
+    def _save_static(self, m):
+        try:
+            m.save(self.static_file)
+        except (OSError, ValueError) as e:
+            log.warning("harbour: static map not saved: %s", e)
+
+    def tracks(self):
+        """The fused tracks (tracker.py) - the planner's (HX5) input."""
+        return self.tracker.tracks_out()
+
+    def tracker_flags(self):
+        """The planner's unsure inputs (design 7.4): explicit flags, never hidden."""
+        f = dict(self.tracker.flags() or {})
+        if mono() < self.tracker_err_until and "tracker error" not in (f.get("unsure") or []):
+            f["error"] = True
+            f["unsure"] = list(f.get("unsure") or []) + ["tracker error"]
+        return f
 
     def fault(self, kind, name, on=True):
         """SIMULATOR only: inject a fault into a simulated sensor (tests, demo); refused for a real driver."""
@@ -315,6 +418,12 @@ class HarbourSensors:
 
     def status(self):
         out = {"enabled": self.enabled, "sim": self.sim, "sensors": {}, "notices": list(self.notices)[-10:]}
+        if self.enabled:
+            ts = self.tracker.summary()
+            ts["flags"] = {k: v for k, v in self.tracker_flags().items() if k != "unsure"}
+            ts["unsure"] = self.tracker_flags().get("unsure", [])
+            ts["static_cells"] = self.static.n_cells()
+            out["tracker"] = ts
         if self.world is not None and self.world.origin:
             out["origin"] = list(self.world.origin)
         for k, sp in self.procs.items():
