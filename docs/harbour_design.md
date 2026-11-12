@@ -379,6 +379,15 @@ module - HS9 scans it and runs a worker with sockets trapped):
   carries "sim": true for simulated data + a check_config warning when "sim" replaces a configured real driver (a
   refusal of sim with a real AURIX link = HX4 note); L4 dead code out; L5 the delivery delay worker -> gateway >
   delay_max_s 0.2 s = DEGRADED.
+- Round 2 (review of 8554afd, the last round, LOOP RULE 7): MED-1 the LiDAR filter NEVER deletes a flat cluster in the
+  water band any more - it is KEPT and marked "surface": true (a person floating flat, a paddleboard 0.12 m, a log;
+  the band ignores pitch / roll) and the tracker (HX4) decides; HS3 a 0.12 m paddleboard is kept in every scan. MED-2
+  the pose time = gw.telem_rx (epoch, set with every TELEMETRY frame in gateway.py) with NO fallback: no receive time
+  = no pose; HS7 a pose 1 s old = DEGRADED "pose ... from the measurement". Notes for HX4 / HX5 (not fixed here):
+  the worker's pose age is epoch-based (a backward clock step fails safe through pose_dt); a restart's new real-driver
+  worker may overlap the dying one (UDP bind, W148); a "sim" config with a REAL AURIX link must be REFUSED before HX5
+  can steer on harbour data (a gate item for HX5); attitude compensation of the water band (BNO085 roll / pitch)
+  belongs to HX4.
 - NOT in HX3: the tracker / fusion / AIS association (HX4 - the world's AIS MMSI is there for it), the planner (HX5),
   any screen (HX6), real drivers (W148).
 

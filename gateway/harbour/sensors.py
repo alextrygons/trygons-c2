@@ -10,7 +10,8 @@ Frames (every one documented; the tracker reads only these):
                (true, a radar's own ARPA / MARPA if it gives one), size_m, size_cls "small" | "medium" | "large",
                strength 0..1}
   LidarObject {x, y, z (m, SENSOR frame: x ahead, y to STARBOARD, z up from the sensor), len_m, wid_m, hgt_m,
-               n_points}  - after the worker's filter (own hull box, the water band, isolated spray < 3 m)
+               n_points, surface (a flat return in the water band: KEPT, marked)}  - after the worker's filter (own hull box,
+               isolated spray < 3 m)
   batch  {ev "radar" | "lidar", seq, t (sensor time = the measurement, epoch s, gateway clock after the sync),
           t_tx (the worker's clock when it sent it), pose, items [...] (nearest first), bad (items refused by
           validation), capped (items over max_items: the farthest), sim (true = SIMULATED data)}
@@ -153,8 +154,9 @@ FLAT_M = 0.15            # a water-surface return is flatter than this
 
 
 def lidar_filter(objs, c):
-    """The worker's LiDAR clean-up (design 5): drop the own hull box, the water band (a FLAT object - height < 0.15 m
-    - whose top is below water + water_band_m) and isolated spray (fewer than min_points points closer than 3 m). Sensor frame."""
+    """The worker's LiDAR clean-up (design 5): drop the own hull box and isolated spray (fewer than min_points
+    points closer than 3 m); a FLAT object (height < 0.15 m) whose top is in the water band is KEPT and marked
+    "surface": true (round 2 MED-1: it may be a person floating flat / a paddleboard; no attitude compensation yet). Sensor frame."""
     hl, hw, mx = float(c["hull_len_m"]), float(c["hull_wid_m"]), float(c["mount_x_m"])
     water = -float(c["mount_h_m"])
     band = float(c["water_band_m"])
@@ -163,10 +165,11 @@ def lidar_filter(objs, c):
         bx = o["x"] + mx                               # boat frame: x from the hull's middle
         if abs(bx) <= hl / 2.0 + 0.2 and abs(o["y"]) <= hw / 2.0 + 0.2:
             continue                                   # own hull
-        if o["z"] + o["hgt_m"] / 2.0 < water + band and o["hgt_m"] < FLAT_M:
-            continue                                   # a FLAT return in the water band (+- 0.3 m): the surface
-        # (HX3 review H1: a low object that is not flat - a swimmer's head 0.3 m - is KEPT; judging the top alone
-        # dropped half of the swimmer detections at the noise edge)
+        # HX3 review round 2 MED-1: a FLAT cluster in the water band is NEVER deleted here - it may be the water
+        # surface, or a person floating flat, a paddleboard, a log (and the band ignores the boat's pitch / roll);
+        # it is MARKED "surface": true and passed on: the tracker (HX4) decides, never this filter
+        o = dict(o)
+        o["surface"] = bool(o["z"] + o["hgt_m"] / 2.0 < water + band and o["hgt_m"] < FLAT_M)
         if o["n_points"] < int(c["min_points"]) and math.hypot(o["x"], o["y"]) < 3.0:
             continue                                   # spray
         out.append(o)

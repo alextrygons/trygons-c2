@@ -224,6 +224,10 @@ def harbour_load(a):
     class Gw:
         t0 = time.time()
 
+        @property
+        def telem_rx(self):
+            return time.time()
+
         def own(self):
             t = time.time() - self.t0
             ang = t * 2.0 / 40.0

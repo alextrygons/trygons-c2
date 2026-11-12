@@ -202,6 +202,7 @@ class HarbourSensors:
         self.world_json = ""
         self.notices = collections.deque(maxlen=30)
         self.last_state = {k: None for k in sensors.KINDS}
+        self.no_rx_logged = False
         self.on_batch = []                  # HX4: the tracker's callback(kind, batch) - called in tick()
         self.errors = 0
         if self.enabled and self.sim:
@@ -223,10 +224,16 @@ class HarbourSensors:
             return None
         if not o or not o.get("fresh") or o.get("lat") is None or o.get("heading") is None:
             return None
-        # review M3: the pose time = when the gateway RECEIVED that telemetry (gw.telem_rx), not this read
+        # review M3 + round 2 MED-2: the pose time = when the gateway RECEIVED that telemetry frame (gw.telem_rx,
+        # epoch, set with gw.telem in gateway.py on every TELEMETRY frame = the one carrying lat / lon / heading);
+        # NO fallback - an unknown receive time = no pose (the sensors go DEGRADED "no own pose", then LOST)
         t_rx = getattr(self.gw, "telem_rx", None)
-        t = float(t_rx) if isinstance(t_rx, (int, float)) and t_rx > 0 else time.time()
-        p = {"t": t, "lat": o["lat"], "lon": o["lon"], "heading": float(o["heading"]) % 360.0,
+        if isinstance(t_rx, bool) or not isinstance(t_rx, (int, float)) or t_rx <= 0:
+            if not self.no_rx_logged:
+                self.no_rx_logged = True
+                log.warning("harbour: the telemetry receive time is unknown - no pose for the sensors")
+            return None
+        p = {"t": float(t_rx), "lat": o["lat"], "lon": o["lon"], "heading": float(o["heading"]) % 360.0,
              "sog": o.get("sog"), "cog": o.get("cog")}
         return p if sensors.valid_pose(p) else None
 

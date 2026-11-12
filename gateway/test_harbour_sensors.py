@@ -126,8 +126,10 @@ def hs3():
         raw_spray += sum(1 for o in raw if o["sim_id"] == "spray")
         raw_water += sum(1 for o in raw if o["sim_id"] == "water")
         for o in sensors.lidar_filter(raw, c):
-            if o["sim_id"] in ("hull", "spray", "water"):
+            if o["sim_id"] in ("hull", "spray"):
                 kept_bad += 1
+            if o["sim_id"] == "water" and not o["surface"]:
+                kept_bad += 1                   # a water return must be marked surface
             if o["sim_id"] == "o":
                 xs.append(o["x"])
                 ys.append(o["y"])
@@ -140,6 +142,15 @@ def hs3():
         raw = sw_far.scan(0.0, pose_at(0, 0, 0))
         far += sum(1 for o in raw if o["sim_id"] == "o")
         far_f += sum(1 for o in sensors.lidar_filter(raw, c) if o["sim_id"] == "o")
+    # round 2 MED-1: a paddleboard 0.12 m (flat) = KEPT, marked surface; never deleted by the filter
+    pb = LidarSim(one("kayak", x=0.0, y=24.0, len=3.0, beam=0.8, h=0.12, refl=0.5), c, seed=7, tag=True)
+    pb_raw = pb_kept = pb_marked = 0
+    for _ in range(300):
+        raw = pb.scan(0.0, pose_at(0, 0, 0))
+        pb_raw += sum(1 for o in raw if o["sim_id"] == "o")
+        f = [o for o in sensors.lidar_filter(raw, c) if o["sim_id"] == "o"]
+        pb_kept += len(f)
+        pb_marked += sum(1 for o in f if o["surface"])
     ky = LidarSim(one("kayak", x=0.0, y=21.0, len=4.0, beam=0.7, h=0.4, refl=0.5), c, seed=6, tag=True)
     k_raw = k_f = 0
     for _ in range(300):
@@ -148,12 +159,13 @@ def hs3():
         k_f += sum(1 for o in sensors.lidar_filter(raw, c) if o["sim_id"] == "o")
     ok = (len(xs) > 150 and abs(statistics.mean(xs) - 20.0) < 0.1 and abs(statistics.mean(ys) - 5.0) < 0.1 and
           raw_hull == 200 and raw_spray > 100 and kept_bad == 0 and near == 0 and far > 100 and
-          far_f >= 0.95 * far and k_raw > 100 and k_f >= 0.95 * k_raw)
+          far_f >= 0.95 * far and k_raw > 100 and k_f >= 0.95 * k_raw and pb_raw > 50 and pb_kept == pb_raw and
+          pb_marked >= 0.8 * pb_raw)   # kept ALL; marked = a hint (noise lifts some above the band)
     report("HS3 LiDAR vs truth + filter + blind zone", ok,
            "n %d at x %.2f y %.2f (20, 5); raw hull %d spray %d water %d, kept after the filter %d; swimmer 10 m %d / "
-           "25 m %d raw / %d after the filter of 400 scans; kayak 0.4 m %d / %d" % (
+           "25 m %d raw / %d after the filter of 400 scans; kayak 0.4 m %d / %d; paddleboard 0.12 m %d raw / %d kept / %d marked surface" % (
                len(xs), statistics.mean(xs) if xs else 0, statistics.mean(ys) if ys else 0, raw_hull, raw_spray,
-               raw_water, kept_bad, near, far, far_f, k_raw, k_f))
+               raw_water, kept_bad, near, far, far_f, k_raw, k_f, pb_raw, pb_kept, pb_marked))
 
 
 def hs4():
@@ -279,8 +291,13 @@ def hs6():
 
 
 class FakeGw:
-    def __init__(self):
+    def __init__(self, rx_age=0.0):
         self.fresh = True
+        self.rx_age = rx_age
+
+    @property
+    def telem_rx(self):                 # like gateway.py: epoch receive time of the telemetry frame
+        return time.time() - self.rx_age
 
     def own(self):
         if not self.fresh:
@@ -358,12 +375,28 @@ def hs7():
                                                    "cannot start" in bad.health("radar")[1], 8)
         finally:
             bad.stop()
+        old = HarbourSensors({"sim": True, "lidar": {"enabled": False}}, FakeGw(rx_age=1.0))
+        try:                            # round 2 MED-2: a pose 1 s older than the measurement = DEGRADED
+            got["old pose = DEGRADED"] = run_until(old, lambda: old.health("radar")[0] == "DEGRADED" and
+                                                   "pose" in old.health("radar")[1], 12)
+        finally:
+            old.stop()
+
+        class NoRx(FakeGw):
+            telem_rx = None
+        nr = HarbourSensors({"sim": True, "lidar": {"enabled": False}}, NoRx())
+        try:                            # no receive time = no pose = never OK
+            run_until(nr, lambda: False, 3)
+            got["no receive time = no pose"] = nr.own_pose() is None and nr.health("radar")[0] != "OK"
+        finally:
+            nr.stop()
         got["fault refused for a real driver"] = not HarbourSensors({"lidar": {"enabled": True, "driver": "livox"}},
                                                                     gw).fault("lidar", "lost")
     finally:
         m.stop()
     ok = (all(got.get(k) is not None for k in ("ok", "lost", "back", "skew", "degraded", "crash", "hang",
-                                               "no pose = lost", "cannot start = LOST"))
+                                               "no pose = lost", "cannot start = LOST", "old pose = DEGRADED"))
+          and got["no receive time = no pose"]
           and got["new pid"] and got["batch sim flag + nearest first"] and got["notices"] and got["fault refused for a real driver"]
           and (got["prio"] in (None, 0x4000)))
     report("HS7 worker processes: health, notices, crash / hang restart", ok,
