@@ -116,6 +116,7 @@ class SensorProc:
                         self.judge.status_line(m)
                     elif ev == self.kind:
                         m["t_rx_epoch"] = time.time()
+                        m["t_rx_mono"] = now
                         self.judge.batch(now, m)
                         try:
                             self.lat.append(m["t_rx_epoch"] - float(m["t"]))
@@ -222,6 +223,7 @@ class HarbourSensors:
         self.tracker = tracker.Tracker(tc, static_map=self.static)
         self.tracker_err = 0
         self.tracker_err_until = 0.0
+        self.cycle_mono = None
         if self.enabled and self.sim:
             w = self.cfg.get("world") or ""
             try:
@@ -302,7 +304,7 @@ class HarbourSensors:
             for b in pend:
                 t0 = time.perf_counter()
                 try:
-                    self.tracker.feed(kind, b, now=time.time())
+                    self.tracker.feed(kind, self._to_mono(b), now=mono())
                 except Exception:
                     self._tracker_failed(now)
                 self.tracker.note_ms((time.perf_counter() - t0) * 1000.0)
@@ -314,6 +316,21 @@ class HarbourSensors:
                         log.exception("harbour: on_batch")
 
         self._track(now, pose)
+
+    def _to_mono(self, b):
+        """Review H3: the tracker runs on the MONOTONIC clock. A batch's measurement time = its monotonic receive
+        time minus its age (the epoch receive time - the epoch measurement time, both from nearby clocks); an age
+        outside -0.5 .. 10 s (a clock step between the worker and here) = the batch time made invalid -> the tracker
+        refuses it and says so (input rejected)."""
+        b = dict(b)
+        try:
+            age = float(b["t_rx_epoch"]) - float(b["t"])
+            rx = float(b["t_rx_mono"])
+        except (KeyError, TypeError, ValueError):
+            b["t"] = float("nan")
+            return b
+        b["t"] = rx - age if -0.5 <= age <= 10.0 else float("nan")
+        return b
 
     def _tracker_failed(self, now):
         self.tracker_err += 1
@@ -328,8 +345,19 @@ class HarbourSensors:
             if tr.origin is None:
                 if self.world is not None and self.world.origin:
                     tr.set_origin(*self.world.origin)
+                elif self.static.origin:             # a stored harbour map fixes the harbour frame
+                    tr.set_origin(*self.static.origin)
                 elif pose is not None:
                     tr.set_origin(pose["lat"], pose["lon"])
+            if tr.origin is not None:               # review M1: the static map lives in the tracker's frame
+                so = self.static.origin
+                if so is None:
+                    self.static.origin = tuple(tr.origin)
+                elif abs(so[0] - tr.origin[0]) > 1e-5 or abs(so[1] - tr.origin[1]) > 1e-5:
+                    self.notice("STATIC MAP REFUSED - stored for another harbour origin; a new one", "caution")
+                    self.static = staticmap.StaticMap(origin=tr.origin)
+                    tr.static = self.static
+                    self.chart_done = False
             if tr.origin is not None and not self.chart_done:
                 self.chart_done = True
                 charts = getattr(self.gw, "charts", None)
@@ -340,7 +368,7 @@ class HarbourSensors:
                     except Exception:
                         pass
                     self.static.add_chart(charts, tr.origin, float(self.cfg.get("chart_radius_m", 300.0)), 2.0, lim)
-            t_ep = time.time()
+            t_ep = now                              # review H3: the tracker clock = monotonic
             vis = getattr(self.gw, "vision", None)
             if pose is not None and vis is not None:
                 tr.camera(list(getattr(vis, "obstacles", None) or []), pose, t_ep)
@@ -368,14 +396,23 @@ class HarbourSensors:
             except Exception:
                 pass
         tr.note_ms((time.perf_counter() - t0) * 1000.0)
+        self.cycle_mono = now
         if self.static_file and now - self.static_saved > 300.0:
             self.static_saved = now
-            js = self.static
-            threading.Thread(target=self._save_static, args=(js,), daemon=True).start()
+            try:
+                js = json.dumps(self.static.to_json())        # serialised here (no dict change under the writer)
+            except (TypeError, ValueError):
+                js = None
+            if js:
+                threading.Thread(target=self._save_static, args=(js,), daemon=True).start()
 
-    def _save_static(self, m):
+    def _save_static(self, js):
         try:
-            m.save(self.static_file)
+            os.makedirs(os.path.dirname(os.path.abspath(self.static_file)), exist_ok=True)
+            tmp = self.static_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(js)
+            os.replace(tmp, self.static_file)
         except (OSError, ValueError) as e:
             log.warning("harbour: static map not saved: %s", e)
 
@@ -386,6 +423,10 @@ class HarbourSensors:
     def tracker_flags(self):
         """The planner's unsure inputs (design 7.4): explicit flags, never hidden."""
         f = dict(self.tracker.flags() or {})
+        # review M3: the age of the last cycle (a hung tick = old flags: the planner treats > 0.5 s as unsure)
+        f["cycle_age_s"] = None if self.cycle_mono is None else round(mono() - self.cycle_mono, 3)
+        if self.cycle_mono is None or mono() - self.cycle_mono > 0.5:
+            f["unsure"] = list(f.get("unsure") or []) + ["tracker cycle old / not run"]
         if mono() < self.tracker_err_until and "tracker error" not in (f.get("unsure") or []):
             f["error"] = True
             f["unsure"] = list(f.get("unsure") or []) + ["tracker error"]

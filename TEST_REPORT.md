@@ -1124,3 +1124,8 @@ range_lost U1 + the track coasting (not steer_ok), deleted after delete_s; an AI
 0.61 ms (in-process), determinism, read only (sockets trapped: 0), mutations (camera / AIS as a range source, no
 fresh-hit rule) all caught. Load (tools/gateway_load.py --harbour, 60 s): tracker in the manager's tick p99 9.9 ms
 (budget 30), 47 tracks, the manager 4.3 % of one core.
+HX4-r (review of a154416): HT1-HT17 pass (17 / 17); HT17 = an AIS fix jumping onto a moored boat keeps both range
+tracks in place, a batch without heading = input rejected + no pose, a batch 1 h off = refused (time_jump 1) and the
+manager's monotonic mapping, a static map of another origin refused, a camera swimmer 12 m in front of a moored boat
+at 22 m = a camera-only track + camera_without_range, flags before the first cycle = range_lost + "tracker not
+started", two rafted boats 3 m apart = 2 tracks.

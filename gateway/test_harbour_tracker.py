@@ -26,6 +26,8 @@ manager / ais.py would give them.
        trapped opens none; the tracker has no sender
   HT15 mutation checks: camera hits counted as range (RANGE_SRC + C) -> HT8 check fails; AIS counted -> fails;
        a lowered LiDAR range_ok_n 0 -> the coasting check fails
+  HT17 the review of a154416: AIS jump never removes / moves a range track, no heading / time jump = input rejected,
+       a static map of another origin refused, a camera swimmer in front of a boat, flags fail closed, rafted boats
   HT16 the manager: HarbourSensors feeds the tracker (in-process batches), gw_status "harbour" "tracker" summary,
        flags, the attitude from TELEM2 att_roll / att_pitch, a tracker exception = flag "tracker error", never raised
 """
@@ -611,7 +613,8 @@ def ht16():
     p = {"t": time.time(), "lat": LAT0, "lon": LON0, "heading": 0.0, "sog": 0.0, "cog": 0.0}
     for k in range(12):
         tt = time.time()
-        b = {"ev": "lidar", "seq": k, "t": tt, "t_tx": tt + 0.05, "t_rx_epoch": tt + 0.06, "pose": dict(p, t=tt),
+        b = {"ev": "lidar", "seq": k, "t": tt, "t_tx": tt + 0.05, "t_rx_epoch": tt + 0.06, "t_rx_mono": time.monotonic(),
+             "pose": dict(p, t=tt),
              "items": [{"x": 19.0, "y": 0.0, "z": -1.5, "len_m": 1.0, "wid_m": 1.0, "hgt_m": 1.0, "n_points": 30}],
              "bad": 0, "capped": 0, "sim": True}
         sp = m.procs["lidar"]
@@ -642,8 +645,76 @@ def ht16():
     m.stop()
 
 
+def ht17():
+    """The review of a154416 (opus): each finding as a check."""
+    out = []
+    # H1: an AIS jump next to ANOTHER range-confirmed track (a moored boat, SOG 0) never removes / moves a range track
+    moored = {"id": "m", "kind": "moored", "x": -20.0, "y": 30.0, "len": 8.0, "beam": 3.0, "hdg": 0.0, "h": 1.5,
+              "rcs": 0.7, "refl": 0.5}
+    s = Sim([vessel("v", (20, 30), (20, 31), 0.01, ais=237000777), moored])
+    s.run(10)
+    ids0 = {t["id"]: (t["x"], t["y"]) for t in s.tracks() if t["steer_ok"]}
+    jump = simworld.xy_to_ll(LAT0, LON0, -20.0, 31.0)            # the AIS fix jumps onto the moored boat
+    s.w.objects[0]["ais"] = None
+    s.ais_extra = [{"mmsi": 237000777, "lat": jump[0], "lon": jump[1], "sog": 0.0, "cog": 0.0, "stale": False}]
+    s.run(3)
+    ids1 = {t["id"]: (t["x"], t["y"]) for t in s.tracks() if t["steer_ok"]}
+    kept = all(i in ids1 and math.hypot(ids1[i][0] - p[0], ids1[i][1] - p[1]) < 5 for i, p in ids0.items())
+    out.append(("H1 AIS jump keeps the range tracks", kept and len(ids0) >= 2))
+    # H2: a batch without heading is NOT silent
+    tr = tracker.Tracker()
+    pz = pose_xy(0, 0, 0, T0)
+    tr.feed("lidar", {"t": T0, "pose": dict(pz, heading=None), "items": []})
+    f = tr.cycle(health={"lidar": "OK", "radar": "OK"}, ages={"lidar": 0.0, "radar": 0.0}, now=T0)
+    out.append(("H2 no heading = input rejected + no pose", f["input_errors"] and f["no_pose"] and
+                any("input rejected" in u for u in f["unsure"])))
+    # H3: a batch time far from the tracker clock is refused + said; the manager's monotonic mapping
+    tr = tracker.Tracker()
+    tr.feed("lidar", {"t": T0, "pose": pz, "items": []})
+    tr.cycle(now=T0)
+    tr.feed("lidar", {"t": T0 + 3600.0, "pose": pz, "items": []})
+    f = tr.cycle(now=T0 + 0.2)
+    from harbour.manager import HarbourSensors
+    hs = HarbourSensors({"enabled": False}, None)
+    good = hs._to_mono({"t": 100.0, "t_rx_epoch": 100.06, "t_rx_mono": 5.0})["t"]
+    stepped = hs._to_mono({"t": 100.0, "t_rx_epoch": 3700.0, "t_rx_mono": 5.0})["t"]
+    out.append(("H3 time jump refused + mono mapping", tr.counts["time_jump"] == 1 and f["input_errors"] and
+                abs(good - 4.94) < 1e-6 and math.isnan(stepped) and tr.T < T0 + 10))
+    # M1: a stored static map of another origin is refused (notice), the tracker gets a fresh one
+    m = HarbourSensors({"sim": True}, type("G", (), {"own": lambda self: {"fresh": False}, "telem_rx": None})())
+    m.static.origin = (LAT0 + 0.01, LON0)
+    m.static.add_segment(0, 0, 10, 0, 2.0)
+    m.world.origin = (LAT0, LON0)
+    m._track(time.monotonic(), None)
+    out.append(("M1 static map of another origin refused", m.static.origin == (LAT0, LON0) and
+                not m.static.chart and m.tracker.static is m.static and
+                any("STATIC MAP REFUSED" in n["text"] for n in m.notices)))
+    # M2: a swimmer 12 m ahead (no range return) in front of a moored boat at 22 m on the same bearing
+    sw = vessel("swimmer", (0, 12), (0, 13), 0.05, ln=0.6, beam=0.5, h=0.3, rcs=0.03, refl=0.15, kind="swimmer")
+    boat = {"id": "b", "kind": "moored", "x": 0.0, "y": 22.0, "len": 6.0, "beam": 2.5, "hdg": 90.0, "h": 1.5,
+            "rcs": 0.7, "refl": 0.5}
+    s = Sim([sw, boat], camera=["swimmer"])
+    f = s.run(10)
+    camo = [t for t in s.tracks() if "C" in t["src"] and not t["steer_ok"]]
+    out.append(("M2 camera swimmer in front of a boat = camera-only + conflict", bool(camo) and
+                any(c["kind"] == "camera_without_range" for c in f["conflicts"])))
+    # M3: fail closed before the first cycle
+    f0 = tracker.Tracker().flags()
+    out.append(("M3 flags before the first cycle fail closed", f0["range_lost"] and f0["unsure"]))
+    # M4: two rafted boats 3 m apart, both still = two tracks
+    r1 = {"id": "r1", "kind": "moored", "x": -1.5, "y": 30.0, "len": 8.0, "beam": 2.5, "hdg": 0.0, "h": 1.5,
+          "rcs": 0.7, "refl": 0.5}
+    r2 = dict(r1, id="r2", x=1.5)
+    s = Sim([r1, r2])
+    s.run(15)
+    near = [t for t in s.tracks() if t["steer_ok"] and abs(t["y"] - 30) < 4 and abs(t["x"]) < 4]
+    out.append(("M4 rafted boats stay two tracks", len(near) >= 2))
+    bad = [k for k, v in out if not v]
+    report("HT17 review a154416 checks", not bad, "failed %s; rafted tracks %d" % (bad, len(near)))
+
+
 def main():
-    for fn in (ht1, ht2, ht3, ht4, ht5, ht6, ht7, ht8, ht9, ht10, ht11, ht12, ht13, ht14, ht15, ht16):
+    for fn in (ht1, ht2, ht3, ht4, ht5, ht6, ht7, ht8, ht9, ht10, ht11, ht12, ht13, ht14, ht15, ht16, ht17):
         try:
             fn()
         except Exception as e:

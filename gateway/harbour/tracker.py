@@ -59,6 +59,8 @@ DEFAULTS = {
     "static_v": 0.25, "static_s": 20.0, "static_tau_s": 5.0, "static_off_v": 0.5,
     "crowded_n": 20, "crowded_r": 100.0,
     "max_tracks": 300, "budget_ms": 30.0,
+    "time_jump_s": 10.0,        # a batch / camera / AIS time this far from the tracker clock is refused (review H3)
+    "err_hold_s": 2.0,          # rejected input / capped items stay an unsure reason this long
     "merge_m": 1.5, "merge_v": 1.0,
     "ghost_brg_deg": 2.0, "ghost_frac": 0.06,
 }
@@ -183,6 +185,21 @@ def assign(nt, nm, pairs):
     return out
 
 
+def _interval(ob, d):
+    """The vision obstacle's range interval (near, far); far None = up to 2 x the estimate."""
+    rng = ob.get("range") or ob.get("rng")
+    lo, hi = 0.5 * d, 2.0 * d
+    if isinstance(rng, (list, tuple)) and len(rng) == 2:
+        try:
+            if rng[0] is not None:
+                lo = float(rng[0])
+            if rng[1] is not None:
+                hi = float(rng[1])
+        except (TypeError, ValueError):
+            pass
+    return min(lo, d), max(hi, d)
+
+
 class Track:
     __slots__ = ("id", "t", "s", "P", "len_m", "beam_m", "hgt_m", "hits", "last", "born", "confirmed", "mmsi",
                  "slow_since", "surface_n", "lidar_n", "ais_xy", "arpa", "ghost", "in_static", "cam_only_born",
@@ -295,9 +312,16 @@ class Tracker:
         self.timing = []                    # ms per feed / cycle (newest 2000)
         self.latency = []                   # s: gateway time - sensor time when a batch is fused
         self.counts = {"batches": 0, "meas": 0, "births": 0, "deleted": 0, "merged": 0, "dropped_cap": 0,
-                       "camera": 0, "ais": 0, "errors": 0}
-        self._flags = {}
+                       "camera": 0, "ais": 0, "errors": 0, "rejected": 0,
+                       "time_jump": 0}
+        self.err_seen = 0                    # errors counted at the last cycle
+        self.err_until = None                # input errors are reported (unsure) until this tracker time
+        self.cap_seen = 0
+        self.cap_until = None
+        self._flags = {"range_lost": True, "unsure": ["tracker not started"], "degraded": ["radar", "lidar"],
+                       "conflicts": [], "error": False, "no_pose": True}      # review M3: fail closed
         self.health = {}
+        self.cycles = 0
         self.near_births = []                # birth times close by (the clutter flag)
 
     # --- frames ------------------------------------------------------------------------------------------------------
@@ -331,6 +355,14 @@ class Tracker:
         flat = float(o.get("hgt_m", 1.0)) < FLAT_M
         top = float(o["z"]) + float(o.get("hgt_m", 0.0)) / 2.0
         return flat and top < self.water_z(float(o["x"]), float(o["y"])) + float(self.c["lidar"]["water_band_m"])
+
+    def _time_ok(self, t):
+        if not math.isfinite(t) or (self.T > 0 and abs(t - self.T) > float(self.c["time_jump_s"])):
+            self.counts["errors"] += 1
+            self.counts["rejected"] += 1
+            self.counts["time_jump"] += 1
+            return False
+        return True
 
     # --- measurements ------------------------------------------------------------------------------------------------
     def _meas_radar(self, items, own):
@@ -375,10 +407,20 @@ class Tracker:
         if kind not in ("radar", "lidar") or not isinstance(batch, dict):
             return
         own = self._own_from(batch.get("pose"))
-        if own is None:
+        if own is None:                     # review H2: no pose / heading = the batch is NOT fused - said so
             self.counts["errors"] += 1
+            self.counts["rejected"] += 1
+            self.own = None
             return
-        t = float(batch["t"])
+        try:
+            t = float(batch["t"])
+        except (KeyError, TypeError, ValueError):
+            t = float("nan")
+        if not math.isfinite(t) or (self.T > 0 and abs(t - self.T) > float(self.c["time_jump_s"])):
+            self.counts["errors"] += 1              # review H3: a time far from the tracker clock = refused
+            self.counts["rejected"] += 1
+            self.counts["time_jump"] += 1
+            return
         self.T = max(self.T, t)
         self.own, self.pose = own, batch.get("pose")
         items = batch.get("items") or []
@@ -413,6 +455,8 @@ class Tracker:
                 for dy in (-1, 0, 1):
                     for ti in grid.get((gx + dx, gy + dy), ()):
                         tr = self.tracks[ti]
+                        if tr.mmsi is not None and not tr.has_range():
+                            continue                # an AIS-only track: range data make their own track
                         if math.hypot(tr.s[0] - m["x"], tr.s[1] - m["y"]) > pre + 0.5 * max(tr.len_m, m["len"]):
                             continue
                         d2 = tr.maha(m["x"], m["y"], m["R"])
@@ -473,6 +517,8 @@ class Tracker:
         c = self.c["camera"]
         ox, oy, hdg = own
         t = float(t)
+        if not self._time_ok(t):
+            return
         self.T = max(self.T, t)
         for ob in obstacles or ():
             try:
@@ -499,7 +545,14 @@ class Tracker:
                     continue
                 db = abs((math.degrees(math.atan2(dx, dy)) - brg + 540.0) % 360.0 - 180.0)
                 tol = float(c["brg_gate_deg"]) + math.degrees(math.atan2(0.5 * max(tr.len_m, 1.0), r_t))
-                if db <= tol and 0.5 <= r_t / d <= 2.0 and (bd is None or db < bd):
+                # review M2: the range track must lie INSIDE the vision range interval (+ its own half size + 10 %):
+                # a swimmer in front of a moored boat on the same bearing is never absorbed by the boat's track
+                lo, hi = _interval(ob, d)
+                half = 0.5 * max(tr.len_m, tr.beam_m)
+                # and its NEAR side (the centroid - half its size: the camera sees the near waterline) within
+                # max(3 m, 30 %) of the camera's own estimate - a nearer camera object is a separate one
+                near_side = max(0.0, r_t - half)
+                if db <= tol and lo * 0.9 - half <= r_t <= hi * 1.1 + half and                         abs(near_side - d) <= max(3.0, 0.3 * d) and (bd is None or db < bd):
                     best, bd = tr, db
             if best is not None:
                 best.hit("C", t, 10.0)
@@ -538,6 +591,8 @@ class Tracker:
             return
         c = self.c["ais"]
         t = float(t)
+        if not self._time_ok(t):
+            return
         self.T = max(self.T, t)
         for tg in targets or ():
             try:
@@ -557,28 +612,30 @@ class Tracker:
             self.counts["ais"] += 1
             linked = [tr for tr in self.tracks if tr.mmsi == mmsi]
             rt = next((tr for tr in linked if tr.ranged()), None)
+            for tr in linked:                     # review H1: a range-history track is never AIS's to remove /
+                if tr is not rt and tr.has_range():   # overwrite: a tentative range track only loses the MMSI
+                    tr.mmsi, tr.disagree = None, None
+            linked = [tr for tr in linked if not tr.has_range()]     # the AIS-only twins (removable)
+            if rt is not None and not rt.steer_ok:   # a coasting linked track: hand the MMSI to a steer_ok track
+                alt = self._ais_best(x, y, vx, vy, mmsi, c, steer_only=True)  # right at the report, if one is
+                if alt is not None and alt[0] is not rt:
+                    rt.mmsi, rt.disagree = None, None
+                    rt = None
             if rt is not None:
                 dd = math.hypot(rt.s[0] - x, rt.s[1] - y)
                 if dd > float(c["unlink_m"]):
-                    rt.mmsi, rt.disagree = None, None      # not the same object any more
+                    rt.mmsi, rt.disagree = None, None      # not the same object any more (the track stays)
                     rt = None
                 else:
                     rt.disagree = dd
                     rt.ais_xy = (x, y)
                     rt.hit("A", t, 10.0)
                     for tr in linked:                         # an AIS-only twin is no longer needed
-                        if tr is not rt:
-                            self.tracks.remove(tr)
-                            self.counts["merged"] += 1
+                        self.tracks.remove(tr)
+                        self.counts["merged"] += 1
                     continue
-            best, bd = None, None
-            for tr in self.tracks:
-                if not tr.ranged() or (tr.mmsi is not None and tr.mmsi != mmsi):
-                    continue
-                dd = math.hypot(tr.s[0] - x, tr.s[1] - y)
-                dv = math.hypot(tr.s[2] - vx, tr.s[3] - vy)
-                if dd <= float(c["assoc_m"]) and dv <= float(c["assoc_v_mps"]) and (bd is None or dd < bd):
-                    best, bd = tr, dd
+            bb = self._ais_best(x, y, vx, vy, mmsi, c, steer_only=False)
+            best, bd = bb if bb is not None else (None, None)
             if best is not None:
                 best.mmsi, best.ais_xy, best.disagree = mmsi, (x, y), bd
                 best.hit("A", t, 10.0)
@@ -605,6 +662,17 @@ class Tracker:
                 tr.beam_m = float(bm)
             tr.hit("A", t, 10.0)
 
+    def _ais_best(self, x, y, vx, vy, mmsi, c, steer_only):
+        best = None
+        for tr in self.tracks:
+            if not tr.ranged() or (tr.mmsi is not None and tr.mmsi != mmsi) or (steer_only and not tr.steer_ok):
+                continue
+            dd = math.hypot(tr.s[0] - x, tr.s[1] - y)
+            dv = math.hypot(tr.s[2] - vx, tr.s[3] - vy)
+            if dd <= float(c["assoc_m"]) and dv <= float(c["assoc_v_mps"]) and (best is None or dd < best[1]):
+                best = (tr, dd)
+        return best
+
     # --- the cycle -------------------------------------------------------------------------------------------------
     def cycle(self, health=None, ages=None, skews=None, attitude=None, no_pose=False, error=False, now=None):
         """Maintenance + flags after the batches of a gateway tick. health {radar: state, lidar: state} (the
@@ -614,7 +682,9 @@ class Tracker:
         c = self.c
         self.attitude = attitude
         if now is not None:                  # the gateway clock: with NO data at all the tracks still age out
+            # (the manager passes its MONOTONIC clock and maps every measurement onto it - review H3)
             self.T = max(self.T, float(now))
+        self.cycles += 1
         T = self.T
         rc, lc = c["radar"], c["lidar"]
         keep = []
@@ -672,7 +742,7 @@ class Tracker:
             # static: the centroid inside a CHART pier / shore cell (nothing moving can be there - a long quay's
             # returns slide along it), or an accumulated LiDAR cell while slow, or slow for static_s
             chart_in = bool(self.static is not None and self.static.in_chart(tr.s[0], tr.s[1]))
-            tr.static = chart_in or (tr.in_static and sp < 0.5) or (tr.slow_since is not None and
+            tr.static = (chart_in and sp < 1.5) or (tr.in_static and sp < 0.5) or (tr.slow_since is not None and
                                                                    T - tr.slow_since >= float(c["static_s"]))
             tr.cls = classify(tr)
             tr.conf = confidence(tr, T)
@@ -713,6 +783,9 @@ class Tracker:
                         if math.hypot(a.s[0] - b.s[0], a.s[1] - b.s[1]) > max(mm, 0.25 * min(a.len_m, b.len_m) + mm):
                             continue
                         if math.hypot(a.s[2] - b.s[2], a.s[3] - b.s[3]) > mv:
+                            continue
+                        # review M4: both updated by the SAME batch = two objects seen at once (rafted boats)
+                        if set(a.hits["R"]) & set(b.hits["R"]) or set(a.hits["L"]) & set(b.hits["L"]):
                             continue
                         # b joins a (the older): every hit kept
                         for k in SRC_ALL:
@@ -788,8 +861,14 @@ class Tracker:
         ov = []
         if len(self.tracks) > int(c["max_tracks"]):
             ov.append("tracks %d > %d" % (len(self.tracks), int(c["max_tracks"])))
-        if self.counts["dropped_cap"]:
-            ov.append("%d sensor items over the cap" % self.counts["dropped_cap"])
+        hold = float(c["err_hold_s"])
+        if self.counts["dropped_cap"] != self.cap_seen:
+            self.cap_seen, self.cap_until = self.counts["dropped_cap"], self.T + hold
+        if self.cap_until is not None and self.T <= self.cap_until:
+            ov.append("sensor items over the cap")
+        if self.counts["errors"] != self.err_seen:
+            self.err_seen, self.err_until = self.counts["errors"], self.T + hold
+        f["input_errors"] = self.err_until is not None and self.T <= self.err_until
         last = self.timing[-20:]
         if last and max(last) > float(c["budget_ms"]):
             ov.append("cycle %.0f ms > %.0f ms" % (max(last), float(c["budget_ms"])))
@@ -814,6 +893,9 @@ class Tracker:
             u.append("U11 %s time skew" % k)
         if f["no_pose"]:
             u.append("no own pose")
+        if f["input_errors"]:
+            u.append("input rejected (no pose / heading, a time jump or a bad item): %d in all"
+                     % self.counts["rejected"])
         for w in ov:
             u.append("tracker overload: " + w)
         if error:

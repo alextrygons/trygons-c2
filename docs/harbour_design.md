@@ -490,6 +490,21 @@ below), fed every received batch at once; the sensor workers stay their own proc
   the noise / gate values measured; the tracker's clock = the newest sensor / gateway epoch time, advanced by the gateway
   clock in every cycle and never back (a stopped data flow ages every track out: HT9); the data ages for the flags
   are monotonic (the manager).
+- Review of a154416 (opus, tools/api_review.py; findings in the owner's private reviews folder) fixed in HX4-r: H1 AIS
+  never removes or overwrites a track with range history (only AIS-only twins; a jump unlinks, the range track stays;
+  a coasting linked track hands the MMSI to a steer_ok track at the report; range plots never gate against an AIS-only
+  track); H2 a batch without pose / heading is never silent (own pose cleared = no_pose, "input rejected" unsure held
+  2 s); H3 the tracker clock is MONOTONIC: the manager maps each batch onto it (monotonic receive time - the epoch
+  age; an age outside -0.5..10 s = refused), camera / AIS / cycle use the monotonic clock, any time > 10 s from the
+  tracker clock is refused + said; M1 a stored static map of another origin is refused (notice) and the tracker's
+  origin is fixed from a stored map; M2 a camera object is absorbed by a range track only when the track's near side
+  is within max(3 m, 30 %) of the camera estimate and inside the vision range interval (a swimmer in front of a
+  moored boat = a camera-only track + the conflict); M3 flags fail closed before the first cycle ("tracker not
+  started", range_lost) and the manager adds cycle_age_s ("tracker cycle old / not run" > 0.5 s); M4 two tracks hit
+  by the same batch are never merged (rafted boats). LOWs: a vessel > 1.5 m/s over a chart cell is not static; the
+  static map is serialised in the tick, written in the thread; the capped-items overload is held 2 s, not latched.
+  Note (not fixed): tracks() / tracker_flags() have no lock - HX5 must read them from the gateway thread (the tick).
+  Test HT17.
 
 ## 7. Local planner (HX5, SERIAL review: it steers the boat)
 
