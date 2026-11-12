@@ -123,7 +123,8 @@ OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recor
 | W145 | Harbour autonomy (M3): minimum passing distance - 15 m from a MOVING vessel, 8 m from a STATIC one (moored boat, pier)? | HX5 (planner), HX7 | 15 m moving / 8 m static |
 | W146 | Harbour autonomy (M5, M0-5): the route corridor half-width - +-10 m around the checked harbour route (the AURIX validates the offset)? | HX2, HX5, HX6 | +-10 m |
 | W147 | Harbour autonomy (M0-6, FIRMWARE): lost link in harbour mode = STOP + hold, alarm; engine kill only after LINK TIME + 60 s with no link (instead of "< 50 m of shore = kill at once"), or at once on any fault that STANDBY cuts today? | HX2 (firmware, SERIAL review) | LINK TIME + 60 s grace; every STANDBY-cutting fault stays immediate |
-| W148 | Harbour autonomy (M1): the radar + LiDAR choice. HX1 presents a comparison of 2-3 options each (interface, Linux driver / SDK licence, range, price, power, mounting); until you choose, HX3 / HX4 / HX5 work on SIMULATED radar targets + LiDAR scans only | the real sensor integration (HX3 drivers on hardware), PARTS.md / WIRING.md | the comparison in docs/harbour_design.md (HX1); no hardware choice before you answer |
+| W148 | Harbour autonomy (M1): the radar + LiDAR choice. HX1 presents a comparison of 2-3 options each (interface, Linux driver / SDK licence, range, price, power, mounting); until you choose, HX3 / HX4 / HX5 work on SIMULATED radar targets + LiDAR scans only | the real sensor integration (HX3 drivers on hardware), PARTS.md / WIRING.md | the comparison is in docs/harbour_design.md section 11 + the one-page summary section 13 (HX1): recommended radar Navico HALO20+ via Mayara / Signal K, LiDAR Livox Mid-360 (or Ouster OS1); no hardware choice before you answer |
+| W149 | Harbour autonomy (HX1, M0-4): with BOTH DP thrusters fitted, may the harbour HOLD use the DP SPOT controller (thrusters hold the spot, every DP rule) - never after a lost link? | HX2b (optional) | yes when fitted, never after a lost link; HX2a = idle + neutral hold |
 
 # Current task: "Cleanup 2026-11-07 (CL1-CL4)" (spec = docs/owner_findings_2026-11-07.md; owner: "credits left this week, cleanup type work"; NO product logic change in app/ or hal/ anywhere; step 13v of that spec is already DONE - see the previous task's table)
 
@@ -181,7 +182,7 @@ Harbour autonomy HX1-HX7 (owner 2026-11-12, spec VERBATIM in docs/owner_findings
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| HX1 | Design (opus): CLAUDE.md section "Harbour autonomy" (next free letter) + docs/harbour_design.md (rules M0, architecture, radar + LiDAR comparison for the owner, planner method, tests); WAITING items W144-W148 | OPEN | |
+| HX1 | Design (opus): CLAUDE.md section Z "Harbour autonomy" + docs/harbour_design.md (rules M0, architecture = a SUB-STATE of MODE_AUTO, navreq kind 4 + HARBOUR_STAT 0x90, lost-link grace, radar + LiDAR comparison for the owner, planner method, tests); WAITING items W144-W149. HX2 may start now (sensors simulated until W148) | DONE | (pending) |
 | HX2 | FIRMWARE (opus, SERIAL review): harbour mode entry / exit (captain YES), harbour speed cap, corridor + turn-rate limits on navreq, lost-link M0-6; sim + storm | OPEN | |
 | HX3 | Sensors (opus): radar + LiDAR drivers behind an interface + SIMULATED radar / LiDAR in the sim + demo | OPEN | |
 | HX4 | Perception (opus): fusion tracker (radar + LiDAR + camera + AIS) + static map; tests with the simulated sensors | OPEN | |
