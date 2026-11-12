@@ -85,6 +85,17 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 T_CAN_NODES = 0x8E         # AURIX -> USB laptop, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table
 T_ACCEL = 0x8F             # AURIX -> both ports, with every telemetry: 3-axis acceleration (step FW-TR, display / log only)
 ACCEL_LEN = 28             # = app/proto.h PROTO_ACCEL_LEN
+T_HARBOUR = 0x3C           # step HX2: u8 action (0 START, 1 RESUME, 2 HOLD) | u8 corridor 0.1 m | u8 max kn*10 (HELM station;
+                           # START / RESUME + the joystick CONFIRM = the captain's YES; a copilot's = the captain's ACCEPT)
+T_HARBOUR_STAT = 0x90      # step HX2: AURIX -> both ports, 5 Hz: harbour autonomy (link.c harbour_stat)
+HARBOUR_STAT_LEN = 18      # = app/proto.h PROTO_HARBOUR_STAT_LEN
+HARB_START, HARB_RESUME, HARB_HOLD = range(3)
+# app/harbour.h HARB_ / HARB_WHY_
+HARB_STATES = ["OFF", "RUN", "SLOW", "HOLD", "DONE"]
+HARB_WHY = ["-", "user HOLD", "lease lapsed", "planner STOP", "corridor", "heading refused", "GPS", "compass",
+            "link lost", "fault", "not a harbour route", "route not checked by the gateway", "outside the corridor",
+            "too fast", "no planner lease", "arrived"]
+NAV_HARBOUR = 4            # GW_NAVREQ kind 4 (13 bytes: + u8 hflags | u8 nearest_m | u8 n_tracks)
 
 # Commands that change how the boat is driven: through the gateway a copilot's are only
 # sent to the AURIX after the captain's ACCEPT on screen 1 (or in SINGLE-OPERATOR mode
@@ -92,7 +103,8 @@ ACCEL_LEN = 28             # = app/proto.h PROTO_ACCEL_LEN
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_AUTO_RETURN, T_HEADING_ADJ, T_SEA_STATE,
                 T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART,
-                T_THRUSTER_CFG, T_DP}
+                T_THRUSTER_CFG, T_DP, T_HARBOUR}
+# (T_HARBOUR: START / RESUME = the captain's ACCEPT from a copilot; HOLD goes straight, like AUTO PAUSE - CLAUDE.md Z)
 # (T_THRUSTER_CFG = the DP thruster settings: a copilot's always needs the captain's ACCEPT, like the relay table)
 # (T_DP: START / JOG / SPEED / HEADING move the boat = ACCEPT; STOP (thrusters 0, STANDBY) goes straight - CLAUDE.md P/D)
 # (T_RELAY_CFG = the relay table: always the captain's ACCEPT. T_RELAY (CLAUDE.md O): an ENGINE-group relay needs
@@ -133,6 +145,8 @@ def is_driving_cmd(ftype, payload=b"", relay_groups=None):
         return payload[:1] == b"\x01"           # switching the generator ON opens the throttle (in neutral): ACCEPT; OFF is free
     if ftype == T_DP:
         return payload[:1] != bytes([DP_STOP])     # DP STOP: a copilot may always stop (like STANDBY / hold)
+    if ftype == T_HARBOUR:
+        return payload[:1] != bytes([HARB_HOLD])   # harbour HOLD: free (it only stops the boat)
     if ftype == T_RESTART:
         # RESTART: a copilot's needs the captain's ACCEPT; CRANK / RELEASE (hold-to-crank, 5 Hz) are not asked one by
         # one - the gateway lets only the captain crank (code 118), RELEASE is always free
@@ -156,7 +170,8 @@ TYPE_NAMES = {
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes", T_ACCEL: "acceleration",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_THRUSTER_CFG: "thruster settings", T_DP: "DP", T_CONFIRM_ONLY: "confirm-only (practical test)",
-    T_LINK_TIME: "LINK TIME", T_SLAM_RESTORE: "slamming power restore",
+    T_LINK_TIME: "LINK TIME", T_SLAM_RESTORE: "slamming power restore", T_HARBOUR: "harbour autonomy",
+    T_HARBOUR_STAT: "harbour status",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -227,6 +242,30 @@ def p_slam_restore(accept):
 def p_confirm_only(token):
     """PROTO_T_CONFIRM_ONLY payload: the question's number (echoed in TELEM2 group R). Changes nothing on the boat."""
     return struct.pack("<H", int(token) & 0xFFFF)
+
+
+def p_harbour(action, corridor_m=10.0, max_kn=5.0):
+    """PROTO_T_HARBOUR payload (step HX2): action HARB_START / RESUME / HOLD, the corridor half-width (0.1 m; the AURIX
+    clamps it to 4 m .. harb_corr_m, below 4 m = BAD_VALUE) and the max speed (kn*10; min(this, harb_max_kn, 8 kn))."""
+    return bytes([action & 0xFF, max(0, min(255, int(round(corridor_m * 10)))), max(0, min(255, int(round(max_kn * 10))))])
+
+
+_HSTAT = struct.Struct("<BBhHHHHBBHBB")
+
+
+def decode_harbour_stat(payload: bytes) -> dict:
+    """T_HARBOUR_STAT (link.c harbour_stat, step HX2): harbour autonomy as the AURIX sees it."""
+    if len(payload) < _HSTAT.size:
+        raise ValueError("harbour status %d bytes, want %d" % (len(payload), _HSTAT.size))
+    st, why, xte, corr, cap, hdg, age, refused, flags, left, hfl, kmax = _HSTAT.unpack_from(payload)
+    return {"harb_state": st, "harb_state_name": HARB_STATES[st] if st < len(HARB_STATES) else str(st),
+            "harb_why": why, "harb_why_text": HARB_WHY[why] if why < len(HARB_WHY) else str(why),
+            "harb_xte_m": xte / 10.0, "harb_corr_m": corr / 10.0, "harb_kn": cap / 10.0, "harb_hdg": hdg / 100.0,
+            "harb_prop_age_ms": None if age >= 65534 else age, "harb_refused": refused,
+            "harb_route": bool(flags & 1), "harb_entry_ok": bool(flags & 2), "harb_lease": bool(flags & 4),
+            "harb_hold_pending": bool(flags & 8), "harb_grace": bool(flags & 16), "harb_back": bool(flags & 32),
+            "harb_prop_used": bool(flags & 64), "harb_grace_left_s": left / 10.0, "harb_hflags": hfl,
+            "harb_max_kn": kmax / 10.0}
 
 
 def p_dp(action, arg=0, value=0):
@@ -416,7 +455,7 @@ def encode_accel(per=None, sec=None, n=0, n1=0) -> bytes:
 
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
-                 "RELAY TABLE", "DP", "THROTTLE TRAVEL", "AUTO RETURN", "CONFIRM ONLY"]
+                 "RELAY TABLE", "DP", "THROTTLE TRAVEL", "AUTO RETURN", "CONFIRM ONLY", "HARBOUR"]
 # CONFIRM_ONLY answer (TELEM2 group R, app/smallboat.h SB_CO_)
 CO_NONE, CO_PENDING, CO_CONFIRMED, CO_LATE, CO_CANCELLED = range(5)
 CO_STATES = ["never asked", "PENDING", "CONFIRMED", "LATE", "CANCELLED"]
@@ -489,6 +528,7 @@ ALARMS2 = [
     (0x020, "CAN NODE LOST"),
     (0x040, "CAN BUS FAULT"),
     (0x080, "GEOFENCE BREACH"),
+    (0x100, "HARBOUR STOP"),       # step HX2 (the screens' level / text / tour stop: HX6)
 ]
 
 

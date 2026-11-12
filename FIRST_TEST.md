@@ -403,6 +403,17 @@ engine controls as normal, kill cord worn, hand near the STANDBY button) and
       flash-gate-N (item 0), rebuild from the clean tree, and do the full
       neutral-start / joystick checks (WIRING.md section 3, MANUAL).
 
+## 5b. Harbour autonomy (step HX2) - bench checks BEFORE any harbour run (the sea plan itself = HX7)
+Harbour autonomy is NOT used before HX3-HX6 (sensors, planner, screens) are done. On the dock (engine in NEUTRAL, tied up),
+with a harbour route uploaded through the gateway and the simulated planner sending its kind-4 proposal:
+- a) HARBOUR START is refused with its reason shown (HARBOUR_STAT why) for: no planner running, a route loaded over
+     USB (not gateway-checked), GPS off, the boat outside the first leg's corridor. Do NOT confirm a start at the dock.
+- b) Stop the planner (the gateway's harbour stream): the AURIX must go to HOLD within ~1 s, idle + neutral, the
+     HARBOUR STOP alarm sounds; the STANDBY button and the onboard joystick end it at once.
+- c) harb_llgrace_s reads 0 and PARAM_SET refuses any other value (W147 not answered): a lost link in harbour =
+     today's near-shore kill.
+- d) Write down the HARBOUR_STAT frames (5 Hz) seen by the gateway log for the record.
+
 ## 6. UAV magazine + loudhailer bench (BEFORE the first UAV flight; owner answers 2026-11-04, step WA)
 
 Gateway PC + the magazine on the bench, props OFF for every powered step until 6g. Nothing here touches the

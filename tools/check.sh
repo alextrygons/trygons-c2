@@ -155,6 +155,9 @@ if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writer
 # the relay board is driven ONLY by app/relays.c (table, interlocks, time limits; never CPU1 / CPU2)
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_relay_[a-z]+ *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/relays.c$")
 if [ -n "$writers" ]; then echo "RELAY BOARD DRIVEN OUTSIDE relays.c: $writers"; fail=1; else echo "relay board driven only by app/relays.c"; fi
+# step HX2: HARB_MUTATE (the storm's mutation runs, tests/acceptance/storm/mutate_harbour.sh) is never set by any build
+# file, the board's project or app/ itself
+if grep -lE "HARB_MUTATE=|define +HARB_MUTATE +[1-9]" sim/build_sim.bat tests/acceptance/storm/build_storm.bat .cproject app/*.c app/*.h hal/*.c Cpu*_Main.c 2>/dev/null; then echo "HARB_MUTATE SET IN A BUILD"; fail=1; else echo "no build sets HARB_MUTATE (harbour mutation hooks off)"; fi
 # the DP thrusters are written ONLY by app/thruster.c (clamp, rate limit, heat budget, 0 outside DP; CLAUDE.md P)
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_set_thrusters *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/thruster.c$")
 if [ -n "$writers" ]; then echo "THRUSTERS WRITTEN OUTSIDE thruster.c: $writers"; fail=1; else echo "DP thrusters written only by app/thruster.c"; fi
@@ -333,6 +336,10 @@ echo "== acceleration frame (FW-TR, display / logging only): proto.py = app/prot
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_accel.py > "$TEMP/accel_tests.txt" 2>&1 ) || { echo "ACCEL FRAME TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ACCEL FRAME TESTS|Traceback" "$TEMP/accel_tests.txt"
 strays_check "test_accel"
+echo "== harbour autonomy protocol mirrors (HX2): proto.py = app/proto.h / harbour.h, HARBOUR_STAT decode, ACCEPT rule, alarm / event / result 129"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_harbour_proto.py > "$TEMP/harbour_proto_tests.txt" 2>&1 ) || { echo "HARBOUR PROTO TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR PROTO TESTS|Traceback" "$TEMP/harbour_proto_tests.txt"
+strays_check "test_harbour_proto"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"

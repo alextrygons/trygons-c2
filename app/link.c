@@ -27,6 +27,8 @@ typedef enum {
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
     P_THR_DN, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW, P_GEN_MAX, P_GEN_START_V, P_GEN_IDLE,
     P_THR_UP, P_THR_TRAVEL,
+    P_HARB_MAX_KN, P_HARB_CORR, P_HARB_CORR_MARGIN, P_HARB_CORR_STOP, P_HARB_MAX_DEV, P_HARB_ROT, P_HARB_LEASE,
+    P_HARB_UNC, P_HARB_BACK_KN, P_HARB_LL_GRACE, P_HARB_LL_DRIFT,
     P_COUNT
 } param_id_t;
 
@@ -64,6 +66,18 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "thr_up_pc_s",     2.0f,   30.0f },     /* throttle UP rate (15 %/s, step 11e) - limits TO CONFIRM C21 */
     { "thr_trav_s",      1.0f,   30.0f },     /* worst-case throttle servo travel for every "idle" wait (6 s; shorter
                                                  = an owner-signed value: STANDBY + CONFIRM, OD-4) */
+    /* step HX2: harbour autonomy (harbour.h; defaults W144-W147 TO CONFIRM) */
+    { "harb_max_kn",     1.0f, HARB_MAX_KN_CEIL },  /* harbour speed cap (5 kn); the firmware ceiling 8 kn */
+    { "harb_corr_m",     4.0f,   20.0f },     /* the widest corridor half-width a start may ask (10 m) */
+    { "harb_corr_mrg_m", 0.5f,    5.0f },     /* near the edge a proposal must not increase |xte| (2 m) */
+    { "harb_corr_stp_m", 2.0f,   10.0f },     /* beyond corridor + this = HOLD (5 m) */
+    { "harb_max_dev",   20.0f,   90.0f },     /* a proposal at most this far off the leg track (60 deg) */
+    { "harb_rot_dps",    2.0f,   15.0f },     /* the heading target slew (8 deg/s) */
+    { "harb_lease_ms", 500.0f, 3000.0f },     /* the effective lease = min(frame, this) (1000 ms) */
+    { "harb_unc_m",      2.0f,   10.0f },     /* GPS uncertainty limit (5 m; no DR in a harbour) */
+    { "harb_back_kn",    0.5f,    3.0f },     /* back to the line at most this fast (2 kn) */
+    { "harb_llgrace_s",  0.0f, HARB_LL_GRACE_MAX_S },  /* lost-link harbour grace: range 0..0 until the owner signs W147 */
+    { "harb_drift_kn",   0.5f,    3.0f },     /* during the grace: a drift above this at idle + N = kill (1 kn) */
 };
 
 uint8_t link_param_count(void)
@@ -110,6 +124,17 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_GEN_IDLE:     return &s->gen.cfg.idle_pct;
     case P_THR_UP:       return &s->thr.cfg.rate_up_pct_s;
     case P_THR_TRAVEL:   return &s->servo.cfg.travel_s;
+    case P_HARB_MAX_KN:  return &s->cfg.harb.max_kn;
+    case P_HARB_CORR:    return &s->cfg.harb.corr_m;
+    case P_HARB_CORR_MARGIN: return &s->cfg.harb.corr_margin_m;
+    case P_HARB_CORR_STOP: return &s->cfg.harb.corr_stop_m;
+    case P_HARB_MAX_DEV: return &s->cfg.harb.max_dev_deg;
+    case P_HARB_ROT:     return &s->cfg.harb.rot_dps;
+    case P_HARB_LEASE:   return &s->cfg.harb.lease_ms;
+    case P_HARB_UNC:     return &s->cfg.harb.unc_m;
+    case P_HARB_BACK_KN: return &s->cfg.harb.back_kn;
+    case P_HARB_LL_GRACE: return &s->cfg.harb.ll_grace_s;
+    case P_HARB_LL_DRIFT: return &s->cfg.harb.ll_drift_kn;
     default:             return NULL;
     }
 }
@@ -423,7 +448,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_JOYMAP_GET:   return 0;
     case PROTO_T_JOYMAP_SET:   return (int)JOYMAP_BODY + 1;
     case PROTO_T_JOY_RAW_GET:  return 0;
-    case PROTO_T_PROG_BEGIN:   return 2;
+    case PROTO_T_PROG_BEGIN:   return -2;       /* 2, or 3 with the flags byte (step HX2: PROG_F_HARBOUR) */
     case PROTO_T_PROG_WP:      return 18;
     case PROTO_T_PROG_COMMIT:  return 0;
     case PROTO_T_PROG_GET:     return 1;
@@ -445,6 +470,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_CONFIRM_ONLY: return 2;
     case PROTO_T_LINK_TIME:    return 1;
     case PROTO_T_SLAM_RESTORE: return 1;
+    case PROTO_T_HARBOUR:      return 3;
     default:                   return -1;
     }
 }
@@ -561,6 +587,14 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (a > 1u) return PROTO_R_BAD_VALUE;
         return sb_result_to_proto(sb_slam_restore(s, a == 1u));
     }
+    case PROTO_T_HARBOUR: {
+        /* step HX2: harbour autonomy START / RESUME (+ the CONFIRM) / HOLD - the HELM station (checked by the caller,
+         * and again by sb_harbour_cmd); every entry condition is on the AURIX (smallboat.c harb_entry) */
+        uint8_t act = proto_rd_u8(&r), corr = proto_rd_u8(&r), kn = proto_rd_u8(&r);
+        if (act > HARB_ACT_HOLD) return PROTO_R_BAD_VALUE;
+        if (joy && act != HARB_ACT_HOLD && !joy_centered(&s->joy)) return PROTO_R_JOYSTICK;
+        return sb_result_to_proto(sb_harbour_cmd(s, s->helm, act, (float)corr * 0.1f, (float)kn * 0.1f));
+    }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
         uint16_t ms = proto_rd_u16(&r);
@@ -668,11 +702,15 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 
     /* --- AUTO program upload --- */
     case PROTO_T_PROG_BEGIN: {
+        if (f->len != 2u && f->len != 3u) return PROTO_R_BAD_LENGTH;
         uint8_t n = proto_rd_u8(&r), fin = proto_rd_u8(&r);
-        if (n == 0u || n > PROG_MAX_WP || fin > (uint8_t)PROG_END_HOLD) return PROTO_R_BAD_VALUE;
+        uint8_t flags = (f->len == 3u) ? proto_rd_u8(&r) : 0u;   /* step HX2: b0 = a harbour route (gateway upload) */
+        if (n == 0u || n > PROG_MAX_WP || fin > (uint8_t)PROG_END_HOLD || (flags & (uint8_t)~PROG_F_ALL))
+            return PROTO_R_BAD_VALUE;
         program_clear(&l->staging);
         l->staging.n = n;
         l->staging.final_action = fin;
+        l->staging.flags = flags;
         l->staging_n = n;
         l->staging_have = 0u;
         return PROTO_R_OK;
@@ -797,13 +835,21 @@ static void gw_navreq(sb_t *s, const proto_frame_t *f)
     proto_rd_init(&r, f->payload, f->len);
     uint8_t seq = proto_rd_u8(&r), kind = proto_rd_u8(&r), reason = proto_rd_u8(&r), alarm = proto_rd_u8(&r);
     uint16_t hdg = proto_rd_u16(&r), cap = proto_rd_u16(&r), lease = proto_rd_u16(&r);
-    if (kind > SB_NAV_HDG_SET || (kind != SB_NAV_NONE && kind != SB_NAV_CAP && hdg >= 36000u) ||
-        (kind == SB_NAV_HEADING && cap == 0xFFFFu) ||               /* an avoidance heading always slows too */
-        (cap != 0xFFFFu && cap > 600u) || lease < 500u || lease > 10000u) {
+    /* step HX2: kind 4 (harbour autonomy's proposal) = 13 bytes (+ u8 hflags | u8 nearest_m | u8 n_tracks), always
+     * a heading AND a cap, its lease 500..3000 ms (the AURIX shortens it further to harb_lease_ms) */
+    bool harb = kind == SB_NAV_HARBOUR;
+    if ((kind > SB_NAV_HDG_SET && !harb) || (kind != SB_NAV_NONE && kind != SB_NAV_CAP && hdg >= 36000u) ||
+        ((kind == SB_NAV_HEADING || harb) && cap == 0xFFFFu) ||    /* an avoidance heading always slows too */
+        (cap != 0xFFFFu && cap > 600u) || lease < 500u || lease > 10000u ||
+        (harb && (f->len < 13u || lease < HARB_LEASE_FRAME_MIN || lease > HARB_LEASE_FRAME_MAX))) {
         s->nav.rejected++;
         return;                                                  /* not valid: ignored */
     }
     sb_navreq_t *n = &s->nav;
+    n->hflags = harb ? proto_rd_u8(&r) : 0u;
+    n->nearest_m = harb ? proto_rd_u8(&r) : 255u;
+    n->n_tracks = harb ? proto_rd_u8(&r) : 0u;
+    if (harb && !sb_harbour_on(s)) s->harb.k4_idle++;           /* stored but inert outside harbour autonomy */
     n->seq = seq;
     n->kind = kind;
     n->reason = reason;
@@ -1400,6 +1446,48 @@ static void accel_frame(link_t *l, sb_t *s)
     else l->telem_overflows++;
 }
 
+/* HARBOUR_STAT (step HX2, both ports, 5 Hz; groundstation/proto.py decode_harbour_stat): harbour autonomy as the
+ * AURIX sees it (TELEM2 is full), PROTO_HARBOUR_STAT_LEN bytes:
+ *   u8 state (harbour.h HARB_) | u8 why (HARB_WHY_) | i16 xte dm (+ right) | u16 corridor dm | u16 speed target kn*10 |
+ *   u16 heading target deg*100 | u16 proposal age ms (0xFFFF none / not kind 4) | u8 refused proposals (mod 256) |
+ *   u8 flags (b0 a harbour route stored + gateway-checked, b1 a START possible now, b2 lease fresh, b3 HOLD not yet
+ *   at idle + neutral, b4 the lost-link harbour grace running, b5 back to the line, b6 the planner's heading used) |
+ *   u16 grace left s*10 | u8 the last proposal's hflags | u8 this run's max speed kn*10 */
+static void harbour_stat(link_t *l, sb_t *s)
+{
+    uint8_t buf[PROTO_HARBOUR_STAT_LEN];
+    proto_wr_t w;
+    const harb_t *h = &s->harb;
+    const sb_auto_t *a = &s->autop;
+    bool on = sb_harbour_on(s);
+    uint8_t st = on ? h->state : (h->state == HARB_DONE ? HARB_DONE : HARB_OFF);
+    bool route = a->prog_ok && !a->returning && (a->prog.flags & PROG_F_HARBOUR) && a->prog.n >= 2u && a->via_gw;
+    bool k4 = s->nav.kind == SB_NAV_HARBOUR && s->nav.rx_ms != 0u;
+    uint32_t age = k4 ? s->now_ms - s->nav.rx_ms : 0xFFFFu;
+    float xte = on ? h->xte_m : 0.0f;
+    float xd = xte * 10.0f;
+    if (!(xd > -32767.0f)) xd = -32767.0f;
+    if (xd > 32767.0f) xd = 32767.0f;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, st);
+    proto_wr_u8(&w, h->why);
+    proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(xd));
+    proto_wr_u16(&w, (uint16_t)lroundf((on ? h->corr_m : s->cfg.harb.corr_m) * 10.0f));
+    proto_wr_u16(&w, (uint16_t)lroundf((on ? h->cap_kn : 0.0f) * 10.0f));
+    proto_wr_u16(&w, (uint16_t)lroundf((on ? h->tgt_deg : 0.0f) * 100.0f));
+    proto_wr_u16(&w, (uint16_t)(age > 65534u ? 65534u : age));
+    proto_wr_u8(&w, h->refused);
+    proto_wr_u8(&w, (uint8_t)((route ? 1u : 0u) | (!on && sb_harbour_entry_ok(s) ? 2u : 0u) |
+                              (sb_harbour_lease_ok(s) ? 4u : 0u) | (on && h->state == HARB_HOLD && !h->hold_safe ? 8u : 0u) |
+                              (sb_harbour_grace(s) ? 16u : 0u) | (on && h->back ? 32u : 0u) |
+                              (on && h->prop_used ? 64u : 0u)));
+    proto_wr_u16(&w, (uint16_t)lroundf(sb_harbour_grace_left_s(s) * 10.0f));
+    proto_wr_u8(&w, k4 ? s->nav.hflags : 0u);
+    proto_wr_u8(&w, (uint8_t)lroundf((on ? h->max_kn : s->cfg.harb.max_kn) * 10.0f));
+    if (!w.overflow) send(l, PROTO_T_HARBOUR_STAT, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;
+}
+
 static void bench_diag(link_t *l, sb_t *s)
 {
     static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
@@ -1678,6 +1766,24 @@ void link_step(link_t *l, sb_t *s)
             uint32_t used = HAL_GW_TX_RING - hal_gw_tx_free();
             if (used + need <= l->gw_room && hal_gw_tx_free() >= need + GW_CTRL_RESERVE) accel_frame(l, s);
             else l->acc_held++;
+        }
+        /* step HX2: HARBOUR_STAT at 5 Hz (every 2nd telemetry), AFTER the TELEMETRY frame; on the gateway port only
+         * with room (the ACCEL rule) - never in the place of TELEMETRY / TELEM2 or a control answer. A held frame is
+         * simply the next one 0.2 s later (the planner's fold judges by its age). Only while it means something: a
+         * harbour route stored, harbour autonomy on / DONE (a missing frame = "not in harbour autonomy" for the gateway) */
+        const sb_auto_t *ha = &s->autop;
+        bool harb_rel = sb_harbour_on(s) || s->harb.state == HARB_DONE ||
+                        (ha->prog_ok && (ha->prog.flags & PROG_F_HARBOUR));     /* (else: nothing to report, no bytes) */
+        if (harb_rel && ++l->harb_div >= 2u) {
+            l->harb_div = 0u;
+            if (l->port != LINK_PORT_GW) {
+                harbour_stat(l, s);
+            } else {
+                uint32_t need = PROTO_HARBOUR_STAT_LEN + PROTO_OVERHEAD;
+                uint32_t used = HAL_GW_TX_RING - hal_gw_tx_free();
+                if (used + need <= l->gw_room && hal_gw_tx_free() >= need + GW_CTRL_RESERVE) harbour_stat(l, s);
+                else l->harb_held++;
+            }
         }
         if (l->port != LINK_PORT_GW && sb_mode(s) == MODE_BENCH) bench_diag(l, s);
     }

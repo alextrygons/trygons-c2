@@ -31,6 +31,10 @@ typedef enum {
     PROG_END_HOLD           /* last waypoint: hold the heading at approach speed + alarm */
 } prog_end_t;
 
+/* program_t.flags (PROG_BEGIN's optional 3rd byte, step HX2) */
+#define PROG_F_HARBOUR  0x01u   /* a harbour route (the gateway's harbour route upload; harbour autonomy only on one) */
+#define PROG_F_ALL      0x01u   /* the only flags a program may carry */
+
 typedef struct {
     int32_t lat_e7, lon_e7;     /* degrees x 1e7 */
     float   speed_kn;           /* leg speed to this waypoint */
@@ -43,7 +47,7 @@ typedef struct {
     uint32_t  magic, version, size;
     uint16_t  n;                /* number of waypoints, 1..PROG_MAX_WP */
     uint8_t   final_action;     /* prog_end_t */
-    uint8_t   pad;
+    uint8_t   flags;            /* PROG_F_ (step HX2; was a pad byte = 0: old NV records stay valid) */
     prog_wp_t wp[PROG_MAX_WP];
     uint32_t  checksum;         /* CRC-32 of everything above */
 } program_t;

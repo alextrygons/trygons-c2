@@ -294,6 +294,7 @@ confirm.8 = DP
 confirm.9 = THROTTLE TRAVEL
 confirm.10 = AUTO RETURN
 confirm.11 = CONFIRM ONLY (practical test: changes nothing)
+confirm.12 = HARBOUR AUTONOMY (start / resume)
 
 # --- captain screen: left column (values) -------------------------------------
 cap.power_lbl = POWER LIMIT {f} % / R {r} %
@@ -2188,6 +2189,7 @@ asst.v_making = Making the voice…
 asst.v_nothing = Nothing to say
 asst.v_none = 
 result.128 = SAR: not allowed
+result.129 = harbour route refused
 mob.btn = MOB
 mob.head = MAN OVERBOARD
 mob.alarm = MAN OVERBOARD - MOB {n} (someone fell off the boat)

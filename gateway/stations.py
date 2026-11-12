@@ -91,7 +91,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               126: "the joystick is on a UAV",
               127: "another pilot flies this UAV",
               # search and rescue (CLAUDE.md X, PF3)
-              128: "SAR: not allowed"}
+              128: "SAR: not allowed", 129: "harbour route refused"}
 # copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold, AUTO return - the AURIX
 # still wants the joystick CONFIRM for the return; DP STOP: proto.is_driving_cmd)
 COPILOT_FREE = (proto.T_AUTO_PAUSE, proto.T_AUTO_RETURN)

@@ -33,6 +33,7 @@ static struct {
     uint32_t dp_seq;
     uint16_t can_seq;
     uint16_t sovr_seq;          /* step 13q3b: the shore stick override (event 26 SOVR) */
+    uint16_t harb_seq;          /* step HX2: harbour autonomy (event 32 HARBOUR) */
     uint16_t steer_seq;
     uint16_t acc_seq;           /* step FW-TR: the 1 s acceleration window (event 31 ACCEL) */
     uint32_t alarm_bits, alarm_bits2;
@@ -351,6 +352,15 @@ static void changes(const sb_t *s)
            (int32_t)lroundf(s->remote.x * 1000.0f), (int32_t)((o->starts & 0xFFFFu) | ((o->stops & 0xFFFFu) << 16)));
     }
     k.sovr_seq = s->sovr.log_seq;
+    /* harbour autonomy (step HX2): start / resume / HOLD + why / off + mode / arrived / lost-link grace started /
+     * the kill after the grace + cut (the newest of a step) */
+    if (s->harb.log_seq != k.harb_seq) {
+        const harb_t *h = &s->harb;
+        ev(s, EV_HARBOUR, (int32_t)((uint32_t)h->log_what | ((uint32_t)h->log_why << 8) | ((uint32_t)h->state << 16)),
+           (int32_t)lroundf(h->xte_m * 10.0f), (int32_t)lroundf(h->cap_kn * 10.0f),
+           (int32_t)((h->holds & 0xFFFFu) | ((h->refusals & 0xFFFFu) << 16)));
+    }
+    k.harb_seq = s->harb.log_seq;
     /* engine controls / remote restart (section N): every restart, crank start / stop, refusal.
      * The reset after a trip waits ENG_RESET_DELAY_MS so this event is in the queue first. */
     if (s->eng.log_seq != k.eng_seq)

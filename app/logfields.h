@@ -98,6 +98,7 @@
     X(motor_a,       H, 100,   v.motor_a) \
     X(limit_sw,      B, 1,     s->limit_bits) \
     X(bank_v,        H, 100,   (s->batt.valid ? s->batt.bank_v : 0.0f)) \
+    X(harb,          B, 1,     (uint8_t)((sb_harbour_on(s) ? s->harb.state : 0u) | ((s->harb.why & 0x0Fu) << 4))) \
     /* joystick, buttons */ \
     X(joy_x,         h, 1000,  s->joy.x) \
     X(joy_y,         h, 1000,  s->joy.y) \

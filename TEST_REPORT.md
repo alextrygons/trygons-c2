@@ -5,6 +5,27 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00000000000000000. Harbour autonomy - the AURIX side (step HX2, 2026-11-12, FIRMWARE)
+
+app/harbour.c + smallboat.c + link.c (CLAUDE.md Z "Step HX2 AS BUILT", docs/harbour_design.md 2.7). Part of the next flash gate.
+- Sim HB1-HB13 (`autopilot_sim hb`, also in every "all"): entry refusals one by one with their why, START + CONFIRM (CREWED /
+  UNCREWED) on the checked route leg, the speed cap (route / command / harb_max_kn / 8 kn ceiling / proposal; PARAM ceilings), the
+  heading (60 deg, the edge rule, 2 s refused = HOLD), the corridor (back at 2 kn, HOLD beyond +5 m, idle at once, gear N, AUTO kept),
+  the 8 deg/s slew, the lease (1000 / 600 / 3000->1000 ms, STOP flag, another kind), GPS / compass, every exit, RESUME on the same
+  leg, the lost link (grace 0 = today's kill 2.8 s; grace 60 = kill at 63.0 s; each cut fault at once; link back = latch cleared;
+  CREWED never), HARBOUR_STAT 50 frames / 10 s + log event 32, FIRST TEST refused + kind 4 inert. Firmware stage: all 405 / bridge 404 /
+  --can 397 / --can-fast 397 passed, 0 failed; TriCore incl. big boat + FIRST TEST; STACK CHECK OK (x3); CPU1 RAM 5.0 %.
+- Storm 200 episodes (run_storm.py, 10 workers, 60 simulated h): every invariant PASS, self-test PASS; harbour I85 16 / I86 53 098 /
+  I89 44 071 / I91 29 / I92 36 252 checks, 0 fails (30 % harbour episodes from their own hash; a run >= 200 episodes that does not
+  reach them FAILS). Mutations (tests/acceptance/storm/mutate_harbour.sh, HARB_MUTATE): 1 cap removed -> I86 (seed 3), 2 corridor
+  HOLD removed -> I89 (seed 48), 3 lease HOLD removed -> I92 (seed 7), 4 slew removed -> HB6, 5 grace removed -> I85 (seed 12).
+- Findings: (1) storm I86 seed 123: AUTO's rough-water slow-down LIFTED a target below nerv_min_kn (5 kn) to 5 kn - a speed RISE
+  above the leg (every AUTO, not only harbour) - fixed (a slow-down never raises). (2) sim GA2 (76 800 baud): HARBOUR_STAT on the
+  gateway port made a TELEMETRY gap 260 ms - the frame is now sent only while a harbour route is stored / harbour autonomy is on.
+  (3) HB4: at 4 kn the boat overshoots the corridor edge rule (CORRIDOR HOLD is the backstop) - for HX5 / W146. (4) a cap below the
+  in-gear idle speed (~1.5 kn) only reaches idle: the planner must STOP (HX5). (5) the drift cut vs a coast-down from 5 kn (W147).
+- Station: groundstation/test_harbour_proto.py HP0a-HP0d PASS (mirrors).
+
 ## 0000000000000000. Talking manual - the prompt default (W129, step AM4-r8, 2026-11-08) + the prefix / Tools-label fix of the one-line places
 
 Station / tools / tests / docs only (docs/assistant_design.md 5k; no app / hal / gateway logic change).

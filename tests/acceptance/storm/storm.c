@@ -97,7 +97,7 @@ typedef enum {
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
     E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK, E_SHDG,
-    E_NAVBEAT, E_TRIG, E_SLAMRES, E_SLAMHIT, E_MNV_Y,
+    E_NAVBEAT, E_TRIG, E_SLAMRES, E_SLAMHIT, E_MNV_Y, E_HARB,
     E_COUNT
 } ev_kind_t;
 
@@ -124,7 +124,9 @@ static const char *EV_NAMES[E_COUNT] = {
     "shore TRIGGER (13q3: the stick moved first in half of them; UNCREWED HDG LOCK steering by hand = new heading)",
     "slamming power restore (13q4: the HELM station's ACCEPT mostly / REJECT)",
     "a hard wave hit (13q4: one red impact at any speed; the restore answer 35..65 s later)",
-    "shore stick Y (13q5: MANEUVER gear - centre / full forward / full back / part / a short flick)"
+    "shore stick Y (13q5: MANEUVER gear - centre / full forward / full back / part / a short flick)",
+    "harbour (HX2: START + CONFIRM / proposal heading / cap / STOP / stream pause / lease / HOLD / RESUME / current / "
+    "another kind / link lost + back)"
 };
 
 typedef struct {
@@ -141,6 +143,7 @@ typedef struct {
     bool     boot_deflected;    /* joystick held at power-up (I11) */
     bool     uncrewed;          /* no onboard joystick at power-up: UNCREWED profile (I22) */
     uint8_t  can;               /* step 11e: 0 PWM servos, 1 DroneCAN worst-case servos, 2 DroneCAN fast servos */
+    uint8_t  harb;              /* step HX2: 0 no harbour events, 1 harbour (shipped grace 0), 2 harbour + a 60 s grace */
     int      n;
     ev_t     ev[MAX_EV];
     bool     on[MAX_EV];        /* used while shrinking */
@@ -162,7 +165,13 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         h ^= h >> 13;
         uint32_t c = h % 100u;
         s->can = c < 20u ? 1u : (c < 35u ? 2u : 0u);
+        /* step HX2: harbour episodes from another part of the same hash (the other draws stay what they were):
+         * 30 %, half of them with the lost-link harbour grace set to 60 s (the mechanism; it ships 0, W147) */
+        uint32_t hh = (h / 100u) % 100u;
+        s->harb = hh < 15u ? 1u : (hh < 30u ? 2u : 0u);
     }
+    if (s->harb == 2u) s->uncrewed = true;            /* HX2 (I85): the grace episodes are UNCREWED (the kill rules) */
+    uint32_t r2 = seed * 2654435761u + 0x7F4A7C15u;   /* step HX2: the harbour events' own draws */
     uint32_t t = 2000u;
     /* step 13q3 (I71-I74): half of the UNCREWED episodes start with the shore captain's own drive (no rng draw: the
      * other draws stay what they were) - half of those in AUTO (below), the others: HELM, REMOTE, the lever forward,
@@ -304,6 +313,17 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         if (k == E_REMOTE_RELEASE && !s->uncrewed && e->a >= 600) e->kind = E_SHDG;
         /* step 13q3 (I74): some stale-data draws are a shore TRIGGER press instead */
         if (k == E_REMOTE_STALE && e->c >= 450) e->kind = E_TRIG;
+        /* step HX2: in harbour episodes about half of the events are harbour events (their own draws) */
+        if (s->harb && rnd(&r2) < 0.55f) {
+            e->kind = E_HARB;
+            e->a = rndi(&r2, 1000);
+            e->b = rndi(&r2, 1000);
+            e->c = rndi(&r2, 1000);
+            e->f = rnd(&r2) * 2.0f - 1.0f;
+            if (s->n < 3) e->a = 0;                         /* (the first ones: a START) */
+            /* (I85: the grace episodes lose the HELM station more often) */
+            if (s->harb == 2u && e->a >= 880 && e->a < 960) e->a = 960 + e->a % 40;
+        }
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -657,6 +677,20 @@ typedef struct {
     uint32_t    fuzz_gw_t;          /* a CRC-valid random gateway frame of any type (I70 waits) */
     uint32_t    slam_ans_t;         /* step 13q4 (I77): the captain answers the restore question then (0 = no) */
     bool        slam_ans_acc;
+    /* step HX2: the gateway's harbour planner (kind-4 proposals at 5 Hz) + what the storm last sent / commanded */
+    uint8_t     harb;               /* sched_t.harb */
+    bool        k4_on, k4_stop;
+    float       k4_off, k4_cap;     /* the proposal: leg track + off, cap kn */
+    uint16_t    k4_lease;
+    uint32_t    k4_next, k4_pause_until;
+    uint32_t    k4_tx_t;            /* the last VALID kind-4 pushed (0 = none since the boot) */
+    uint16_t    k4_tx_lease;
+    float       k4_cap_sent;
+    uint8_t     nav_last_kind;      /* the kind of the last VALID navreq pushed */
+    uint32_t    nav_other_t;        /* ... when a valid one of another kind was pushed */
+    float       harb_kn, harb_corr; /* the storm's own clamp of the last START / RESUME */
+    uint32_t    harb_conf_t;        /* the captain's CONFIRM then (0 = none) */
+    uint32_t    harb_back_t;        /* the HELM station back then (0 = none) */
 } sim_t;
 
 static sim_t S;
@@ -708,6 +742,8 @@ static void boot(void)
     S.boots++;
     S.lt_expect = SB_LINK_TIME_MIN_S;   /* LINK TIME: 3 s after every reset (step 13q1) */
     S.nav_tx_t = 0u;                    /* I70: the AURIX's navreq lease is gone with the reset */
+    S.k4_tx_t = 0u;                     /* HX2 (I92): the same for the harbour lease */
+    S.nav_last_kind = 0u;
     S.helm_silent = false;
     S.heard_t = S.t;
     S.rep_since_grant = false;
@@ -777,6 +813,8 @@ static void sim_init(const sched_t *sc)
     memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&S.w, 0u);
     sb_default_config(&S.cfg);
+    S.harb = sc->harb;
+    if (sc->harb == 2u) S.cfg.harb.ll_grace_s = 60.0f;   /* HX2 (I85): the grace mechanism (PARAM_SET can't: 0..0) */
     timing_init_all();
     logq_init_all();
     sim_hal_link_reset();
@@ -840,7 +878,62 @@ static void navreq(uint8_t kind, uint8_t reason, uint8_t alarm, float hdg, float
     if (valid) {                        /* (pushed = delivered, also while the storm's status is off) */
         S.nav_tx_t = S.t ? S.t : 1u;
         S.nav_tx_lease = lease;
+        S.nav_last_kind = kind;
+        S.nav_other_t = S.t ? S.t : 1u;
     }
+}
+
+/* step HX2: the gateway's harbour proposal (GW_NAVREQ kind 4, 13 bytes) */
+static void navreq_k4(void)
+{
+    uint8_t pl[13];
+    const sb_t *s = &S.sb;
+    float trk = sb_harbour_on(s) ? s->autop.leg.track_deg : S.sb.ap.heading;
+    float hdg = fmodf(trk + S.k4_off + 720.0f, 360.0f);
+    uint16_t h = (uint16_t)lrintf(hdg * 100.0f) % 36000u, c = (uint16_t)lrintf(S.k4_cap * 10.0f);
+    pl[0] = (uint8_t)(++S.nav_seq);
+    pl[1] = SB_NAV_HARBOUR; pl[2] = 0u; pl[3] = 0u;
+    pl[4] = (uint8_t)h; pl[5] = (uint8_t)(h >> 8);
+    pl[6] = (uint8_t)c; pl[7] = (uint8_t)(c >> 8);
+    pl[8] = (uint8_t)S.k4_lease; pl[9] = (uint8_t)(S.k4_lease >> 8);
+    pl[10] = S.k4_stop ? HARB_HF_STOP : 0u; pl[11] = 255u; pl[12] = 0u;
+    push_frame(true, PROTO_T_GW_NAVREQ, pl, 13u);
+    S.k4_tx_t = S.t ? S.t : 1u;
+    S.k4_tx_lease = S.k4_lease;
+    S.k4_cap_sent = S.k4_cap;
+    S.nav_last_kind = SB_NAV_HARBOUR;
+    S.nav_tx_t = S.t ? S.t : 1u;
+    S.nav_tx_lease = S.k4_lease;
+}
+
+/* step HX2: a harbour route around the boat (waypoint 1 20 m astern on its heading, then 200 m / 420 m ahead),
+ * uploaded "over the gateway" (via_gw, like link.c's PROG_COMMIT on the gateway port) */
+static void harb_route(uint32_t *r)
+{
+    static program_t p;
+    program_clear(&p);
+    p.n = 3u;
+    p.final_action = (uint8_t)rndi(r, 2);
+    p.flags = PROG_F_HARBOUR;
+    double h = S.w.heading_deg * 3.14159265358979 / 180.0;
+    static const double D[3] = { -20.0, 200.0, 420.0 };
+    float kn = 2.0f + rnd(r) * 6.0f;
+    for (int i = 0; i < 3; i++) {
+        world_t tmp = S.w;
+        double lat, lon;
+        tmp.north_m = S.w.north_m + D[i] * cos(h);
+        tmp.east_m = S.w.east_m + D[i] * sin(h);
+        world_latlon(&tmp, &lat, &lon);
+        p.wp[i].lat_e7 = (int32_t)lround(lat * 1e7);
+        p.wp[i].lon_e7 = (int32_t)lround(lon * 1e7);
+        p.wp[i].speed_kn = kn;
+        p.wp[i].radius_m = 10.0f;
+        p.wp[i].action = (uint8_t)((i == 1 && rndi(r, 5) == 0) ? WP_ACT_STOP : WP_ACT_CONTINUE);
+    }
+    program_seal(&p);
+    prog_error_t err;
+    uint8_t bad;
+    if (sb_program_set(&S.sb, &p, &err, &bad) == SB_OK) S.sb.autop.via_gw = true;
 }
 
 static void prog_random(int n, uint32_t *r)
@@ -872,7 +965,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 80
+#define NINV 93
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -898,7 +991,7 @@ static const char *INV_NAMES[NINV] = { "",
     "I25 MANEUVER gear changes only at idle",
     "I26 (gateway: MANEUVER / REMOTE refused without a manual licence)",
     "I27 ENGINE KILL only after idle + neutral (one exception, OD-3: UNCREWED + throttle node lost = kill at once)",
-    "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral; OD-3: node loss at once)",
+    "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral; OD-3: node loss at once; HX2: a loss that began in harbour autonomy with a grace = I85)",
     "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
     "I30 never an ENGINE KILL in CREWED",
     "I31 the ENGINE KILL stays latched until a POWER-ON reset OR the HELM station's restart (idle + neutral, e-stop released); a watchdog / software reset keeps it",
@@ -949,7 +1042,16 @@ static const char *INV_NAMES[NINV] = { "",
     "I76 a HELM change ends a running shore stick override within one step (13q3b)",
     "I77 the slamming cap rises only after the HELM station's ACCEPT, never faster than the throttle up rate (13q4)",
     "I78 MANEUVER gear (13q5): FORWARD / REVERSE asked only after the shore stick Y held full that way >= 0.3 s on taken packets (by their SEND time, 13q5c); centre / the other way = NEUTRAL",
-    "I79 UNCREWED HDG LOCK entered from MANEUVER (13q5c): only with the stick Y centred (also at a stick-Y station), held gear N, never a FORWARD demand in it" };
+    "I79 UNCREWED HDG LOCK entered from MANEUVER (13q5c): only with the stick Y centred (also at a stick-Y station), held gear N, never a FORWARD demand in it",
+    "I80 (gateway storm: UAV)", "I81 (gateway storm: UAV)", "I82 (gateway storm: UAV)", "I83 (gateway storm: UAV)",
+    "I84 (gateway storm: UAV)",
+    "I85 harbour lost link (HX2): no ENGINE KILL before detection + harb_ll_grace_s unless a harb_ll_cut fault; always by then once idle + neutral (UNCREWED)",
+    "I86 harbour speed (HX2): the applied target <= the storm's own cap (leg, command, harb_max_kn, 8 kn, the proposal, back-to-line); true SOG <= cap + 0.5 kn after 10 s",
+    "I87 (HX5: no turn for a track that is not range_ok)", "I88 (HX5: minimum distances)",
+    "I89 harbour corridor (HX2): the AURIX-visible xte beyond corridor + harb_corr_stop_m = HOLD in that step (idle commanded, thr_est not rising); world-truth xte <= corridor + stop + harb_unc_m while it runs",
+    "I90 (HX5: unsure = STOP)",
+    "I91 harbour (HX2): the STANDBY button / the e-stop / the CREWED joystick end harbour autonomy at once",
+    "I92 harbour lease (HX2): a lapsed / missing / other-kind lease = HOLD within min(frame, harb_lease_ms) + the link steps - never the AUTO nav_lost_kn rule" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -971,6 +1073,7 @@ typedef struct {
     uint32_t mv_y, mv_asks, mv_n_checks;                             /* step 13q5 (I78) */
     uint32_t mv_delayed, mv_jitter, uh_from_mnv, uh_mnv_stick_y;      /* step 13q5c (I78 / I79) */
     uint32_t mnv_crewed_conf;                                         /* step WB (I63): CREWED MANEUVER CONFIRM entries */
+    uint32_t harb_steps, harb_run_steps, harb_hold_steps, harb_starts, harb_losses, harb_grace_kills;  /* step HX2 */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -1129,10 +1232,18 @@ typedef struct {
     uint32_t ov_now_prev, ov_newhdgs_prev, ov_starts_prev;
     uint32_t sent_t;
     bool     sent_fresh;
+    /* step HX2 (I85, I86, I89, I91, I92) */
+    bool     h_on_prev, h_run_prev, h85, h85_exc, h85_killed;
+    uint32_t h85_drift_t;
+    uint8_t  h_ll_prev;
+    uint32_t h85_loss_t, h86_t0, h91_t;
+    uint8_t  h91_k;
+    float    h_corr, h_kn, h86_own_prev, k4_cap_prev, h_est_prev;
 } chk_t;
 
 static chk_t C;
 static bool s_verbose;
+static bool s_first_fail;           /* --first-fail: stop at the first failing episode (no shrink) */
 
 static void fail(int inv, const char *fmt, double a, double b)
 {
@@ -1239,7 +1350,9 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
          * killed, a STANDBY press) = idle at once also while already in STANDBY - during a planned arrival stop or
          * a normal generator stop too (the storm's own view, not sb emerg) */
         bool cond = s->estop_state == 2u || s->can.node_lost || s->can.bus_bad || s->ll.state == SB_LL_LOST ||
-                    s->ll.state == SB_LL_KILLED || (s->buttons_now & HAL_BTN_BIT(HAL_BTN_STANDBY)) != 0u;
+                    s->ll.state == SB_LL_KILLED || (s->buttons_now & HAL_BTN_BIT(HAL_BTN_STANDBY)) != 0u ||
+                    /* HX2: a harbour HOLD for any reason but the user's / a planned stop (and a fault in force) */
+                    (sb_harbour_on(s) && s->harb.state == HARB_HOLD && !harb_why_planned(s->harb.why));
         bool emergency = (((m == MODE_STANDBY && C.mode_prev != MODE_STANDBY) || s->stopping) && !arrived) || cond;
         if (emergency) {
             if (s->throttle_demand <= 0.01f && thr <= 0.6f) ok(47);
@@ -1409,6 +1522,155 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
 }
 
 /* after every control step */
+/* step HX2: harbour autonomy (I85, I86, I89, I91, I92) - the storm's OWN view of what it sent / commanded */
+static float sog_truth_kn(void)
+{
+    double h = S.w.heading_deg * 3.14159265358979 / 180.0;
+    double v = S.w.speed_kn * 0.514444;
+    double ve = v * sin(h) + S.w.sway_ms * cos(h) + S.w.current_e;
+    double vn = v * cos(h) - S.w.sway_ms * sin(h) + S.w.current_n;
+    return (float)(sqrt(ve * ve + vn * vn) / 0.514444);
+}
+
+/* the cross-track error (+ right of the track) of lat / lon to the route leg k-1 -> k (flat earth, the storm's own) */
+static float leg_xte(const program_t *p, uint8_t k, double lat, double lon)
+{
+    if (k < 1u || k >= p->n) return 0.0f;
+    double la0 = p->wp[k - 1u].lat_e7 * 1e-7, lo0 = p->wp[k - 1u].lon_e7 * 1e-7;
+    double la1 = p->wp[k].lat_e7 * 1e-7, lo1 = p->wp[k].lon_e7 * 1e-7;
+    double c = cos(la0 * 3.14159265358979 / 180.0), m = 111320.0;
+    double tn = (la1 - la0) * m, te = (lo1 - lo0) * m * c, L = sqrt(tn * tn + te * te);
+    if (L < 1.0) return 0.0f;
+    double dn = (lat - la0) * m, de = (lon - lo0) * m * c;
+    return (float)((de * tn - dn * te) / L);
+}
+
+static void check_harbour(sb_t *s, float thr)
+{
+    bool on = sb_harbour_on(s);
+    bool run = on && (s->harb.state == HARB_RUN || s->harb.state == HARB_SLOW);
+    const harb_cfg_t *hc = &s->cfg.harb;
+    if (on) ST.harb_steps++;
+    if (run) ST.harb_run_steps++;
+    if (on && s->harb.state == HARB_HOLD) ST.harb_hold_steps++;
+    if (run && !C.h_run_prev) {                     /* a START / RESUME was confirmed: its (storm-clamped) values */
+        C.h_corr = S.harb_corr;
+        C.h_kn = S.harb_kn;
+        C.h86_t0 = S.t;
+        ST.harb_starts++;
+    }
+    bool fuzzed = S.fuzz_gw_t && S.t - S.fuzz_gw_t < 4000u;
+    /* I92: the lease (what the storm pushed: the last VALID request must be kind 4, fresh within the effective lease
+     * + the link's steps) */
+    if (run && !fuzzed) {
+        uint32_t lease = S.k4_tx_lease < (uint32_t)hc->lease_ms ? S.k4_tx_lease : (uint32_t)hc->lease_ms;
+        bool other = S.nav_last_kind != SB_NAV_HARBOUR && S.t - S.nav_other_t > 3u * AP_PERIOD_MS;
+        if (other || !S.k4_tx_t || S.t - S.k4_tx_t > lease + 3u * AP_PERIOD_MS)
+            fail(92, "harbour still RUN with the lease gone (last kind %.0f, %.0f ms old)", (double)S.nav_last_kind,
+                 S.k4_tx_t ? (double)(S.t - S.k4_tx_t) : -1.0);
+        else ok(92);
+        if (s->nav.lost) fail(92, "harbour RUN with AUTO's lost-lease rule in force%.0f%.0f", 0.0, 0.0);
+    }
+    /* I89 + I86 */
+    if (on && sb_gps_ok(s)) {
+        const program_t *p = &s->autop.prog;
+        uint8_t k = s->autop.wp;
+        float xg = leg_xte(p, k, s->gps.last.lat_deg, s->gps.last.lon_deg);
+        float lim = C.h_corr + hc->corr_stop_m;
+        if (fabsf(xg) > lim + 0.5f) {
+            if (run) fail(89, "xte %.1f m (AURIX GPS) beyond %.1f m but harbour still RUN", xg, lim);
+            else if (s->throttle_demand > 0.01f || s->servo.est_pct > C.h_est_prev + 0.01f)
+                fail(89, "beyond the corridor in HOLD but the throttle demand %.1f %% / thr_est rising", s->throttle_demand,
+                     s->servo.est_pct);
+            else ok(89);
+        } else if (run) ok(89);
+        if (run) {
+            world_t tmp = S.w;
+            double la, lo;
+            world_latlon(&tmp, &la, &lo);
+            float xt = leg_xte(p, k, la, lo);
+            if (fabsf(xt) > lim + hc->unc_m) fail(89, "true xte %.1f m beyond corridor + stop + unc %.1f while RUN", xt, lim + hc->unc_m);
+            /* I86: the storm's own cap */
+            float own = fminf(fminf(p->wp[k < p->n ? k : 0].speed_kn, s->cfg.cruise_max_kn), fminf(hc->max_kn, HARB_MAX_KN_CEIL));
+            own = fminf(own, C.h_kn);
+            float capk = fmaxf(S.k4_cap_sent, C.k4_cap_prev);   /* (the frame of one step ago may still apply) */
+            own = fminf(own, capk);
+            if (fabsf(xg) > C.h_corr + 0.5f) own = fminf(own, hc->back_kn);    /* back to the line */
+            if (s->harb.cap_kn > own + 0.02f) fail(86, "harbour speed target %.2f kn above the storm's own cap %.2f", s->harb.cap_kn, own);
+            else ok(86);
+            if (fabsf(own - C.h86_own_prev) > 0.01f) C.h86_t0 = S.t;
+            C.h86_own_prev = own;
+            float sog = sog_truth_kn();
+            if (S.t - C.h86_t0 > 10000u) {
+                /* (in forward gear the boat never goes slower than its idle-in-gear speed: a cap below it is only
+                 *  idle throttle - the world truth's floor; the planner STOPs for anything slower, HX5) */
+                float floor_kn = S.w.idle_fwd_kn + (float)(sqrt(S.w.current_e * S.w.current_e +
+                                                                S.w.current_n * S.w.current_n) / 0.514444);
+                if (sog > fmaxf(own, floor_kn) + 0.5f) fail(86, "true SOG %.2f kn above the cap %.2f + 0.5 after 10 s", sog, own);
+                else ok(86);
+            }
+        }
+    }
+    if (!run) C.h86_t0 = S.t;
+    C.k4_cap_prev = S.k4_cap_sent;
+    C.h_est_prev = s->servo.est_pct;
+    /* I91 */
+    if (C.h91_t) {
+        if (!on) { ok(91); C.h91_t = 0u; }
+        else if (S.t - C.h91_t > (C.h91_k == 2u ? 400u : 150u)) {
+            fail(91, "harbour autonomy still on %.0f ms after a STANDBY / e-stop / joystick takeover (kind %.0f)",
+                 (double)(S.t - C.h91_t), (double)C.h91_k);
+            C.h91_t = 0u;
+        }
+    }
+    /* I85: the lost-link harbour grace (UNCREWED; with a grace set) */
+    {
+        float g = hc->ll_grace_s;
+        bool kill = sim_hal_engine_killed();
+        if (s->ll.state == SB_LL_LOST && C.h_ll_prev == SB_LL_OK) {
+            C.h85 = C.h_on_prev && g > 0.0f && s->profile == SB_PROFILE_UNCREWED;
+            C.h85_exc = false;
+            C.h85_loss_t = S.t;
+            C.h85_killed = kill;
+            if (C.h85) ST.harb_losses++;
+        }
+        if (C.h85) {
+            /* the storm's own view of a harb_ll_cut fault / another kill rule since the loss */
+            bool cut = S.estop || s->mon_tripped || S.can_back_t || S.w.gps_fail || !S.gw_on || S.gw_off_t ||
+                       (!sb_compass_ok(s) && !autopilot_gyro_ok(&s->ap)) || (C.standby_press_t > C.h85_loss_t) ||
+                       (s->alarm_bits & SB_ALM_GEAR) || (s->alarm_bits2 & SB_ALM2_GEOFENCE) || S.shore_mode == 2u ||
+                       (C.h85_drift_t && S.t - C.h85_drift_t > 9000u) || s->ll.node_kill || S.boot_until ||
+                       (S.fuzz_link_t && S.t - S.fuzz_link_t < 70000u) || !sb_gps_ok(s);
+            if (cut) C.h85_exc = true;
+            bool idle_n = C.safe_since != 0u;
+            if (idle_n && sog_truth_kn() > hc->ll_drift_kn - 0.2f) { if (!C.h85_drift_t) C.h85_drift_t = S.t ? S.t : 1u; }
+            else C.h85_drift_t = 0u;
+            if (kill && !C.h85_killed) {
+                uint32_t earliest = S.heard_t + (uint32_t)((3.0f + g) * 1000.0f) - 1500u;
+                if (!C.h85_exc && (int32_t)(S.t - earliest) < 0)
+                    fail(85, "ENGINE KILL %.1f s after the harbour loss (grace %.0f s) without a cut fault",
+                         (S.t - C.h85_loss_t) * 0.001, g);
+                else ok(85);
+                if (!C.h85_exc) ST.harb_grace_kills++;
+                C.h85 = false;
+            } else if (!kill && s->ll.state == SB_LL_LOST && !C.h85_exc && C.safe_since && S.t - C.safe_since > 1500u &&
+                       S.t - C.h85_loss_t > (uint32_t)((3.0f + g) * 1000.0f) + 2500u && !s->mon_tripped) {
+                fail(85, "no ENGINE KILL %.1f s after the harbour loss (grace %.0f s), idle + neutral", (S.t - C.h85_loss_t) * 0.001, g);
+                C.h85 = false;
+            } else if (s->ll.state != SB_LL_LOST && !kill) {
+                ok(85);                                         /* the link came back: no kill meanwhile */
+                C.h85 = false;                                  /* (the latch is gone) */
+            }
+            if (kill) C.h85 = false;
+            C.h85_killed = kill;
+        }
+    }
+    (void)thr;
+    C.h_ll_prev = s->ll.state;
+    C.h_on_prev = on;
+    C.h_run_prev = run;
+}
+
 static void check_step(void)
 {
     sb_t *s = &S.sb;
@@ -1947,7 +2209,7 @@ static void check_step(void)
             if (!C.gear_n_since28) allow = 1000u + S.cfg.gear.idle_wait_ms + S.cfg.gear.neutral_wait_ms + 200u;
             else if ((int32_t)(C.gear_n_since28 - s->ll.lost_ms) + 200 > (int32_t)allow)
                 allow = (uint32_t)((int32_t)(C.gear_n_since28 - s->ll.lost_ms) + 200);
-            if (near && !far && S.t - s->ll.lost_ms > allow)
+            if (near && !far && S.t - s->ll.lost_ms > allow && !C.h85)     /* (HX2: a harbour grace = I85) */
                 fail(28, "lost %.1f s ago, near shore / no shore info, idle + neutral - but no kill", since, 0.0);
             else if (near && !far) ok(28);
             if (far && since > s->cfg.lostlink_grace_s + 0.5f)
@@ -2377,6 +2639,7 @@ static void check_step(void)
     }
     check_can(s, m, thr, forced, inj, dt);
     C.dp_tgt_prev = s->dp.hdg_target;
+    check_harbour(s, thr);                          /* step HX2 */
     C.alarm_flag_prev = s->alarm;
     C.mode_prev = m;
     C.thr_prev = thr;
@@ -2897,6 +3160,53 @@ static void apply(const ev_t *e)
         ST.ov_trig++;
         break;
     case E_NAVBEAT: S.nav_beat_off_until = (S.t + 3500u + (uint32_t)(e->a % 8) * 1000u) | 1u; break;
+    case E_HARB: {
+        /* step HX2: harbour autonomy - the HELM station's START / RESUME / HOLD (+ the captain's CONFIRM), the
+         * gateway planner's proposals (heading off the track, cap, STOP, stream pauses, lease, another kind), a cross
+         * current, the HELM station lost + back later (I85) */
+        C.last_action_t = S.t + 1u;
+        if (!S.uncrewed) S.rem_station = 2u;
+        int a = e->a;
+        if (a < 250 || (a >= 870 && a < 930)) {
+            bool resume = a >= 870;
+            if (s->helm != S.rem_station) st_helm(s, S.rem_station);
+            if (e->b < 900) S.shore_mode = 1u;                              /* a harbour: near the shore */
+            if (!resume && sb_mode(s) != MODE_AUTO) harb_route(&r);
+            S.k4_on = true;
+            if (!resume) { S.k4_off = 0.0f; S.k4_cap = 5.0f; S.k4_stop = false; S.k4_lease = 1000u; S.k4_pause_until = 0u; }
+            navreq_k4();
+            S.k4_next = S.t + 200u;
+            float corr = (float)(30 + e->c % 180) * 0.1f, kn = (float)(10 + e->b % 85) * 0.1f;
+            if (sb_harbour_cmd(s, s->helm, resume ? HARB_ACT_RESUME : HARB_ACT_START, corr, kn) == SB_OK) {
+                float k = fminf(fminf(kn, s->cfg.harb.max_kn), HARB_MAX_KN_CEIL);
+                S.harb_kn = k;
+                S.harb_corr = fminf(corr, s->cfg.harb.corr_m);
+                S.harb_conf_t = S.t + 300u + (uint32_t)(e->c % 5) * 100u;
+            }
+        } else if (a < 450) {
+            S.k4_off = e->f * 80.0f;                                        /* some beyond the 60 deg limit */
+        } else if (a < 600) {
+            S.k4_cap = (e->b < 100) ? 0.0f : (float)(e->c % 91) * 0.1f;
+        } else if (a < 680) {
+            S.k4_stop = !S.k4_stop;
+        } else if (a < 760) {
+            S.k4_pause_until = (S.t + 300u + (uint32_t)e->c * 4u) | 1u;      /* the lease lapses (or nearly) */
+        } else if (a < 820) {
+            S.k4_lease = (uint16_t)(500u + (uint32_t)e->c * 25u / 10u);
+        } else if (a < 870) {
+            (void)sb_harbour_cmd(s, s->helm, HARB_ACT_HOLD, 0.0f, 0.0f);
+        } else if (a < 940) {
+            S.w.current_n = e->f * 1.6f;                                    /* a cross current */
+            S.w.current_e = 0.0f;
+        } else if (a < 950) {
+            navreq(SB_NAV_HEADING, 1u, 1u, 90.0f, 3.0f, 3000u);             /* another kind in harbour */
+        } else {
+            st_helm(s, SB_HELM_NONE);                                       /* the HELM station lost ... */
+            S.rem_stream = false;
+            S.harb_back_t = S.t + 5000u + (uint32_t)e->c * 120u;            /* ... back after 5..125 s */
+        }
+        break;
+    }
     case E_FUZZ_USB:
     case E_FUZZ_GW: {
         bool gw = e->kind == E_FUZZ_GW;
@@ -2958,6 +3268,14 @@ static void apply(const ev_t *e)
         }
         break;
     default: break;
+    }
+    /* HX2 (I91): STANDBY / the e-stop / a CREWED takeover while harbour autonomy runs */
+    if (sb_harbour_on(s)) {
+        bool sbb = e->kind == E_BTN && e->a < 350;
+        bool es = e->kind == E_ENGINE && e->a >= 920 && e->b < 500;
+        bool jy = e->kind == E_JOY && e->a >= 400 && fabsf(e->f) >= 0.6f && s->profile == SB_PROFILE_CREWED &&
+                  s->joy.armed && !s->joy.fault && !S.joy_broken && S.joy_fitted;
+        if (sbb || es || jy) { C.h91_t = S.t ? S.t : 1u; C.h91_k = jy ? 2u : 1u; }
     }
     (void)s_er;
 }
@@ -3158,7 +3476,26 @@ static void run_until(uint32_t until)
         }
         /* step 13q2e: the gateway's nav_loop - a "no danger" request at 2 Hz while an UNCREWED boat is in REMOTE /
          * MANEUVER / HDG LOCK (UNCREWED HDG LOCK needs the lease), except while E_NAVBEAT stopped it */
-        if (S.gw_on && S.uncrewed && AT_OR_AFTER(S.t, S.nav_beat_next) &&
+        if (S.k4_on && S.gw_on && AT_OR_AFTER(S.t, S.k4_next) &&
+            !(S.k4_pause_until && !AT_OR_AFTER(S.t, S.k4_pause_until))) {
+            S.k4_next = S.t + 200u;                                         /* HX2: the planner at 5 Hz */
+            navreq_k4();
+        }
+        if (S.harb_conf_t && AT_OR_AFTER(S.t, S.harb_conf_t)) {             /* HX2: the captain's YES = the CONFIRM */
+            S.harb_conf_t = 0u;
+            ev_t cf;
+            memset(&cf, 0, sizeof cf);
+            cf.kind = S.uncrewed ? E_SCONFIRM : E_CONFIRM;
+            cf.a = 100;
+            if (!S.uncrewed) { S.jx = 0.0f; S.jy = 0.0f; joy_apply(); }
+            apply(&cf);
+        }
+        if (S.harb_back_t && AT_OR_AFTER(S.t, S.harb_back_t)) {
+            S.harb_back_t = 0u;
+            st_helm(&S.sb, S.rem_station);
+            S.rem_stream = true;
+        }
+        if (S.gw_on && S.uncrewed && !S.k4_on && AT_OR_AFTER(S.t, S.nav_beat_next) &&
             (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER || sb_mode(&S.sb) == MODE_HDG_LOCK ||
              sb_mode(&S.sb) == MODE_AUTO) &&      /* (13q3b: the real gateway sends it in AUTO too) */
             !(S.nav_beat_off_until && !AT_OR_AFTER(S.t, S.nav_beat_off_until))) {
@@ -3670,6 +4007,7 @@ int main(int argc, char **argv)
     int min_min = 5, max_min = 30;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--quiet")) continue;
+        if (!strcmp(argv[i], "--first-fail")) { s_first_fail = true; continue; }   /* (HX2 mutation runs: no shrink) */
         if (!strcmp(argv[i], "--wrap")) return wrap_test();
         if (!strcmp(argv[i], "--selftest")) return selftest();
         if (!strcmp(argv[i], "--dayatsea")) return day_at_sea();
@@ -3739,6 +4077,11 @@ int main(int argc, char **argv)
         hours += dur / 3600000.0;
         if (episode(&SC, false)) {
             int inv = C.inv;
+            if (s_first_fail) {
+                printf("FAIL seed %lu %s: %s at %.1f s (first failure, not shrunk)\n", (unsigned long)sd, INV_NAMES[inv],
+                       C.text, C.t * 0.001);
+                return 1;
+            }
             char text[200];
             snprintf(text, sizeof text, "%s", C.text);
             uint32_t at = C.t;
@@ -3766,7 +4109,15 @@ int main(int argc, char **argv)
     report(episodes, hours);
     /* WB review LOW-2: a run of >= 200 episodes that never entered a CREWED MANEUVER by the CONFIRM did not test
      * I63's WB clause (a 200-episode run reaches ~45) */
+    printf("harbour autonomy (HX2, I85 / I86 / I89 / I91 / I92): %lu steps on (%lu RUN / SLOW, %lu HOLD), %lu runs started, "
+           "%lu lost links in harbour with a grace, %lu kills after the full grace\n", (unsigned long)ST.harb_steps,
+           (unsigned long)ST.harb_run_steps, (unsigned long)ST.harb_hold_steps, (unsigned long)ST.harb_starts,
+           (unsigned long)ST.harb_losses, (unsigned long)ST.harb_grace_kills);
+    bool harb_fail = episodes >= 200 && (ST.harb_run_steps == 0u || ST.harb_hold_steps == 0u || ST.checks[92] == 0u ||
+                                         ST.checks[89] == 0u || ST.checks[86] == 0u || ST.checks[85] == 0u ||
+                                         ST.checks[91] == 0u);
+    if (harb_fail) printf("FAIL HX2 coverage: harbour autonomy RUN / HOLD / I85 / I86 / I89 / I91 / I92 not reached\n");
     bool mnvc_fail = episodes >= 200 && ST.mnv_crewed_conf == 0u;
     if (mnvc_fail) printf("FAIL I63 coverage: no CREWED MANEUVER entered by the CONFIRM - the WB clause not tested\n");
-    return (failing || mnvc_fail) ? 1 : 0;
+    return (failing || mnvc_fail || harb_fail) ? 1 : 0;
 }

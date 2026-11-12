@@ -133,6 +133,7 @@ void sb_default_config(sb_config_t *cfg)
     gen_default_config(&cfg->gen);
     cfg->dp_max_kn = 3.0f;                      /* TO CONFIRM */
     cfg->dp_max_entry_kn = 2.0f;
+    harb_default_config(&cfg->harb);            /* step HX2: harbour autonomy (W144-W147 defaults) */
 }
 
 /* NV slot 6: the generator's learned value (version + CRC-32, like calib.c):
@@ -168,6 +169,9 @@ static void sovr_reset(sb_t *s, sb_mode_t to);
 static void sovr_step(sb_t *s, float dt);
 static void sovr_auto(sb_t *s);
 static void sovr_log(sb_t *s, uint8_t what, float hdg);
+static void harb_hold(sb_t *s, uint8_t why);
+static void confirm_arm(sb_t *s, confirm_kind_t kind);
+static void steer_pause(sb_t *s, bool pause, float angle);
 
 static void lever_standard(sb_t *s)
 {
@@ -526,6 +530,8 @@ void sb_alarm_ack(sb_t *s)
     if (s->can.node_lost) keep2 |= SB_ALM2_CAN_NODE;
     if (s->can.bus_bad) keep2 |= SB_ALM2_CAN_BUS;
     if (nav_fresh(s) && (s->nav.alarm & SB_NAV_ALM_FENCE)) keep2 |= SB_ALM2_GEOFENCE;   /* still outside (13q2c) */
+    /* step HX2: the harbour HOLD for an unplanned reason stays while it holds (RESUME / another mode ends it) */
+    if (sb_harbour_on(s) && s->harb.state == HARB_HOLD && !harb_why_planned(s->harb.why)) keep2 |= SB_ALM2_HARBOUR_STOP;
     s->alarm_bits2 &= keep2;
     s->alarm = s->alarm_bits != 0u || (s->alarm_bits2 & ~SB_ALM2_QUIET) != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -615,7 +621,44 @@ bool sb_shore_hdg(const sb_t *s)
 
 static bool nav_fresh(const sb_t *s)
 {
+    /* step HX2: a harbour proposal (kind 4) is inert outside harbour autonomy - it never counts as the lease of
+     * AUTO / UNCREWED HDG LOCK / the shore override (they need a request of their own kind: fail safe) */
+    if (s->nav.kind == SB_NAV_HARBOUR && !sb_harbour_on(s)) return false;
     return s->nav.rx_ms != 0u && s->now_ms - s->nav.rx_ms <= s->nav.lease_ms;
+}
+
+/* --- harbour autonomy (step HX2, CLAUDE.md Z, docs/harbour_design.md 2; harbour.h) ---------------------------- */
+
+bool sb_harbour_on(const sb_t *s)
+{
+    uint8_t st = s->harb.state;
+    return sb_mode(s) == MODE_AUTO && (st == HARB_RUN || st == HARB_SLOW || st == HARB_HOLD);
+}
+
+/* following the route (RUN / SLOW): the planner's proposals are validated + applied */
+static bool harb_running(const sb_t *s)
+{
+    return sb_mode(s) == MODE_AUTO && (s->harb.state == HARB_RUN || s->harb.state == HARB_SLOW);
+}
+
+/* the last navigation request is a harbour proposal fresher than the EFFECTIVE lease (min(frame, harb_lease_ms)) */
+static bool harb_lease_ok(const sb_t *s)
+{
+    const sb_navreq_t *n = &s->nav;
+    return n->kind == SB_NAV_HARBOUR && n->rx_ms != 0u &&
+           s->now_ms - n->rx_ms <= harb_eff_lease_ms(&s->cfg.harb, n->lease_ms);
+}
+
+bool sb_harbour_lease_ok(const sb_t *s)
+{
+    return harb_lease_ok(s);
+}
+
+static void harb_log(sb_t *s, uint8_t what, uint8_t why)
+{
+    s->harb.log_what = what;
+    s->harb.log_why = why;
+    s->harb.log_seq++;
 }
 
 /* The navigation request applies (speed cap, avoidance heading, the lost lease) in AUTO and in a DP TRIP
@@ -666,11 +709,17 @@ static bool nav_heading(sb_t *s, float track, float *hdg)
 static void nav_steer(sb_t *s)
 {
     float h;
+    if (harb_running(s)) {              /* step HX2: the validated + slewed harbour heading (harbour_pre) */
+        autopilot_set_target(&s->ap, s->harb.tgt_deg);
+        return;
+    }
     if (sb_mode(s) == MODE_AUTO && nav_heading(s, s->autop.leg.track_deg, &h)) autopilot_set_target(&s->ap, h);
 }
 
 static float auto_target_kn(const sb_t *s)
 {
+    /* step HX2: harbour autonomy - min(leg, run max, harb_max_kn, the proposal's cap, back-to-line); never raised */
+    if (harb_running(s)) return fminf(s->cruise.target_kn, s->harb.cap_kn);
     float cap = nav_cap(s);
     return (cap >= 0.0f && cap < s->cruise.target_kn) ? cap : s->cruise.target_kn;
 }
@@ -1050,6 +1099,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         break;
     case MODE_AUTO:
         s->stopping = false;
+        s->harb.state = HARB_OFF;               /* step HX2: plain AUTO (harb_confirm sets RUN right after) */
         /* (13q2: from REMOTE / MANEUVER too - the outboard is where the shore stick left it) */
         if (s->ap.mode != AP_MODE_AUTO)
             autopilot_engage(&s->ap, from == MODE_MANUAL || from == MODE_HDG_LOCK || remote_like(from));
@@ -1143,7 +1193,16 @@ bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
     if (v != MODE_OK) return false;
     if (from == MODE_DP && to != MODE_DP) dp_stop(&s->dp, dp_stop_why(why, to));   /* thrusters 0 in this step */
     if (to == MODE_STANDBY) s->stop_planned = (why == WHY_ARRIVED);   /* arrival: the normal closing rate */
+    bool harb = from == MODE_AUTO && (s->harb.state == HARB_RUN || s->harb.state == HARB_SLOW ||
+                                      s->harb.state == HARB_HOLD);
     on_enter(s, from, to);
+    if (harb && to != MODE_AUTO) {
+        /* step HX2: every AUTO exit ends harbour autonomy in that step (STANDBY, joystick, any mode, every fault) */
+        s->harb.state = (to == MODE_STANDBY && why == WHY_ARRIVED) ? HARB_DONE : HARB_OFF;
+        if (why == WHY_LINK_LOST) s->harb.why = HARB_WHY_LINK;
+        else if (why != WHY_ARRIVED && fault_why(why)) s->harb.why = HARB_WHY_FAULT;
+        harb_log(s, why == WHY_ARRIVED ? 5u : 4u, (uint8_t)to);
+    }
     return true;
 }
 
@@ -1343,6 +1402,37 @@ uint32_t sb_link_age_ms(const sb_t *s)
     return s->now_ms - s->ll.heard_ms;
 }
 
+/* Step HX2 (docs/harbour_design.md 3.2): harb_ll_cut - every fault that STANDBY would cut today, in ONE place.
+ * During the lost-link harbour grace any of them = the kill at once (once idle + neutral). */
+uint8_t sb_harb_ll_cut(const sb_t *s)
+{
+    if (s->estop_state == 2u) return SB_HLC_ESTOP;
+    if (s->mon_tripped) return SB_HLC_TRIP;
+    if (s->can.node_lost || s->can.bus_bad) return SB_HLC_CAN;
+    if (!sb_compass_ok(s) && !autopilot_gyro_ok(&s->ap)) return SB_HLC_HEADING;
+    if (!sb_gps_ok(s)) return SB_HLC_GPS;
+    if (s->gw.state != SB_GW_OK) return SB_HLC_GATEWAY;
+    if (gear_fault(&s->gear) || (s->alarm_bits & SB_ALM_GEAR)) return SB_HLC_GEAR;
+    bool fence_now = s->nav.rx_ms != 0u && s->now_ms - s->nav.rx_ms <= s->nav.lease_ms &&
+                     (s->nav.alarm & SB_NAV_ALM_FENCE) != 0u;
+    if (fence_now || (s->alarm_bits2 & SB_ALM2_GEOFENCE)) return SB_HLC_FENCE;
+    if (s->ll.sb_press) return SB_HLC_STANDBY;
+    if (s->ll.drift_ms && s->now_ms - s->ll.drift_ms >= HARB_LL_DRIFT_MS) return SB_HLC_DRIFT;
+    return 0u;
+}
+
+bool sb_harbour_grace(const sb_t *s)
+{
+    return s->ll.state == SB_LL_LOST && s->ll.harbour && s->cfg.harb.ll_grace_s > 0.0f;
+}
+
+float sb_harbour_grace_left_s(const sb_t *s)
+{
+    if (!sb_harbour_grace(s)) return 0.0f;
+    float left = (float)s->ll.limit_s + s->cfg.harb.ll_grace_s - (float)(s->now_ms - s->ll.heard_ms) * 0.001f;
+    return left > 0.0f ? left : 0.0f;
+}
+
 /* Every step, UNCREWED only: link lost -> STANDBY (idle + neutral first);
  * then ENGINE KILL near shore (or without fresh shore info) as soon as idle +
  * neutral, at open sea after lostlink_grace_s unless the link came back. The
@@ -1393,6 +1483,13 @@ static void lostlink_step(sb_t *s)
         s->ll.state = SB_LL_LOST;
         s->ll.lost_ms = s->now_ms;
         s->ll.losses++;
+        /* step HX2 (M0-6, MED-3): a loss that began while harbour autonomy ran - latched on the loss EDGE from the
+         * state at the START of this step (the STANDBY this forces can't clear it first) */
+        s->ll.harbour = s->harb_step0 == HARB_RUN || s->harb_step0 == HARB_SLOW || s->harb_step0 == HARB_HOLD;
+        s->ll.harb_cut = 0u;
+        s->ll.drift_ms = 0u;
+        s->ll.sb_press = false;
+        if (s->ll.harbour && s->cfg.harb.ll_grace_s > 0.0f) harb_log(s, 6u, 0u);
         alarm_on(s, SB_ALM_LINK_LOST);
         s->confirm.kind = CONF_NONE;
         emergency(s);
@@ -1403,6 +1500,7 @@ static void lostlink_step(sb_t *s)
     if (ok) {
         s->ll.state = SB_LL_OK;                         /* back in time: stays in STANDBY, the alarm stays */
         s->ll.returns++;
+        s->ll.harbour = false;                          /* (HX2: a later loss in plain STANDBY = the normal rule) */
         return;
     }
     emergency(s);
@@ -1410,8 +1508,33 @@ static void lostlink_step(sb_t *s)
     bool safe = s->mon_tripped || (thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear)));
     bool near = sb_near_shore(s);
     bool late = (float)(s->now_ms - s->ll.lost_ms) >= s->cfg.lostlink_grace_s * 1000.0f;
-    if (safe && (near || late)) {
+    bool kill = safe && (near || late);
+    if (s->ll.harbour && s->cfg.harb.ll_grace_s > 0.0f) {
+        /* step HX2 (CLAUDE.md B exception, docs/harbour_design.md 3.2): a loss that began in harbour autonomy - the
+         * kill waits the detection time in force + harb_ll_grace_s (0 = today's rule: until W147 the parameter
+         * can't be set), earlier only on a harb_ll_cut fault (immediate, once idle + neutral); never later than
+         * the open-sea rule (lostlink_grace_s) */
+        if (safe && sb_gps_ok(s) && s->gps.last.sog_kn > s->cfg.harb.ll_drift_kn) {
+            if (!s->ll.drift_ms) s->ll.drift_ms = s->now_ms ? s->now_ms : 1u;
+        } else {
+            s->ll.drift_ms = 0u;
+        }
+        uint8_t cut = sb_harb_ll_cut(s);
+        if (cut && !s->ll.harb_cut) s->ll.harb_cut = cut;
+        float full_s = (float)s->ll.limit_s + s->cfg.harb.ll_grace_s;
+        bool late_h = (float)(s->now_ms - s->ll.heard_ms) >= full_s * 1000.0f;
+        kill = safe && (s->ll.harb_cut != 0u || late_h || (!near && late));
+#if defined(HARB_MUTATE) && HARB_MUTATE == 5
+        kill = safe && (near || late);                  /* (storm mutation run only: the grace removed) */
+#endif
+        if (kill) {
+            if (!s->ll.harb_cut) s->ll.harb_grace_kills++;
+            harb_log(s, 7u, s->ll.harb_cut);
+        }
+    }
+    if (kill) {
         s->ll.state = SB_LL_KILLED;
+        s->ll.harbour = false;
         s->ll.near_at_kill = near;
         s->ll.kills++;
         alarm_on(s, SB_ALM_ENGINE_KILLED);
@@ -2630,7 +2753,9 @@ static void nervousness(sb_t *s, uint32_t dt_ms, bool roll_new, float roll_dps)
         if (still_rough) n->step_timer_ms += dt_ms;
         if (n->step_timer_ms >= c->nerv_step_ms) {
             n->step_timer_ms = 0u;
-            s->cruise.target_kn = fmaxf(c->nerv_min_kn, s->cruise.target_kn - c->nerv_step_kn);
+            /* (step HX2, found by storm I86: a slow-down never RAISES the target - a leg slower than nerv_min_kn
+             *  was lifted to nerv_min_kn in rough water) */
+            s->cruise.target_kn = fminf(s->cruise.target_kn, fmaxf(c->nerv_min_kn, s->cruise.target_kn - c->nerv_step_kn));
             n->ceiling_kn = s->cruise.target_kn;    /* remember: rough above this */
             n->ceiling_ms = c->nerv_memory_ms;
         }
@@ -2719,6 +2844,14 @@ static void auto_finish(sb_t *s)
 {
     s->autop.finished = true;
     s->autop.suspended = false;
+    if (sb_harbour_on(s) && s->autop.prog.final_action == (uint8_t)PROG_END_HOLD) {
+        /* step HX2: a harbour route ending with HOLD = the harbour HOLD (idle + neutral, a planned stop: normal
+         * closing rate) - never "hold the heading at approach speed" in a harbour basin */
+        alarm_on(s, SB_ALM_ARRIVED);
+        harb_hold(s, HARB_WHY_ARRIVED);
+        harb_log(s, 5u, 0u);
+        return;
+    }
     if (s->autop.prog.final_action == (uint8_t)PROG_END_HOLD) {
         auto_hold(s, s->cfg.approach_kn, SB_ALM_ARRIVED, false);
     } else {
@@ -2784,6 +2917,12 @@ static void nav_update(sb_t *s, float fix_dt)
             return;
         }
         a->wp++;
+        if (w->action == (uint8_t)WP_ACT_STOP && sb_harbour_on(s)) {
+            /* step HX2: a STOP waypoint of a harbour route = the harbour HOLD (planned); RESUME = the next leg */
+            s->chirp_ms = 600u;
+            harb_hold(s, HARB_WHY_ARRIVED);
+            return;
+        }
         if (w->action == (uint8_t)WP_ACT_STOP) {
             /* stop in neutral here (chirp, not an alarm); the next leg starts at resume */
             s->chirp_ms = 600u;
@@ -2907,6 +3046,286 @@ static void auto_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float ro
     cruise(s, dt, dt_ms, roll_new, roll);
 }
 
+/* --- harbour autonomy: entry, per-step validation, HOLD (step HX2; docs/harbour_design.md 2.2-2.5) ------------- */
+
+/* the stored program is a harbour route the gateway checked: flagged HARBOUR, >= 2 waypoints, loaded over the
+ * gateway link (via_gw: the gateway's route check 114 / 120 / 129) */
+static uint8_t harb_prog_why(const sb_t *s)
+{
+    const sb_auto_t *a = &s->autop;
+    if (!a->prog_ok || a->returning || !(a->prog.flags & PROG_F_HARBOUR) || a->prog.n < 2u) return HARB_WHY_NOT_HARBOUR;
+    if (!a->via_gw) return HARB_WHY_NOT_CHECKED;
+    return HARB_WHY_NONE;
+}
+
+/* the route leg k-1 -> k (k >= 1) as seen from the trusted GPS position now */
+static void harb_leg_at(const sb_t *s, uint8_t k, nav_leg_t *leg)
+{
+    const program_t *p = &s->autop.prog;
+    const prog_wp_t *w0 = &p->wp[k - 1u], *w1 = &p->wp[k];
+    nav_leg_init(leg, program_lat(w0), program_lon(w0), program_lat(w1), program_lon(w1));
+    nav_leg_update(leg, s->gps.last.lat_deg, s->gps.last.lon_deg);
+}
+
+/* Every entry condition (2.2), at the request AND again at the CONFIRM. corr_m / kn = the clamped station values.
+ * *why = HARB_WHY_ (NONE when it may start). */
+static sb_result_t harb_entry(const sb_t *s, uint8_t act, float corr_m, float kn, uint8_t *why)
+{
+    const sb_auto_t *a = &s->autop;
+    sb_mode_t m = sb_mode(s);
+    *why = HARB_WHY_FAULT;
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;                         /* FIRST TEST: no harbour autonomy */
+    if (m == MODE_TRAINING || m == MODE_BENCH || m == MODE_DP) return SB_ERR_WRONG_MODE;
+    if (m == MODE_STANDBY && s->stopping) return SB_ERR_WRONG_MODE;          /* (idle + neutral first) */
+    if ((m == MODE_REMOTE || m == MODE_MANEUVER) && s->profile != SB_PROFILE_UNCREWED) return SB_ERR_WRONG_MODE;
+    if (m == MODE_MANUAL && !joy_centered(&s->joy)) return SB_ERR_JOYSTICK;
+    if (act == HARB_ACT_START) {
+        if (sb_harbour_on(s)) return SB_ERR_WRONG_MODE;                     /* running / holding: RESUME */
+    } else {
+        bool can = a->prog_ok && !a->finished && !a->returning && a->wp >= 1u && a->wp < a->prog.n &&
+                   ((m == MODE_AUTO && sb_harbour_on(s) && s->harb.state == HARB_HOLD) ||
+                    (m != MODE_AUTO && a->suspended));
+        if (!can) {
+            *why = HARB_WHY_NOT_HARBOUR;
+            return a->prog_ok ? SB_ERR_WRONG_MODE : SB_ERR_NO_PROGRAM;
+        }
+    }
+    if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;                       /* a held stick must be able to take over */
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
+    if (!s->armed || s->mon_tripped || gear_fault(&s->gear) || s->ll.state != SB_LL_OK || s->estop_state == 2u ||
+        s->can.node_block || s->can.bus_bad || hal_outputs_forced())
+        return SB_ERR_PRECOND;
+    if (!a->prog_ok) {
+        *why = HARB_WHY_NOT_HARBOUR;
+        return SB_ERR_NO_PROGRAM;
+    }
+    uint8_t pw = harb_prog_why(s);
+    if (pw != HARB_WHY_NONE) {
+        *why = pw;
+        return pw == HARB_WHY_NOT_HARBOUR ? SB_ERR_BAD_PROGRAM : SB_ERR_PRECOND;
+    }
+    if (!sb_gps_ok(s) || !(s->dr.unc_m <= s->cfg.harb.unc_m + 1e-3f)) {
+        *why = HARB_WHY_GPS;                                                 /* no dead reckoning in a harbour */
+        return SB_ERR_PRECOND;
+    }
+    if (!sb_compass_ok(s)) {
+        *why = HARB_WHY_COMPASS;
+        return SB_ERR_PRECOND;
+    }
+    if (!harb_lease_ok(s) || (s->nav.hflags & HARB_HF_STOP) ||
+        (s->nav.cap_kn >= 0.0f && s->nav.cap_kn < SB_SHDG_STOP_KN)) {
+        *why = HARB_WHY_NO_LEASE;                                            /* the planner must be running */
+        return SB_ERR_PRECOND;
+    }
+    nav_leg_t leg;
+    harb_leg_at(s, act == HARB_ACT_START ? 1u : a->wp, &leg);
+    if (!(fabsf(leg.xte_m) <= corr_m) || leg.along_m < -corr_m || leg.along_m > leg.length_m + corr_m) {
+        *why = HARB_WHY_OUT_OF_CORR;
+        return SB_ERR_PRECOND;
+    }
+    if (!(s->gps.last.sog_kn <= kn + HARB_SOG_MARGIN_KN)) {
+        *why = HARB_WHY_TOO_FAST;
+        return SB_ERR_PRECOND;
+    }
+    *why = HARB_WHY_NONE;
+    return SB_OK;
+}
+
+bool sb_harbour_entry_ok(const sb_t *s)
+{
+    uint8_t why;
+    return harb_entry(s, HARB_ACT_START, s->cfg.harb.corr_m, s->cfg.harb.max_kn, &why) == SB_OK;
+}
+
+/* RUN on the route leg k-1 -> k (the CHECKED line: never a leg from where the boat is) */
+static void harb_begin(sb_t *s, uint8_t k, bool resume)
+{
+    sb_auto_t *a = &s->autop;
+    harb_t *h = &s->harb;
+    a->wp = k;
+    a->state = AUTO_RUN;
+    a->finished = false;
+    a->suspended = false;
+    a->in_dr = false;
+    a->arrival_uncertain = false;
+    a->crab_deg = 0.0f;
+    a->last_fix_ms = s->gps.last_ms;
+    a->next_dr_ms = s->now_ms;
+    harb_leg_at(s, k, &a->leg);
+    float sog = s->gps.last.sog_kn;
+    a->course_deg = nav_leg_course(&a->leg, fmaxf(s->cfg.lookahead_min_m, s->cfg.lookahead_s * sog * 0.514444f));
+    set_speed(s, fminf(a->prog.wp[k].speed_kn, s->cfg.cruise_max_kn));
+    h->state = HARB_RUN;
+    h->why = HARB_WHY_NONE;
+    h->corr_m = h->req_corr_m;
+    h->max_kn = h->req_kn;
+    h->tgt_deg = s->ap.heading;                     /* the slew starts from where the bow points */
+    h->cap_kn = 0.0f;
+    h->refuse_ms = 0u;
+    h->hold_safe = false;
+    h->hold_emerg = false;
+    h->back = false;
+    autopilot_set_target(&s->ap, s->ap.heading);
+    if (resume) h->resumes++; else h->starts++;
+    harb_log(s, resume ? 2u : 1u, 0u);
+}
+
+sb_result_t sb_harbour_cmd(sb_t *s, uint8_t station, uint8_t action, float corr_m, float kn)
+{
+    harb_t *h = &s->harb;
+    if (station == SB_HELM_NONE || station != s->helm) return SB_ERR_NOT_ALLOWED;
+    if (action == HARB_ACT_HOLD) {
+        bool pending = s->confirm.kind == CONF_HARBOUR;
+        if (pending) s->confirm.kind = CONF_NONE;
+        if (harb_running(s)) {
+            harb_hold(s, HARB_WHY_USER);
+            return SB_OK;
+        }
+        return (pending || sb_harbour_on(s)) ? SB_OK : SB_ERR_WRONG_MODE;
+    }
+    if (action != HARB_ACT_START && action != HARB_ACT_RESUME) return SB_ERR_BAD_VALUE;
+    float c, k;
+    if (!harb_clamp_request(&s->cfg.harb, corr_m, kn, &c, &k)) return SB_ERR_BAD_VALUE;
+    if (s->confirm.kind != CONF_NONE && s->confirm.kind != CONF_HARBOUR) return SB_ERR_REFUSED;   /* one at a time */
+    uint8_t why;
+    sb_result_t r = harb_entry(s, action, c, k, &why);
+    if (r != SB_OK) {
+        if (!sb_harbour_on(s)) h->why = why;        /* (HARBOUR_STAT: why it was refused) */
+        h->entry_refused++;
+        return r;
+    }
+    h->req_act = action;
+    h->req_station = station;
+    h->req_corr_m = c;
+    h->req_kn = k;
+    confirm_arm(s, CONF_HARBOUR);
+    return SB_OK;
+}
+
+/* the captain's CONFIRM of a START / RESUME: the conditions again, now; MODE_AUTO (if not already) + RUN */
+static bool harb_confirm(sb_t *s)
+{
+    harb_t *h = &s->harb;
+    sb_auto_t *a = &s->autop;
+    uint8_t why;
+    if (s->helm != h->req_station) return false;
+    if (harb_entry(s, h->req_act, h->req_corr_m, h->req_kn, &why) != SB_OK) {
+        if (!sb_harbour_on(s)) h->why = why;
+        h->entry_refused++;
+        return false;
+    }
+    bool resume = h->req_act == HARB_ACT_RESUME;
+    uint8_t k = resume ? a->wp : 1u;
+    if (sb_mode(s) != MODE_AUTO) {
+        uint8_t wp = a->wp;
+        bool done = a->finished;
+        uint32_t legs = a->legs_done;
+        a->wp = k;
+        a->finished = false;
+        if (!resume) a->legs_done = 0u;
+        if (!sb_request_mode(s, MODE_AUTO, WHY_CONFIRM)) {      /* refused now: everything as it was */
+            a->wp = wp;
+            a->finished = done;
+            a->legs_done = legs;
+            return false;
+        }
+    } else {
+        cruise_start(s);                            /* bumpless from the HOLD (idle) */
+        if (!resume) a->legs_done = 0u;
+    }
+    harb_begin(s, k, resume);
+    return true;
+}
+
+/* -> HOLD for why (the first reason of a HOLD is logged; a fault arriving later is judged every step) */
+static void harb_hold(sb_t *s, uint8_t why)
+{
+    harb_t *h = &s->harb;
+    if (h->state != HARB_HOLD) {
+        h->state = HARB_HOLD;
+        h->holds++;
+        h->hold_hdg = s->ap.heading;
+        h->hold_safe = false;
+        h->why = why;
+        harb_log(s, 3u, why);
+    }
+    if (!harb_why_planned(why)) alarm2_on(s, SB_ALM2_HARBOUR_STOP);        /* (USER / ARRIVED: no alarm) */
+    h->cap_kn = 0.0f;
+    h->refuse_ms = 0u;
+    h->back = false;
+    h->prop_used = false;
+    if (s->cruise.integ > 0.0f) s->cruise.integ = 0.0f;                    /* no wind-up */
+}
+
+/* Every step in MODE_AUTO BEFORE the normal AUTO flow: the leg from the trusted position, the validation of the
+ * planner's proposal (harbour.c), RUN / SLOW or -> HOLD, the slewed heading target, the cap. */
+static void harbour_pre(sb_t *s, float dt)
+{
+    harb_t *h = &s->harb;
+    sb_auto_t *a = &s->autop;
+    if (!sb_harbour_on(s)) return;
+    if (sb_gps_ok(s)) nav_leg_update(&a->leg, s->gps.last.lat_deg, s->gps.last.lon_deg);
+    h->xte_m = a->leg.xte_m;
+    harb_in_t in;
+    in.lease_ok = harb_lease_ok(s);
+    in.stop_flag = in.lease_ok && (s->nav.hflags & HARB_HF_STOP) != 0u;
+    in.cap_kn = in.lease_ok ? s->nav.cap_kn : -1.0f;
+    in.prop_deg = s->nav.heading;
+    in.seq = s->nav.seq;
+    in.gps_ok = sb_gps_ok(s);
+    in.unc_m = s->dr.unc_m;
+    in.compass_ok = sb_compass_ok(s);
+    in.xte_m = a->leg.xte_m;
+    in.track_deg = a->leg.track_deg;
+    in.own_deg = a->course_deg + a->crab_deg;       /* the AURIX's own line following (nav_update) */
+    in.leg_kn = fminf(s->cruise.target_kn, s->cruise.set_kn);    /* (never above the route's own speed) */
+    in.now_ms = s->now_ms;
+    harb_out_t o;
+    if (h->state == HARB_HOLD) {
+        /* the emergency is judged EVERY step from the conditions in force (round-2 LOW-1): a fault arriving
+         * during a USER / ARRIVED HOLD's normal ramp = idle at once */
+        harb_t tmp = *h;
+        harb_judge(&s->cfg.harb, &tmp, &in, &o);
+        h->hold_emerg = !harb_why_planned(h->why) || (o.hold_why != HARB_WHY_NONE && o.hold_why != HARB_WHY_HEADING);
+        return;
+    }
+    harb_judge(&s->cfg.harb, h, &in, &o);
+    if (o.hold_why != HARB_WHY_NONE) {
+        harb_hold(s, o.hold_why);
+        h->hold_emerg = true;
+        return;
+    }
+    if (o.back && !h->back) h->backs++;
+    h->back = o.back;
+    h->prop_used = o.prop_used;
+    h->cap_kn = o.kn;
+    if (s->sovr.active) h->tgt_deg = s->ap.heading;  /* 13q3: steering by hand - the slew starts from here again */
+    else h->tgt_deg = harb_slew(h->tgt_deg, o.want_deg, s->cfg.harb.rot_dps * dt);
+    h->state = (o.kn < in.leg_kn - 0.05f || (s->nav.hflags & HARB_HF_DEGRADED)) ? HARB_SLOW : HARB_RUN;
+}
+
+/* Every step in MODE_AUTO AFTER the normal AUTO flow: the HOLD's outputs - idle + neutral (why USER / ARRIVED at
+ * the normal closing rate, every other reason / a fault in force = emergency(): idle AT ONCE), the heading held
+ * until idle + neutral, then the steering holds (OD-10). The mode stays AUTO (the captain RESUMEs). */
+static void harbour_post(sb_t *s)
+{
+    harb_t *h = &s->harb;
+    if (!sb_harbour_on(s) || h->state != HARB_HOLD) return;
+    s->throttle_demand = 0.0f;
+    s->gear_demand = GEAR_N;
+    if (s->cruise.integ > 0.0f) s->cruise.integ = 0.0f;
+    if (h->hold_emerg) emergency(s);
+    bool safe = thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
+    h->hold_safe = safe;
+    if (s->sovr.active) return;                     /* 13q3: the shore stick steers by hand */
+    if (!safe) {
+        steer_pause(s, false, 0.0f);
+        autopilot_set_target(&s->ap, h->hold_hdg);  /* heading held until idle + neutral */
+    } else {
+        steer_pause(s, true, s->hdg_reverse ? s->hold_angle : s->ap.est_angle);   /* then the steering holds */
+    }
+}
+
 /* --- AUTO: PC requests ------------------------------------------------------------- */
 
 static sb_result_t auto_common_checks(const sb_t *s)
@@ -2966,6 +3385,7 @@ sb_result_t sb_auto_resume(sb_t *s)
     bool can = (sb_mode(s) == MODE_AUTO && a->state != AUTO_RUN && !a->finished) ||
                (sb_mode(s) != MODE_AUTO && sb_mode(s) != MODE_TRAINING && a->suspended && !a->finished);
     if (!can) return a->prog_ok ? SB_ERR_WRONG_MODE : SB_ERR_NO_PROGRAM;
+    if (sb_harbour_on(s)) return SB_ERR_WRONG_MODE;     /* step HX2: a harbour HOLD is left by HARBOUR RESUME only */
     sb_result_t r = auto_common_checks(s);
     if (r != SB_OK) return r;
     if (!auto_leg_ok(s)) return SB_ERR_PRECOND;
@@ -2975,6 +3395,10 @@ sb_result_t sb_auto_resume(sb_t *s)
 
 sb_result_t sb_auto_pause(sb_t *s)
 {
+    if (sb_harbour_on(s)) {             /* step HX2: AUTO PAUSE in harbour autonomy = its HOLD (why USER) */
+        if (harb_running(s)) harb_hold(s, HARB_WHY_USER);
+        return SB_OK;
+    }
     if (sb_mode(s) != MODE_AUTO || (s->autop.state != AUTO_RUN && s->autop.state != AUTO_HOLD))
         return SB_ERR_WRONG_MODE;
     s->autop.state = AUTO_PAUSED;
@@ -2985,6 +3409,7 @@ sb_result_t sb_auto_pause(sb_t *s)
 sb_result_t sb_auto_skip(sb_t *s)
 {
     sb_auto_t *a = &s->autop;
+    if (sb_harbour_on(s)) return SB_ERR_WRONG_MODE;     /* step HX2: never skip a checked harbour leg */
     if (!(sb_mode(s) == MODE_AUTO || a->suspended) || a->finished || !a->prog_ok) return SB_ERR_WRONG_MODE;
     a->wp++;
     if (a->wp >= a->prog.n) {
@@ -3042,6 +3467,7 @@ sb_result_t sb_auto_return(sb_t *s)
      * another mode, never by a copilot's AUTO RETURN */
     if (m == MODE_REMOTE || m == MODE_MANEUVER) return SB_ERR_WRONG_MODE;
     if (a->returning) return SB_ERR_WRONG_MODE;                      /* already on the way back */
+    if (sb_harbour_on(s)) return SB_ERR_WRONG_MODE;                  /* step HX2: not out of harbour autonomy */
     sb_result_t r = auto_common_checks(s);
     if (r != SB_OK) return r;
     uint8_t base;
@@ -3164,6 +3590,9 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         s->steer.log_what = 4u;
         s->steer.log_seq++;
         return true;
+    case CONF_HARBOUR:
+        /* step HX2: harbour autonomy START / RESUME - every entry condition again, now */
+        return harb_confirm(s);
     case CONF_CHECK:
         /* CONFIRM_ONLY: the answer is recorded (TELEM2 group R) - nothing else changes */
         s->conf_only.state = SB_CO_CONFIRMED;
@@ -3699,7 +4128,8 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (grab && sb_mode(s) != MODE_MANUAL && !s->cfg.first_test) {     /* FIRST TEST: no MANUAL */
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
             s->confirm.kind == CONF_AUTO_RETURN ||
-            s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER || s->confirm.kind == CONF_DP)
+            s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER || s->confirm.kind == CONF_DP ||
+            s->confirm.kind == CONF_HARBOUR)
             s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
     }
@@ -3710,6 +4140,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     /* STANDBY button: works in every mode, the PC can't override it */
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY)) {
         s->confirm.kind = CONF_NONE;
+        if (s->ll.state == SB_LL_LOST && s->ll.harbour) s->ll.sb_press = true;   /* HX2: a harb_ll_cut event */
         emergency(s);                   /* idle at once, also in STANDBY (a planned / generator stop) */
         plim_drop(&s->plim, PLIM_SRC_STANDBY_BUTTON, s->now_ms);
         gen_set(&s->gen, false);        /* generator auto OFF until re-enabled (a running one stops idle first) */
@@ -3891,6 +4322,7 @@ void sb_step(sb_t *s)
     s->last_ms = s->now_ms;
     s->now_ms = hal_millis();
     s->emerg = false;                   /* set again by every emergency of this step (emergency()) */
+    s->harb_step0 = sb_harbour_on(s) ? s->harb.state : HARB_OFF;   /* HX2: the lost-link latch reads THIS (MED-3) */
     uint32_t dt_ms = s->now_ms - s->last_ms;
     float dt = (float)dt_ms * 0.001f;
 
@@ -3992,8 +4424,11 @@ void sb_step(sb_t *s)
     if (sb_mode(s) == MODE_MANUAL) joystick_throttle(s);
     else if (sb_mode(s) == MODE_HDG_LOCK) hdg_lock_mode(s);
     else if (sb_mode(s) == MODE_AUTO) {
-        if (!s->sovr.lost) auto_mode(s, dt, dt_ms, roll_new, roll);   /* (13q3: lost = the heading held) */
+        harbour_pre(s, dt);                         /* step HX2: validate the planner's proposal / -> HOLD */
+        bool hold = sb_harbour_on(s) && s->harb.state == HARB_HOLD;
+        if (!s->sovr.lost && !hold) auto_mode(s, dt, dt_ms, roll_new, roll);   /* (13q3: lost = the heading held) */
         if (sb_shore_auto(s)) sovr_auto(s);         /* step 13q3: the lever ceiling / the stale-data stop */
+        harbour_post(s);                            /* step HX2: the HOLD = idle + neutral (also a HOLD from auto_mode) */
     }
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
     else if (remote_like(sb_mode(s))) remote_mode(s);
@@ -4027,6 +4462,7 @@ void sb_step(sb_t *s)
         sb_mode_t gm = sb_mode(s);
         bool kind_stop = s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
                          s->confirm.kind == CONF_AUTO_RETURN || s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER ||
+                         s->confirm.kind == CONF_HARBOUR ||
                          (s->confirm.kind == CONF_DP && s->dp_req.sub != DP_SPOT);      /* a DP trip / cruise start */
         /* DP: the generator may run while DP holds the boat (SPOT / JOG); CRUISE / TRIP move the boat */
         bool dp_hold = gm == MODE_DP && (s->dp.sub == DP_SPOT || s->dp.sub == DP_JOG);

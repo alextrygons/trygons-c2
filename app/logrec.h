@@ -96,6 +96,10 @@ typedef enum {
     EV_ACCEL = 31,      /* step FW-TR, once per complete 1 s window with samples (DISPLAY / LOG ONLY): the BNO085 linear
                            acceleration, milli-g, average (low i16) | peak = the largest magnitude, signed (high i16):
                            longitudinal (+ fwd), lateral (+ stbd), vertical (+ up), samples in that second */
+    EV_HARBOUR = 32,    /* step HX2, harbour autonomy: what (1 start, 2 resume, 3 HOLD, 4 off (why = the new mode),
+                           5 arrived, 6 lost-link harbour grace started, 7 the kill after it (why = the cut SB_HLC_, 0 =
+                           the full grace)) | why (HARB_WHY_) << 8 | state << 16, xte dm, speed target kn*10,
+                           holds | refusals << 16. Not named in the file header (no room): groundstation/tlg.py */
     EV_COUNT
 } log_event_t;
 

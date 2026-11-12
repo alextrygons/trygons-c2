@@ -445,6 +445,12 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "ar") == 0) { sb_return_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "co") == 0) { sb_confirm_only_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "ov") == 0) { sb_override_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "hb") == 0) {
+        if (argc > 2 && strcmp(argv[2], "--can") == 0) sb_set_can(true, false);
+        if (argc > 2 && strcmp(argv[2], "--bridge") == 0) sb_set_bridge(true);
+        sb_harbour_tests();
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "mv") == 0) { sb_maneuver_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "sy") == 0) { sb_stick_y_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "dr") == 0) { sb_dr_tests(); return 0; }

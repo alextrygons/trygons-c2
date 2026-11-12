@@ -5110,6 +5110,9 @@ typedef struct {
     int        accel;           /* FW-TR-r: ACCEL frames, and the bytes per kind (control frames vs ACCEL) */
     uint32_t   ctl_bytes, acc_bytes, last_kind;   /* last_kind: 1 TELEMETRY, 2 ACCEL (AX6: ACCEL always after it) */
     uint32_t   acc_before_tm;   /* an ACCEL frame that came right after TELEM2 (= before its TELEMETRY) */
+    int        harb_stat, harb_len;     /* step HX2: HARBOUR_STAT frames, the last one */
+    uint8_t    harb_last[32];
+    uint32_t   ev_harb, ev_harb_mask;   /* step HX2: log event 32 HARBOUR records, the what bits seen */
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -5122,6 +5125,11 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
         if (p->last_kind == 3u) p->acc_before_tm++;
         p->last_kind = 2u;
         return;
+    }
+    if (f->type == PROTO_T_HARBOUR_STAT) {
+        p->harb_stat++;
+        p->harb_len = f->len;
+        memcpy(p->harb_last, f->payload, f->len < sizeof p->harb_last ? f->len : sizeof p->harb_last);
     }
     if (f->type != PROTO_T_LOG_CHUNK) p->ctl_bytes += f->len + PROTO_OVERHEAD;
     if (f->type == PROTO_T_TELEMETRY) p->last_kind = 1u;
@@ -5182,6 +5190,9 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
                 p->ev_restart_a = (int32_t)(p->cur[10] | (p->cur[11] << 8) | (p->cur[12] << 16) | ((uint32_t)p->cur[13] << 24));
                 p->ev_restart_t = x->t;
                 if (p->ev_restart_a == (int32_t)ENG_LOG_RESET && !p->ev_reset_t) p->ev_reset_t = x->t;
+            } else if (L >= LOGR_HDR + 6u && p->cur[1] == LOGR_EVENT && (p->cur[8] | (p->cur[9] << 8)) == EV_HARBOUR) {
+                p->ev_harb++;                       /* step HX2: harbour autonomy events */
+                p->ev_harb_mask |= 1u << (p->cur[10] & 0x0Fu);
             } else if (L >= LOGR_HDR + 6u && p->cur[1] == LOGR_EVENT && (p->cur[8] | (p->cur[9] << 8)) == EV_SOVR) {
                 p->ev_sovr++;                       /* step 13q3b (LOW-4): the shore stick override events */
                 p->ev_sovr_mask |= 1u << (p->cur[10] & 0x0Fu);
@@ -19034,8 +19045,869 @@ void sb_override_tests(void)
     override_tests();
 }
 
+
+/* ------------------- step HX2: harbour autonomy (CLAUDE.md Z, docs/harbour_design.md 2 + 3; harbour.h) -- */
+
+/* the shore joystick stream + the gateway's harbour planner: a kind-4 proposal at 5 Hz while nav_on; the ENGINE
+ * KILL watch; the largest step of the heading target (the slew) */
+typedef struct {
+    rjsim_t  r;
+    bool     nav_on;
+    uint8_t  seq, kind, hflags, alarm;
+    float    hdg, cap;
+    uint16_t lease;
+    uint32_t next;
+    bool     killed;
+    uint32_t t_kill;
+    float    thr_at_kill;
+    uint16_t gear_at_kill;
+    float    prev_tgt, max_rate;    /* deg/s of ap.target_heading while harbour autonomy runs */
+    bool     have_tgt;
+    float    max_sog, max_dem;      /* (after hb_watch_reset) */
+} hbsim_t;
+
+static void hb_push(hbsim_t *h)
+{
+    uint8_t pl[13], fr[PROTO_MAX_FRAME];
+    proto_wr_t w;
+    proto_wr_init(&w, pl, sizeof pl);
+    h->seq++;
+    proto_wr_u8(&w, h->seq);
+    proto_wr_u8(&w, h->kind);
+    proto_wr_u8(&w, 0u);
+    proto_wr_u8(&w, h->alarm);
+    proto_wr_u16(&w, (uint16_t)lroundf(h->hdg * 100.0f));
+    proto_wr_u16(&w, h->cap < 0.0f ? 0xFFFFu : (uint16_t)lroundf(h->cap * 10.0f));
+    proto_wr_u16(&w, h->lease);
+    proto_wr_u8(&w, h->hflags);
+    proto_wr_u8(&w, 255u);
+    proto_wr_u8(&w, 0u);
+    size_t len = proto_encode(fr, PROTO_T_GW_NAVREQ, 0u, pl, (uint8_t)(h->kind == SB_NAV_HARBOUR ? 13u : 10u));
+    sim_hal_gw_rx_push(fr, (uint32_t)len);
+}
+
+static void hb_hook(sbsim_t *x, void *ctx)
+{
+    hbsim_t *h = (hbsim_t *)ctx;
+    rj_hook(x, &h->r);
+    if (h->nav_on && x->t >= h->next) {
+        h->next = x->t + 200u;
+        hb_push(h);
+    }
+    if (sim_hal_engine_killed() && !h->killed) {
+        h->killed = true;
+        h->t_kill = x->t;
+        h->thr_at_kill = sim_hal_throttle();
+        h->gear_at_kill = sim_hal_gear_pwm();
+    }
+    if (sb_harbour_on(&x->sb) && x->sb.harb.state != HARB_HOLD && !x->sb.sovr.active) {
+        float t = x->sb.ap.target_heading;
+        if (h->have_tgt) {
+            float r = fabsf(hdg_err(t, h->prev_tgt)) / (AP_PERIOD_MS * 0.001f);
+            if (r > h->max_rate) h->max_rate = r;
+        }
+        h->prev_tgt = t;
+        h->have_tgt = true;
+    } else {
+        h->have_tgt = false;
+    }
+    if (x->w.speed_kn > h->max_sog) h->max_sog = x->w.speed_kn;
+    if (x->sb.throttle_demand > h->max_dem) h->max_dem = x->sb.throttle_demand;
+}
+
+static void hb_run(sbsim_t *x, hbsim_t *h, uint32_t ms)
+{
+    sbsim_run(x, x->t + ms, hb_hook, h);
+}
+
+static void hb_watch_reset(hbsim_t *h)
+{
+    h->max_sog = 0.0f;
+    h->max_dem = 0.0f;
+    h->max_rate = 0.0f;
+    h->have_tgt = false;
+}
+
+/* the harbour route: east (track 090), waypoint 1 20 m behind the boat, then 220 m / 440 m on (radius 10 m) */
+static int hb_route(const sbsim_t *x, prog_wp_t *w, float kn, double north_off)
+{
+    w[0] = wp_world(x, x->w.north_m + north_off, x->w.east_m - 20.0, kn, 10.0f, WP_ACT_CONTINUE);
+    w[1] = wp_world(x, x->w.north_m + north_off, x->w.east_m + 200.0, kn, 10.0f, WP_ACT_CONTINUE);
+    w[2] = wp_world(x, x->w.north_m + north_off, x->w.east_m + 420.0, kn, 10.0f, WP_ACT_CONTINUE);
+    return 3;
+}
+
+/* upload a program over the gateway (station 2, the HELM): PROG_BEGIN with the flags byte, the waypoints, COMMIT */
+static uint8_t hb_upload(sbsim_t *x, hbsim_t *h, const prog_wp_t *w, int n, prog_end_t fin, uint8_t flags)
+{
+    uint8_t b[3] = { (uint8_t)n, (uint8_t)fin, flags };
+    uint8_t r = pi_cmd(x, &h->r.p, 2u, false, PROTO_T_PROG_BEGIN, b, 3u);
+    if (r != PROTO_R_OK) return r;
+    for (int i = 0; i < n; i++) {
+        uint8_t pl[18];
+        proto_wr_t wr;
+        proto_wr_init(&wr, pl, sizeof pl);
+        proto_wr_u8(&wr, (uint8_t)i);
+        proto_wr_i32(&wr, w[i].lat_e7);
+        proto_wr_i32(&wr, w[i].lon_e7);
+        proto_wr_f32(&wr, w[i].speed_kn);
+        proto_wr_f32(&wr, w[i].radius_m);
+        proto_wr_u8(&wr, w[i].action);
+        r = pi_cmd(x, &h->r.p, 2u, false, PROTO_T_PROG_WP, pl, 18u);
+        if (r != PROTO_R_OK) return r;
+    }
+    r = pi_cmd(x, &h->r.p, 2u, false, PROTO_T_PROG_COMMIT, NULL, 0u);
+    hb_run(x, h, 600u);                     /* (pi_cmd pumps only the gateway: the planner's lease back first) */
+    return r;
+}
+
+static uint8_t hb_cmd(sbsim_t *x, hbsim_t *h, uint8_t st, uint8_t act, float corr_m, float kn)
+{
+    uint8_t pl[3] = { act, (uint8_t)lroundf(corr_m * 10.0f), (uint8_t)lroundf(kn * 10.0f) };
+    int k0 = (int)x->sb.confirm.kind;
+    uint8_t r = pi_cmd(x, &h->r.p, st, false, PROTO_T_HARBOUR, pl, 3u);
+    if (getenv("HBDBG")) printf("hb_cmd act %u -> %u (confirm kind before %d, why %u, mode %s)%s", act, r, k0,
+                                x->sb.harb.why, mode_name(sb_mode(&x->sb)), "");
+    if (getenv("HBDBG")) putchar(10);
+    return r;
+}
+
+/* CONFIRM: CREWED the onboard joystick, UNCREWED the shore captain's */
+static bool hb_confirm(sbsim_t *x, hbsim_t *h)
+{
+    uint32_t before = x->sb.confirm.accepted;
+    if (x->sb.profile == SB_PROFILE_UNCREWED) {
+        h->r.conf = true;
+        hb_run(x, h, 150u);
+        h->r.conf = false;
+        hb_run(x, h, 100u);
+    } else {
+        sim_hal_joystick_confirm(true);
+        hb_run(x, h, 120u);
+        sim_hal_joystick_confirm(false);
+        hb_run(x, h, 100u);
+    }
+    return x->sb.confirm.accepted > before;
+}
+
+/* a boat in the basin (STANDBY), HELM station 2 (the shore stick streaming), power limit raised (CREWED), the
+ * harbour route uploaded over the gateway and the planner's proposal "the track, 5 kn" streaming at 5 Hz */
+static bool hb_boat(sbsim_t *x, hbsim_t *h, uint32_t seed, bool crewed, const sb_config_t *cfg, float kn)
+{
+    const uint8_t TAKE = 0u;
+    memset(h, 0, sizeof *h);
+    crew_init(x, &h->r, seed, crewed, cfg);
+    h->r.p.shore_on = true;
+    h->r.p.shore_flags = (uint8_t)(SB_SHORE_VALID | SB_SHORE_NEAR);   /* (a harbour: near the shore) */
+    h->r.p.shore_m = 30u;
+    pi_cmd(x, &h->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+    h->r.rj_on = true;
+    h->kind = SB_NAV_HARBOUR;
+    h->hdg = 90.0f;
+    h->cap = 5.0f;
+    h->lease = 1000u;
+    h->nav_on = true;
+    hb_run(x, h, 500u);
+    sb_alarm_ack(&x->sb);
+    if (crewed) power_full(x);
+    if (getenv("HBDBG")) printf("hb_boat %lu: confirm kind %d, plim %.0f, alarm %08lx %08lx\n", (unsigned long)seed,
+                                (int)x->sb.confirm.kind, x->sb.plim.fwd_pct, (unsigned long)x->sb.alarm_bits,
+                                (unsigned long)x->sb.alarm_bits2);
+    prog_wp_t w[3];
+    int n = hb_route(x, w, kn, 0.0);
+    return hb_upload(x, h, w, n, PROG_END_STOP, PROG_F_HARBOUR) == PROTO_R_OK && x->sb.autop.via_gw;
+}
+
+/* START (corridor 10 m, 5 kn) + the captain's CONFIRM: true when harbour autonomy runs */
+static bool hb_start(sbsim_t *x, hbsim_t *h)
+{
+    if (hb_cmd(x, h, 2u, HARB_ACT_START, 10.0f, 5.0f) != PROTO_R_OK) return false;
+    hb_confirm(x, h);
+    return sb_harbour_on(&x->sb) && x->sb.harb.state != HARB_HOLD;
+}
+
+/* the throttle commanded idle in the same step the HOLD began (an emergency), the gear N later, mode AUTO */
+static void hb_hold_watch(sbsim_t *x, hbsim_t *h, uint32_t max_ms, float *t_hold, float *t_idle, float *t_n,
+                          bool *idle_at_once)
+{
+    uint32_t t0 = x->t;
+    *t_hold = *t_idle = *t_n = -1.0f;
+    *idle_at_once = false;
+    while (x->t < t0 + max_ms) {
+        sbsim_run(x, x->t + AP_PERIOD_MS, hb_hook, h);
+        float t = (float)(x->t - t0) * 0.001f;
+        bool hold = sb_harbour_on(&x->sb) && x->sb.harb.state == HARB_HOLD;
+        if (hold && *t_hold < 0.0f) {
+            *t_hold = t;
+            *idle_at_once = x->sb.thr.stop && x->sb.throttle_rate <= 0.01f;
+        }
+        if (*t_hold >= 0.0f && *t_idle < 0.0f && sim_hal_throttle() <= 1.0f) *t_idle = t;
+        if (*t_hold >= 0.0f && *t_n < 0.0f && gear_is(&x->sb.gear, GEAR_N)) *t_n = t;
+        if (*t_n >= 0.0f && x->t > t0 + (uint32_t)(*t_n * 1000.0f) + 500u) break;
+    }
+}
+
+static void harbour_tests(void)
+{
+    char d[1500];
+    printf("\n=== HB step HX2: harbour autonomy - the AURIX side (CLAUDE.md Z) ===\n");
+    float travel = 0.0f;
+
+    /* HB1 entry refusals, one by one, each with its why (HARBOUR_STAT): no program, not flagged HARBOUR, loaded
+     * over USB (not gateway-checked), no fresh kind-4 lease, the planner's STOP, corridor below 4 m, not HELM,
+     * another CONFIRM pending, out of the leg's corridor, too fast, GPS lost, the stick held - then OK */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        const uint8_t TAKE = 0u;
+        memset(&h, 0, sizeof h);
+        crew_init(&x, &h.r, 2101u, true, NULL);
+        travel = x.sb.servo.cfg.travel_s;
+        pi_cmd(&x, &h.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        h.r.rj_on = true;
+        h.kind = SB_NAV_HARBOUR; h.hdg = 90.0f; h.cap = 5.0f; h.lease = 1000u;
+        hb_run(&x, &h, 300u);
+        sb_alarm_ack(&x.sb);
+        uint8_t r_noprog = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        prog_wp_t w[3];
+        int n = hb_route(&x, w, 4.0f, 0.0);
+        hb_upload(&x, &h, w, n, PROG_END_STOP, 0u);
+        uint8_t r_flag = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_flag = x.sb.harb.why;
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.flags = PROG_F_HARBOUR;
+        program_seal(&p);
+        (void)sb_program_set(&x.sb, &p, &err, &bad);                 /* the USB laptop's upload: not checked */
+        uint8_t r_usb = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_usb = x.sb.harb.why;
+        hb_upload(&x, &h, w, n, PROG_END_STOP, PROG_F_HARBOUR);
+        uint8_t r_lease = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);   /* the planner not running */
+        uint8_t y_lease = x.sb.harb.why;
+        h.nav_on = true; h.hflags = HARB_HF_STOP;
+        hb_run(&x, &h, 400u);
+        uint8_t r_stop = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_stop = x.sb.harb.why;
+        h.hflags = 0u;
+        hb_run(&x, &h, 400u);
+        uint8_t r_corr = hb_cmd(&x, &h, 2u, HARB_ACT_START, 3.0f, 5.0f);
+        uint8_t r_st3 = hb_cmd(&x, &h, 3u, HARB_ACT_START, 10.0f, 5.0f);
+        uint16_t code;
+        (void)sb_power_code(&x.sb, 0u, &code);
+        (void)sb_power_raise(&x.sb, 0u, code);                      /* a power raise waits for its CONFIRM */
+        uint8_t r_pend = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        sb_power_lower(&x.sb);
+        prog_wp_t wo[3];
+        hb_route(&x, wo, 4.0f, 30.0);                               /* the route 30 m north of the boat */
+        hb_upload(&x, &h, wo, 3, PROG_END_STOP, PROG_F_HARBOUR);
+        uint8_t r_out = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_out = x.sb.harb.why;
+        uint8_t r_out20 = hb_cmd(&x, &h, 2u, HARB_ACT_START, 25.0f, 5.0f);    /* clamped to harb_corr_m 10: still out */
+        hb_upload(&x, &h, w, n, PROG_END_STOP, PROG_F_HARBOUR);
+        x.w.speed_kn = 7.5f;                                        /* still moving fast */
+        hb_run(&x, &h, 1500u);
+        x.w.speed_kn = 7.5f;
+        uint8_t r_fast = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_fast = x.sb.harb.why;
+        x.w.speed_kn = 0.0f;
+        x.w.gps_fail = true;
+        hb_run(&x, &h, 4000u);
+        uint8_t r_gps = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        uint8_t y_gps = x.sb.harb.why;
+        x.w.gps_fail = false;
+        hb_run(&x, &h, 20000u);
+        sb_alarm_ack(&x.sb);
+        joy_set(0.6f, 0.0f, false, false);                          /* a held stick: MANUAL, then STANDBY (held) */
+        hb_run(&x, &h, 400u);
+        sim_hal_press(HAL_BTN_STANDBY);
+        hb_run(&x, &h, 300u);
+        uint8_t r_held = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        joy_set(0.0f, 0.0f, false, false);
+        hb_run(&x, &h, 1500u);
+        sb_alarm_ack(&x.sb);
+        uint32_t ref = x.sb.harb.entry_refused;
+        static sbsim_t y;                                           /* (the GPS / speed faults above: a fresh boat) */
+        static hbsim_t g;
+        hb_boat(&y, &g, 2100u, true, NULL, 4.0f);
+        uint8_t r_ok = hb_cmd(&y, &g, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        bool pend = y.sb.confirm.kind == CONF_HARBOUR && sb_mode(&y.sb) == MODE_STANDBY && !sb_harbour_on(&y.sb);
+        uint8_t y_ok = y.sb.harb.why;
+        snprintf(d, sizeof d, "no program %u (13); not flagged %u (12) why %u (10); USB upload %u (6) why %u (11); no "
+                 "lease %u (6) why %u (14); STOP flag %u (6) why %u (14); corridor 3 m %u (3); station 3 %u (21); a power "
+                 "raise pending %u (11); 30 m off the line %u (6) why %u (12), asking 25 m %u (6); 7.5 kn %u (6) why %u "
+                 "(13); GPS lost %u (6) why %u (6); stick held after STANDBY %u (8); OK %u (why %u), CONF_HARBOUR pending %s, "
+                 "refusals %lu, mode %s",
+                 r_noprog, r_flag, y_flag, r_usb, y_usb, r_lease, y_lease, r_stop, y_stop, r_corr, r_st3, r_pend, r_out,
+                 y_out, r_out20, r_fast, y_fast, r_gps, y_gps, r_held, r_ok, y_ok, pend ? "yes" : "NO", (unsigned long)ref,
+                 mode_name(sb_mode(&y.sb)));
+        test_report("HB1 harbour entry refusals one by one (every 2.2 condition + its why), then OK = CONFIRM pending",
+                    r_noprog == PROTO_R_NO_PROGRAM && r_flag == PROTO_R_BAD_PROGRAM && y_flag == HARB_WHY_NOT_HARBOUR &&
+                    r_usb == PROTO_R_PRECOND && y_usb == HARB_WHY_NOT_CHECKED && r_lease == PROTO_R_PRECOND &&
+                    y_lease == HARB_WHY_NO_LEASE && r_stop == PROTO_R_PRECOND && y_stop == HARB_WHY_NO_LEASE &&
+                    r_corr == PROTO_R_BAD_VALUE && r_st3 == PROTO_R_NOT_HELM && r_pend == PROTO_R_REFUSED &&
+                    r_out == PROTO_R_PRECOND && y_out == HARB_WHY_OUT_OF_CORR && r_out20 == PROTO_R_PRECOND &&
+                    r_fast == PROTO_R_PRECOND && y_fast == HARB_WHY_TOO_FAST && r_gps == PROTO_R_PRECOND &&
+                    y_gps == HARB_WHY_GPS && r_held == PROTO_R_NOT_CENTERED && r_ok == PROTO_R_OK && pend, d);
+    }
+
+    /* HB2 the captain's one YES = the CONFIRM: CREWED onboard, UNCREWED the shore captain's; MODE_AUTO + RUN on the
+     * route leg 1 -> 2 (never a leg from the boat); the conditions again at the CONFIRM (the lease gone meanwhile =
+     * refused, nothing starts); no CONFIRM = nothing after 10 s */
+    {
+        static sbsim_t x, y, z;
+        static hbsim_t h, g, q;
+        bool b1 = hb_boat(&x, &h, 2102u, true, NULL, 4.0f);
+        bool st = hb_start(&x, &h);
+        double lat0, lon0;
+        lat0 = program_lat(&x.sb.autop.prog.wp[0]);
+        lon0 = program_lon(&x.sb.autop.prog.wp[0]);
+        bool on_route = x.sb.autop.wp == 1u && fabs(x.sb.autop.leg.lat0 - lat0) < 1e-9 && fabs(x.sb.autop.leg.lon0 - lon0) < 1e-9;
+        hb_run(&x, &h, 30000u);
+        float sog = x.w.speed_kn;
+        bool moving = sb_harbour_on(&x.sb) && sog > 3.0f && gear_is(&x.sb.gear, GEAR_F);
+        bool b2 = hb_boat(&y, &g, 2103u, false, NULL, 4.0f);
+        bool st_u = hb_start(&y, &g);
+        bool unc = y.sb.profile == SB_PROFILE_UNCREWED;
+        bool b3 = hb_boat(&z, &q, 2104u, true, NULL, 4.0f);
+        uint8_t r_q = hb_cmd(&z, &q, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        q.nav_on = false;                                           /* the planner stops before the CONFIRM */
+        hb_run(&z, &q, 1500u);
+        bool cf = hb_confirm(&z, &q);
+        bool not_started = !sb_harbour_on(&z.sb) && sb_mode(&z.sb) == MODE_STANDBY && z.sb.harb.why == HARB_WHY_NO_LEASE;
+        q.nav_on = true;
+        hb_run(&z, &q, 500u);
+        uint8_t r_q2 = hb_cmd(&z, &q, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        hb_run(&z, &q, 11000u);                                     /* no CONFIRM */
+        bool late = z.sb.confirm.kind == CONF_NONE && sb_mode(&z.sb) == MODE_STANDBY;
+        snprintf(d, sizeof d, "CREWED %s: START + onboard CONFIRM -> harbour %s on the route leg 1->2 %s, after 30 s %.1f "
+                 "kn in F %s; UNCREWED %s (profile %s): START + shore CONFIRM %s; the lease gone before the CONFIRM (%u): "
+                 "CONFIRM accepted %s, nothing started %s (why %u); no CONFIRM in 10 s (%u): dropped %s",
+                 b1 ? "ok" : "NO", st ? "RUN" : "NO", on_route ? "yes" : "NO", sog, moving ? "yes" : "NO",
+                 b2 ? "ok" : "NO", unc ? "UNCREWED" : "?", st_u ? "RUN" : "NO", r_q, cf ? "YES" : "no",
+                 not_started ? "yes" : "NO", z.sb.harb.why, r_q2, late ? "yes" : "NO");
+        test_report("HB2 START + the captain's CONFIRM (CREWED onboard / UNCREWED shore) = AUTO + RUN on the checked "
+                    "route leg; conditions again at the CONFIRM; no CONFIRM = nothing",
+                    b1 && st && on_route && moving && b2 && st_u && unc && b3 && r_q == PROTO_R_OK && !cf && not_started &&
+                    r_q2 == PROTO_R_OK && late, d);
+    }
+
+    /* HB3 the speed: min(leg, the command's max, harb_max_kn (ceiling 8 kn), the proposal's cap) - only lowered;
+     * the parameter ceiling and the grace range 0..0 (W147) refused by PARAM_SET */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        bool b = hb_boat(&x, &h, 2105u, true, NULL, 7.0f);         /* legs at 7 kn */
+        bool st = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 9.9f) == PROTO_R_OK && hb_confirm(&x, &h);
+        float kmax = x.sb.harb.max_kn;
+        hb_run(&x, &h, 40000u);
+        hb_watch_reset(&h);
+        hb_run(&x, &h, 15000u);
+        float sog5 = h.max_sog, cap5 = x.sb.harb.cap_kn;
+        h.cap = 3.0f;                                               /* the planner slows */
+        hb_run(&x, &h, 25000u);
+        hb_watch_reset(&h);
+        hb_run(&x, &h, 10000u);
+        float sog3 = h.max_sog, cap3 = x.sb.harb.cap_kn;
+        bool slow = x.sb.harb.state == HARB_SLOW;
+        h.cap = 9.0f;                                               /* a cap above everything: no rise above 5 */
+        hb_run(&x, &h, 25000u);
+        hb_watch_reset(&h);
+        hb_run(&x, &h, 10000u);
+        float sog9 = h.max_sog, cap9 = x.sb.harb.cap_kn;
+        static sbsim_t y;
+        static hbsim_t g;
+        hb_boat(&y, &g, 2106u, true, NULL, 4.0f);
+        uint8_t pl[5];
+        float v = 9.0f;
+        pl[0] = (uint8_t)link_param_count();
+        for (uint8_t id = 0; id < link_param_count(); id++)
+            if (strcmp(link_param_info(id)->name, "harb_max_kn") == 0) pl[0] = id;
+        memcpy(&pl[1], &v, 4);
+        uint8_t r_p9 = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_PARAM_SET, pl, 5u);
+        v = 1.0f;
+        for (uint8_t id = 0; id < link_param_count(); id++)
+            if (strcmp(link_param_info(id)->name, "harb_llgrace_s") == 0) pl[0] = id;
+        memcpy(&pl[1], &v, 4);
+        uint8_t r_gr = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_PARAM_SET, pl, 5u);
+        snprintf(d, sizeof d, "boat %s, legs 7 kn, START asking 9.9 kn %s -> run max %.1f kn; settled: max SOG %.2f kn, "
+                 "target %.1f; proposal cap 3 -> max SOG %.2f, target %.1f, SLOW %s; cap 9 -> max SOG %.2f, target %.1f; "
+                 "PARAM harb_max_kn 9 %u (3), harb_llgrace_s 1 %u (3)",
+                 b ? "ok" : "NO", st ? "ok" : "NO", kmax, sog5, cap5, sog3, cap3, slow ? "yes" : "NO", sog9, cap9, r_p9, r_gr);
+        test_report("HB3 harbour speed = min(leg, command, harb_max_kn, the cap), never raised; the ceilings hold",
+                    b && st && fabsf(kmax - 5.0f) < 0.01f && sog5 <= 5.5f && sog5 > 4.0f && cap5 <= 5.001f &&
+                    sog3 <= 3.5f && cap3 <= 3.001f && slow && sog9 <= 5.5f && cap9 <= 5.001f &&
+                    r_p9 == PROTO_R_BAD_VALUE && r_gr == PROTO_R_BAD_VALUE, d);
+    }
+
+    /* HB4 the heading: a proposal within 60 deg of the track is steered; near the corridor edge one that grows |xte|
+     * is refused (the AURIX's own guidance), 2 s of refusals = HOLD why HEADING; a proposal 70 deg off = refused */
+    {
+        static sbsim_t x, y;
+        static hbsim_t h, g;
+        bool b = hb_boat(&x, &h, 2107u, true, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 20000u);
+        h.hdg = 120.0f;                                             /* track + 30: away to starboard (+ xte) */
+        float t_used = -1.0f, t_ref = -1.0f, t_hold = -1.0f, max_xte = 0.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 60000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, hb_hook, &h);
+            float t = (float)(x.t - t0) * 0.001f;
+            if (t_used < 0.0f && x.sb.harb.prop_used) t_used = t;
+            if (t_ref < 0.0f && x.sb.harb.refused > 0u) t_ref = t;
+            if (x.sb.harb.xte_m > max_xte) max_xte = x.sb.harb.xte_m;
+            if (getenv("HBDBG") && (x.t - t0) % 1000u < AP_PERIOD_MS)
+                printf("t %.1f xte %.1f hdg %.1f tgt %.1f course %.1f crab %.1f used %d ref %u back %d st %u why %u sog %.1f\n",
+                       t, x.sb.harb.xte_m, x.sb.ap.heading, x.sb.ap.target_heading, x.sb.autop.course_deg,
+                       x.sb.autop.crab_deg, x.sb.harb.prop_used, x.sb.harb.refused, x.sb.harb.back, x.sb.harb.state,
+                       x.sb.harb.why, x.w.speed_kn);
+            if (sb_harbour_on(&x.sb) && x.sb.harb.state == HARB_HOLD) { t_hold = t; break; }
+        }
+        bool why_h = x.sb.harb.why == HARB_WHY_HEADING;
+        bool alarm = (x.sb.alarm_bits2 & SB_ALM2_HARBOUR_STOP) != 0u;
+        bool b2 = hb_boat(&y, &g, 2108u, true, NULL, 4.0f) && hb_start(&y, &g);
+        hb_run(&y, &g, 15000u);
+        g.hdg = 160.0f;                                             /* track + 70 */
+        uint32_t t1 = y.t;
+        float t_hold2 = -1.0f;
+        bool used2 = false;
+        while (y.t < t1 + 8000u) {
+            sbsim_run(&y, y.t + AP_PERIOD_MS, hb_hook, &g);
+            if (y.t > t1 + 400u) used2 |= y.sb.harb.prop_used;     /* (the 090 proposal of 0.2 s ago) */
+            if (sb_harbour_on(&y.sb) && y.sb.harb.state == HARB_HOLD) { t_hold2 = (float)(y.t - t1) * 0.001f; break; }
+        }
+        snprintf(d, sizeof d, "boat %s; proposal 120 (track + 30): used at %.1f s, refused first at %.1f s (near the edge, "
+                 "growing), max xte %.1f m (corridor 10, margin 2), HOLD at %.1f s why HEADING %s (why %u: the boat turns slowly at 4 kn - "
+                 "HEADING or the CORRIDOR backstop), HARBOUR STOP alarm %s; "
+                 "proposal 160 (track + 70) %s: used %s, HOLD after %.2f s",
+                 b ? "ok" : "NO", t_used, t_ref, max_xte, t_hold, why_h ? "yes" : "NO", x.sb.harb.why, alarm ? "yes" : "NO",
+                 b2 ? "ok" : "NO", used2 ? "YES" : "never", t_hold2);
+        test_report("HB4 harbour heading: within 60 deg used; growing |xte| near the edge refused; 2 s refused = HOLD "
+                    "HEADING; 70 deg off never used",
+                    b && t_used >= 0.0f && t_used < 1.0f && t_ref > t_used && max_xte > 7.0f && max_xte < 18.1f &&
+                    (t_hold < 0.0f ? (sb_harbour_on(&x.sb) && x.sb.harb.refused > 1u)
+                                   : ((why_h || x.sb.harb.why == HARB_WHY_CORRIDOR) && alarm &&
+                                      fabsf(x.sb.harb.xte_m) <= 10.0f + x.cfg.harb.corr_stop_m + 3.0f)) &&
+                    b2 && !used2 && t_hold2 >= 1.9f && t_hold2 <= 2.6f, d);
+    }
+
+    /* HB5 the corridor: a cross current carries the boat off the line - beyond corr = the own guidance back at
+     * <= harb_back_kn; beyond corr + 5 m = HOLD why CORRIDOR, idle AT ONCE (an emergency), gear N, mode AUTO */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        bool b = hb_boat(&x, &h, 2109u, true, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        x.w.current_n = 1.6f;                                       /* 3.1 kn to the north = to port (- xte) */
+        float t_back = -1.0f, cap_back = 99.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 120000u && !(sb_harbour_on(&x.sb) && x.sb.harb.state == HARB_HOLD)) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, hb_hook, &h);
+            if (x.sb.harb.back) {
+                if (t_back < 0.0f) t_back = (float)(x.t - t0) * 0.001f;
+                if (x.sb.harb.cap_kn < cap_back || cap_back > 98.0f) cap_back = x.sb.harb.cap_kn;
+                if (x.sb.harb.cap_kn > x.cfg.harb.back_kn + 0.001f) cap_back = 99.0f;
+            }
+        }
+        float xte_hold = x.sb.harb.xte_m;
+        bool corr = x.sb.harb.why == HARB_WHY_CORRIDOR;
+        bool at_once = x.sb.thr.stop && x.sb.throttle_rate <= 0.01f;
+        float th, ti, tn;
+        bool ia;
+        hb_hold_watch(&x, &h, 15000u, &th, &ti, &tn, &ia);
+        bool n_auto = gear_is(&x.sb.gear, GEAR_N) && sb_mode(&x.sb) == MODE_AUTO && x.sb.harb.hold_safe;
+        x.w.current_n = 0.0f;
+        snprintf(d, sizeof d, "boat %s; current 1.6 m/s north: back to the line at %.1f s (cap %.1f <= %.1f kn); HOLD at "
+                 "xte %.1f m why CORRIDOR %s, idle commanded at once %s; gear N at %.1f s, mode %s, hold safe %s",
+                 b ? "ok" : "NO", t_back, cap_back, x.cfg.harb.back_kn, xte_hold, corr ? "yes" : "NO",
+                 at_once ? "yes" : "NO", tn, mode_name(sb_mode(&x.sb)), n_auto ? "yes" : "NO");
+        test_report("HB5 harbour corridor: beyond 10 m own guidance back at <= 2 kn; beyond 15 m HOLD CORRIDOR, idle at "
+                    "once, gear N, mode stays AUTO",
+                    b && t_back > 0.0f && cap_back <= x.cfg.harb.back_kn + 0.001f && corr && fabsf(xte_hold) > 15.0f &&
+                    fabsf(xte_hold) < 16.5f && at_once && tn >= 0.0f && tn < travel + 4.0f && n_auto, d);
+    }
+
+    /* HB6 the turn rate: a proposal jumping 090 <-> 140 every 4 s never moves the heading target faster than
+     * harb_rot_dps (8 deg/s) */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        bool b = hb_boat(&x, &h, 2110u, true, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 10000u);
+        hb_watch_reset(&h);
+        for (int i = 0; i < 8; i++) {
+            h.hdg = (i % 2) ? 90.0f : 140.0f;
+            hb_run(&x, &h, 4000u);
+        }
+        bool on = sb_harbour_on(&x.sb);
+        snprintf(d, sizeof d, "boat %s; proposals jumping 50 deg every 4 s: the heading target's fastest change %.2f deg/s "
+                 "(limit %.0f), still in harbour autonomy %s (state %u why %u)", b ? "ok" : "NO", h.max_rate,
+                 x.cfg.harb.rot_dps, on ? "yes" : "NO", x.sb.harb.state, x.sb.harb.why);
+        test_report("HB6 harbour turn rate: the heading target slewed at <= harb_rot_dps 8 deg/s (no step change)",
+                    b && h.max_rate > 4.0f && h.max_rate <= x.cfg.harb.rot_dps + 0.05f, d);
+    }
+
+    /* HB7 the lease: the requests stop = HOLD why LEASE within min(frame, harb_lease_ms) + 1 step, idle AT ONCE -
+     * never AUTO's "carry on at nav_lost_kn"; a 600 ms frame lease is shorter; a 3000 ms frame lease is cut to
+     * 1000; the planner's STOP = HOLD why PLANNER at once; a kind-2 request in harbour = another kind = HOLD */
+    {
+        static sbsim_t a, b, c, e;
+        static hbsim_t ha, hb, hc, he;
+        float t_l[3] = { -1.0f, -1.0f, -1.0f };
+        bool ia_l[3] = { false, false, false };
+        uint16_t leases[3] = { 1000u, 600u, 3000u };
+        sbsim_t *xs[3] = { &a, &b, &c };
+        hbsim_t *hs[3] = { &ha, &hb, &hc };
+        bool ok_all = true, lost_kn = false;
+        for (int i = 0; i < 3; i++) {
+            bool ok = hb_boat(xs[i], hs[i], 2111u + (uint32_t)i, true, NULL, 4.0f) && hb_start(xs[i], hs[i]);
+            hs[i]->lease = leases[i];
+            hb_run(xs[i], hs[i], 15000u);
+            ok_all &= ok && sb_harbour_on(&xs[i]->sb);
+            hs[i]->nav_on = false;
+            float th, ti, tn;
+            hb_hold_watch(xs[i], hs[i], 6000u, &th, &ti, &tn, &ia_l[i]);
+            t_l[i] = th;
+            ok_all &= xs[i]->sb.harb.why == HARB_WHY_LEASE;
+            lost_kn |= xs[i]->sb.nav.lost;
+        }
+        bool b4 = hb_boat(&e, &he, 2115u, true, NULL, 4.0f) && hb_start(&e, &he);
+        hb_run(&e, &he, 15000u);
+        he.hflags = HARB_HF_STOP;
+        float tp, tpi, tpn;
+        bool iap;
+        hb_hold_watch(&e, &he, 6000u, &tp, &tpi, &tpn, &iap);
+        bool planner = e.sb.harb.why == HARB_WHY_PLANNER;
+        /* a kind-2 request (another kind) in harbour */
+        static sbsim_t f;
+        static hbsim_t hf;
+        bool b5 = hb_boat(&f, &hf, 2116u, true, NULL, 4.0f) && hb_start(&f, &hf);
+        hb_run(&f, &hf, 15000u);
+        hf.kind = SB_NAV_HEADING;
+        float tk, tki, tkn;
+        bool iak;
+        hb_hold_watch(&f, &hf, 4000u, &tk, &tki, &tkn, &iak);
+        bool other = f.sb.harb.why == HARB_WHY_LEASE && sb_harbour_on(&f.sb);
+        snprintf(d, sizeof d, "boats %s; requests stop: HOLD LEASE after %.2f s (lease 1000), %.2f s (frame 600), %.2f s "
+                 "(frame 3000 -> 1000), idle at once %s/%s/%s, nav_lost_kn used %s; STOP flag %s: HOLD PLANNER after %.2f s "
+                 "%s idle at once %s; a kind-2 request %s: HOLD after %.2f s, why LEASE %s",
+                 ok_all ? "ok" : "NO", t_l[0], t_l[1], t_l[2], ia_l[0] ? "y" : "N", ia_l[1] ? "y" : "N",
+                 ia_l[2] ? "y" : "N", lost_kn ? "YES" : "no", b4 ? "ok" : "NO", tp, planner ? "yes" : "NO",
+                 iap ? "yes" : "NO", b5 ? "ok" : "NO", tk, other ? "yes" : "NO");
+        /* (the hold watch starts after the last push; that push was up to 200 ms before: +0.2 s) */
+        test_report("HB7 harbour lease: lapsed = HOLD within min(frame, 1000 ms) + 1 step, idle at once, never "
+                    "nav_lost_kn; STOP flag = HOLD PLANNER; another kind = HOLD",
+                    ok_all && t_l[0] >= 0.75f && t_l[0] <= 1.15f && t_l[1] >= 0.35f && t_l[1] <= 0.75f &&
+                    t_l[2] >= 0.75f && t_l[2] <= 1.15f && ia_l[0] && ia_l[1] && ia_l[2] && !lost_kn && b4 &&
+                    tp >= 0.0f && tp <= 0.45f && planner && iap && b5 && tk >= 0.0f && tk <= 0.45f && iak && other, d);
+    }
+
+    /* HB8 integrity: GPS lost = HOLD why GPS (no dead reckoning in a harbour), idle at once; the compass lost = the
+     * AUTO rule (STANDBY, gyro hold until idle + neutral) = harbour OFF */
+    {
+        static sbsim_t x, y;
+        static hbsim_t h, g;
+        bool b = hb_boat(&x, &h, 2117u, true, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        x.w.gps_fail = true;
+        float th, ti, tn;
+        bool ia;
+        hb_hold_watch(&x, &h, 8000u, &th, &ti, &tn, &ia);
+        bool gps = x.sb.harb.why == HARB_WHY_GPS && sb_mode(&x.sb) == MODE_AUTO;
+        bool dr = x.sb.autop.in_dr;
+        x.w.gps_fail = false;
+        bool b2 = hb_boat(&y, &g, 2118u, true, NULL, 4.0f) && hb_start(&y, &g);
+        hb_run(&y, &g, 15000u);
+        sim_hal_fail_heading(true);
+        hb_run(&y, &g, 3000u);
+        bool off = sb_mode(&y.sb) == MODE_STANDBY && !sb_harbour_on(&y.sb) && y.sb.harb.state == HARB_OFF;
+        sim_hal_fail_heading(false);
+        snprintf(d, sizeof d, "boat %s; GPS lost: HOLD after %.2f s why GPS %s, idle at once %s, gear N after %.1f s, AUTO "
+                 "in DR %s; compass lost (%s): STANDBY + harbour OFF %s",
+                 b ? "ok" : "NO", th, gps ? "yes" : "NO", ia ? "yes" : "NO", tn, dr ? "YES" : "never", b2 ? "ok" : "NO",
+                 off ? "yes" : "NO");
+        test_report("HB8 harbour GPS lost = HOLD GPS (never DR), idle at once; compass lost = STANDBY (harbour OFF)",
+                    b && th >= 0.0f && th <= 3.6f && gps && ia && tn >= 0.0f && !dr && b2 && off, d);
+    }
+
+    /* HB9 every exit: the STANDBY button / the e-stop / the CREWED joystick / a PC STANDBY end it in that step (idle
+     * at once); AUTO PAUSE / the station's HOLD = HOLD USER at the normal rate (not an emergency) - a fault during
+     * that ramp = idle at once; arrival: final STOP = STANDBY + DONE (normal rate), final HOLD = HOLD ARRIVED */
+    {
+        static sbsim_t x[4];
+        static hbsim_t h[4];
+        const char *nm[4] = { "STANDBY button", "e-stop", "joystick", "PC STANDBY" };
+        bool ex[4];
+        uint8_t st_after[4];
+        for (int i = 0; i < 4; i++) {
+            bool ok = hb_boat(&x[i], &h[i], 2120u + (uint32_t)i, true, NULL, 4.0f) && hb_start(&x[i], &h[i]);
+            hb_run(&x[i], &h[i], 15000u);
+            if (i == 0) sim_hal_press(HAL_BTN_STANDBY);
+            if (i == 1) sim_hal_set_estop(true, true);
+            if (i == 2) joy_set(0.7f, 0.0f, false, false);
+            if (i == 3) {
+                const uint8_t SBY = (uint8_t)MODE_STANDBY;
+                pi_cmd(&x[i], &h[i].r.p, 2u, false, PROTO_T_SET_MODE, &SBY, 1u);
+            }
+            hb_run(&x[i], &h[i], 400u);
+            sb_mode_t m = sb_mode(&x[i].sb);
+            ex[i] = ok && !sb_harbour_on(&x[i].sb) && x[i].sb.harb.state == HARB_OFF &&
+                    (i == 2 ? m == MODE_MANUAL : m == MODE_STANDBY);
+            st_after[i] = (uint8_t)m;
+            if (i == 1) sim_hal_set_estop(true, false);
+            if (i == 2) joy_set(0.0f, 0.0f, false, false);
+        }
+        static sbsim_t y;
+        static hbsim_t g;
+        bool b = hb_boat(&y, &g, 2125u, true, NULL, 4.0f) && hb_start(&y, &g);
+        hb_run(&y, &g, 20000u);
+        float thr0 = y.sb.thr.out_pct;
+        uint8_t r_p = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_AUTO_PAUSE, NULL, 0u);
+        bool user = sb_harbour_on(&y.sb) && y.sb.harb.state == HARB_HOLD && y.sb.harb.why == HARB_WHY_USER &&
+                    !y.sb.harb.hold_emerg && !y.sb.emerg;
+        float thr1 = y.sb.thr.out_pct;
+        g.nav_on = false;                                           /* a fault during the USER ramp */
+        hb_run(&y, &g, 1300u);
+        bool emerg = y.sb.harb.hold_emerg && y.sb.thr.out_pct <= 0.01f;
+        bool no_alarm_user = true;
+        static sbsim_t z, z2;
+        static hbsim_t q, q2;
+        bool bz = hb_boat(&z, &q, 2126u, true, NULL, 4.0f) && hb_start(&z, &q);
+        float t_arr = -1.0f;
+        uint32_t t0 = z.t;
+        while (z.t < t0 + 400000u) {
+            sbsim_run(&z, z.t + 100u, hb_hook, &q);
+            if (sb_mode(&z.sb) == MODE_STANDBY) { t_arr = (float)(z.t - t0) * 0.001f; break; }
+        }
+        bool done = z.sb.harb.state == HARB_DONE && z.sb.stop_planned && (z.sb.alarm_bits & SB_ALM_ARRIVED);
+        memset(&q2, 0, sizeof q2);
+        bool bz2 = hb_boat(&z2, &q2, 2127u, true, NULL, 4.0f);
+        prog_wp_t w[3];
+        hb_route(&z2, w, 4.0f, 0.0);
+        hb_upload(&z2, &q2, w, 3, PROG_END_HOLD, PROG_F_HARBOUR);
+        bz2 = bz2 && hb_start(&z2, &q2);
+        t0 = z2.t;
+        while (z2.t < t0 + 400000u && !(sb_harbour_on(&z2.sb) && z2.sb.harb.state == HARB_HOLD))
+            sbsim_run(&z2, z2.t + 100u, hb_hook, &q2);
+        bool arr_hold = sb_harbour_on(&z2.sb) && z2.sb.harb.why == HARB_WHY_ARRIVED && !z2.sb.harb.hold_emerg;
+        hb_run(&z2, &q2, 15000u);
+        bool arr_n = gear_is(&z2.sb.gear, GEAR_N) && sim_hal_throttle() <= 1.0f && sb_mode(&z2.sb) == MODE_AUTO;
+        snprintf(d, sizeof d, "%s -> %s %s; %s -> %s %s; %s -> %s %s; %s -> %s %s; PAUSE (%u) at %.1f %%: HOLD USER, normal "
+                 "rate %s (%.1f %% one step later); the lease lapses in the ramp: idle at once %s; final STOP: STANDBY after "
+                 "%.0f s, DONE + planned rate + ARRIVED %s; final HOLD %s: HOLD ARRIVED (normal rate) %s, idle + N in AUTO "
+                 "%s",
+                 nm[0], mode_name((sb_mode_t)st_after[0]), ex[0] ? "ok" : "NO", nm[1], mode_name((sb_mode_t)st_after[1]),
+                 ex[1] ? "ok" : "NO", nm[2], mode_name((sb_mode_t)st_after[2]), ex[2] ? "ok" : "NO", nm[3],
+                 mode_name((sb_mode_t)st_after[3]), ex[3] ? "ok" : "NO", r_p, thr0, user ? "yes" : "NO", thr1,
+                 emerg ? "yes" : "NO", t_arr, done ? "yes" : "NO", bz2 ? "ok" : "NO", arr_hold ? "yes" : "NO",
+                 arr_n ? "yes" : "NO");
+        (void)no_alarm_user;
+        test_report("HB9 harbour exits: STANDBY / e-stop / joystick / PC end it at once; PAUSE = HOLD USER (normal rate, "
+                    "a fault in the ramp = idle at once); arrival STOP = DONE, HOLD = HOLD ARRIVED",
+                    ex[0] && ex[1] && ex[2] && ex[3] && b && r_p == PROTO_R_OK && user && thr0 > 5.0f && emerg && bz &&
+                    t_arr > 0.0f && done && bz2 && arr_hold && arr_n, d);
+    }
+
+    /* HB10 RESUME: from a HOLD only by HARBOUR RESUME + the CONFIRM (AUTO RESUME / SKIP / RETURN refused), on the
+     * same CHECKED leg (the corridor never moves with the boat); refused while the lease is still missing */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        bool b = hb_boat(&x, &h, 2128u, true, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 20000u);
+        h.nav_on = false;
+        hb_run(&x, &h, 3000u);
+        bool hold = sb_harbour_on(&x.sb) && x.sb.harb.state == HARB_HOLD;
+        uint8_t wp = x.sb.autop.wp;
+        uint8_t r_ar = pi_cmd(&x, &h.r.p, 2u, false, PROTO_T_AUTO_RESUME, NULL, 0u);
+        uint8_t r_sk = pi_cmd(&x, &h.r.p, 2u, false, PROTO_T_AUTO_SKIP, NULL, 0u);
+        uint8_t r_rt = pi_cmd(&x, &h.r.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        uint8_t r_nl = hb_cmd(&x, &h, 2u, HARB_ACT_RESUME, 10.0f, 5.0f);
+        h.nav_on = true;
+        hb_run(&x, &h, 600u);
+        uint8_t r_rs = hb_cmd(&x, &h, 2u, HARB_ACT_RESUME, 10.0f, 5.0f);
+        bool cf = hb_confirm(&x, &h);
+        bool run = sb_harbour_on(&x.sb) && x.sb.harb.state != HARB_HOLD && x.sb.autop.wp == wp;
+        double l0 = program_lat(&x.sb.autop.prog.wp[wp >= 1u ? wp - 1u : 0u]);
+        bool same_leg = fabs(x.sb.autop.leg.lat0 - l0) < 1e-9;
+        hb_run(&x, &h, 20000u);
+        bool moving = x.w.speed_kn > 3.0f && sb_harbour_on(&x.sb);
+        snprintf(d, sizeof d, "boat %s; lease lapsed -> HOLD %s (leg to waypoint %u); AUTO RESUME %u (7), SKIP %u (7), "
+                 "RETURN %u (7); HARBOUR RESUME without a lease %u (6); with it %u + CONFIRM %s -> RUN on the same leg %s "
+                 "(from waypoint %u's position %s); 20 s later moving %s",
+                 b ? "ok" : "NO", hold ? "yes" : "NO", wp + 1u, r_ar, r_sk, r_rt, r_nl, r_rs, cf ? "ok" : "NO",
+                 run ? "yes" : "NO", wp, same_leg ? "yes" : "NO", moving ? "yes" : "NO");
+        test_report("HB10 harbour RESUME: only HARBOUR RESUME + CONFIRM leaves a HOLD, on the same checked leg",
+                    b && hold && r_ar == PROTO_R_WRONG_MODE && r_sk == PROTO_R_WRONG_MODE && r_rt == PROTO_R_WRONG_MODE &&
+                    r_nl == PROTO_R_PRECOND && r_rs == PROTO_R_OK && cf && run && same_leg && moving, d);
+    }
+
+    /* HB11 lost link in harbour (M0-6): (a) the SHIPPED grace 0 (W147) = today's section B rule: near shore the kill
+     * as soon as idle + neutral; with a grace of 60 s (the mechanism, set by the test - PARAM_SET can't): (b) no kill
+     * before 3 + 60 s, the kill by then (once idle + neutral); (c) every harb_ll_cut fault = the kill at once: the
+     * e-stop, GPS lost, GATEWAY LOST, the STANDBY button, a drift > 1 kn for 10 s at idle + neutral (a gear stuck in
+     * forward); (d) the link back in the grace = STANDBY, no kill, the latch cleared: a second loss in plain STANDBY
+     * = the near-shore kill at once; (e) CREWED: never a kill */
+    {
+        sb_config_t c;
+        sb_default_config(&c);
+        c.harb.ll_grace_s = 60.0f;
+        static sbsim_t x;
+        static hbsim_t h;
+        /* (a) the shipped default */
+        bool ba = hb_boat(&x, &h, 2130u, false, NULL, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        uint32_t t0 = x.t;
+        h.r.rj_on = false;
+        pi_station_left(2u);
+        hb_run(&x, &h, 15000u);
+        float ka = h.killed ? (float)(h.t_kill - t0) * 0.001f : -1.0f;
+        bool ka_safe = h.killed && h.thr_at_kill <= 1.0f && h.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        /* (b) the grace */
+        bool bb = hb_boat(&x, &h, 2131u, false, &c, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        t0 = x.t;
+        h.r.rj_on = false;
+        pi_station_left(2u);
+        hb_run(&x, &h, 3000u);
+        bool latched = x.sb.ll.harbour && x.sb.ll.state == SB_LL_LOST && sb_mode(&x.sb) == MODE_STANDBY &&
+                       sb_harbour_grace(&x.sb);
+        hb_run(&x, &h, 55000u);
+        bool none_58 = !h.killed;
+        float left = sb_harbour_grace_left_s(&x.sb);
+        hb_run(&x, &h, 8000u);
+        float kb = h.killed ? (float)(h.t_kill - t0) * 0.001f : -1.0f;
+        /* (c) the cut faults */
+        const char *cn[5] = { "e-stop", "GPS lost", "gateway lost", "STANDBY button", "drift 1.2 m/s" };
+        float kc[5];
+        uint8_t cut[5];
+        for (int i = 0; i < 5; i++) {
+            bool bc = hb_boat(&x, &h, 2132u + (uint32_t)i, false, &c, 4.0f) && hb_start(&x, &h);
+            hb_run(&x, &h, 15000u);
+            h.r.rj_on = false;
+            pi_station_left(2u);
+            hb_run(&x, &h, 12000u);                                 /* idle + neutral, in the grace */
+            bool before = h.killed;
+            uint32_t tf = x.t;
+            if (i == 0) sim_hal_set_estop(true, true);
+            if (i == 1) x.w.gps_fail = true;
+            if (i == 2) { h.r.p.pi_on = false; h.nav_on = false; }
+            if (i == 3) sim_hal_press(HAL_BTN_STANDBY);
+            if (i == 4) x.w.current_n = 1.2f;
+            hb_run(&x, &h, i == 4 ? 16000u : 9000u);
+            kc[i] = (bc && !before && h.killed) ? (float)(h.t_kill - tf) * 0.001f : -1.0f;
+            cut[i] = x.sb.ll.harb_cut;
+            sim_hal_set_estop(true, false);
+            x.w.gps_fail = false;
+            x.w.current_n = 0.0f;
+        }
+        /* (d) the link back in the grace, then a second loss in plain STANDBY */
+        const uint8_t TAKE = 0u;
+        bool bd = hb_boat(&x, &h, 2137u, false, &c, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        h.r.rj_on = false;
+        pi_station_left(2u);
+        hb_run(&x, &h, 20000u);
+        pi_cmd(&x, &h.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        h.r.rj_on = true;
+        hb_run(&x, &h, 2000u);
+        bool back = !h.killed && x.sb.ll.state == SB_LL_OK && !x.sb.ll.harbour && sb_mode(&x.sb) == MODE_STANDBY;
+        t0 = x.t;
+        h.r.rj_on = false;
+        pi_station_left(2u);
+        hb_run(&x, &h, 4000u);
+        float kd = h.killed ? (float)(h.t_kill - t0) * 0.001f : -1.0f;
+        /* (e) CREWED */
+        bool be = hb_boat(&x, &h, 2138u, true, &c, 4.0f) && hb_start(&x, &h);
+        hb_run(&x, &h, 15000u);
+        h.r.rj_on = false;
+        pi_station_left(2u);
+        hb_run(&x, &h, 70000u);
+        bool crewed = !h.killed && (sim_hal_engine_killed() == false);
+        crew_plug();
+        snprintf(d, sizeof d, "(a) grace 0 %s: kill after %.2f s at idle + N %s; (b) grace 60 %s: latched + STANDBY %s, no "
+                 "kill at 58 s %s (%.1f s left), kill at %.2f s; (c) %s %.2f s (cut %u), %s %.2f s (%u), %s %.2f s (%u), %s "
+                 "%.2f s (%u), %s %.2f s (%u); (d) %s link back in the grace: STANDBY, no kill, latch cleared %s; a second "
+                 "loss in STANDBY: kill after %.2f s; (e) CREWED %s: no kill in 70 s %s",
+                 ba ? "ok" : "NO", ka, ka_safe ? "yes" : "NO", bb ? "ok" : "NO", latched ? "yes" : "NO",
+                 none_58 ? "yes" : "NO", left, kb, cn[0], kc[0], cut[0], cn[1], kc[1], cut[1], cn[2], kc[2], cut[2], cn[3],
+                 kc[3], cut[3], cn[4], kc[4], cut[4], bd ? "ok" : "NO", back ? "yes" : "NO", kd, be ? "ok" : "NO",
+                 crewed ? "yes" : "NO");
+        test_report("HB11 harbour lost link: grace 0 = today's near-shore kill; grace 60 = no kill before 63 s, kill by "
+                    "then; every cut fault = at once; link back = STANDBY, latch cleared; CREWED never",
+                    ba && ka >= 0.0f && ka < travel + 4.0f && ka_safe && bb && latched && none_58 && left > 1.0f &&
+                    kb >= 62.9f && kb <= 63.6f && kc[0] >= 0.0f && kc[0] <= 0.5f && cut[0] == SB_HLC_ESTOP &&
+                    kc[1] >= 0.0f && kc[1] <= 4.0f && cut[1] == SB_HLC_GPS && kc[2] >= 0.0f && kc[2] <= 5.0f &&
+                    cut[2] == SB_HLC_GATEWAY && kc[3] >= 0.0f && kc[3] <= 0.5f && cut[3] == SB_HLC_STANDBY &&
+                    kc[4] >= 9.0f && kc[4] <= 16.0f && cut[4] == SB_HLC_DRIFT && bd && back && kd >= 0.0f && kd < 0.6f &&
+                    be && crewed, d);
+    }
+
+    /* HB12 what the AURIX publishes: HARBOUR_STAT 0x90 at 5 Hz on the gateway port (18 bytes: RUN, the route stored +
+     * checked, the lease fresh), the log event 32 HARBOUR (start / HOLD + why) and the log field "harb" */
+    {
+        static sbsim_t x;
+        static hbsim_t h;
+        bool b = hb_boat(&x, &h, 2140u, true, NULL, 4.0f);
+        sbsim_log_start(&x, "sd_hb12", 21u);
+        bool st = hb_start(&x, &h);
+        int n0 = h.r.p.harb_stat;
+        hb_run(&x, &h, 10000u);
+        int nst = h.r.p.harb_stat - n0;
+        uint8_t s_state = h.r.p.harb_last[0], s_flags = h.r.p.harb_last[13];
+        int len = h.r.p.harb_len;
+        h.hflags = HARB_HF_STOP;
+        hb_run(&x, &h, 3000u);
+        uint8_t s_state2 = h.r.p.harb_last[0], s_why2 = h.r.p.harb_last[1];
+        x.log_on = false;
+        uint32_t ev = h.r.p.ev_harb, evm = h.r.p.ev_harb_mask;
+        snprintf(d, sizeof d, "boat %s, START %s; 10 s: %d HARBOUR_STAT frames of %d B, state %u (1 RUN), flags 0x%02x "
+                 "(b0 route, b2 lease); STOP -> state %u why %u (3 HOLD / 3 PLANNER); log events 32: %lu, what mask 0x%lx "
+                 "(b1 start, b3 HOLD)",
+                 b ? "ok" : "NO", st ? "ok" : "NO", nst, len, s_state, s_flags, s_state2, s_why2, (unsigned long)ev,
+                 (unsigned long)evm);
+        test_report("HB12 HARBOUR_STAT 0x90 at 5 Hz (18 B), log event 32 HARBOUR, the log field harb",
+                    b && st && nst >= 45 && nst <= 55 && len == (int)PROTO_HARBOUR_STAT_LEN && s_state == HARB_RUN &&
+                    (s_flags & 5u) == 5u && s_state2 == HARB_HOLD && s_why2 == HARB_WHY_PLANNER && ev >= 2u &&
+                    (evm & 0x0Au) == 0x0Au, d);
+    }
+
+    /* HB13 FIRST TEST: refused (steering only); a kind-4 request outside harbour autonomy is inert (plain AUTO keeps
+     * its own speed, nothing applied, counted); the big boat has no harbour code path (Cpu0_Main.c BOAT_VARIANT_BIG
+     * runs autopilot.c only - tools/check.sh compiles it) */
+    {
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        static sbsim_t x, y;
+        static hbsim_t h, g;
+        bool b = hb_boat(&x, &h, 2141u, true, &c, 4.0f);
+        uint8_t r_ft = hb_cmd(&x, &h, 2u, HARB_ACT_START, 10.0f, 5.0f);
+        bool b2 = hb_boat(&y, &g, 2142u, true, NULL, 8.0f);
+        g.cap = 2.0f;                                               /* a kind-4 cap of 2 kn in PLAIN AUTO */
+        uint8_t r_as = pi_cmd(&y, &g.r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        hb_confirm(&y, &g);
+        bool plain = sb_mode(&y.sb) == MODE_AUTO && !sb_harbour_on(&y.sb);
+        hb_run(&y, &g, 60000u);
+        float sog = y.w.speed_kn;
+        uint32_t idle = y.sb.harb.k4_idle;
+        snprintf(d, sizeof d, "FIRST TEST boat %s: START %u (7); plain AUTO on the harbour route (%u, %s): 40 s later %.1f "
+                 "kn (the kind-4 cap 2 kn not applied), %lu kind-4 requests counted inert; big boat: no harbour code path",
+                 b ? "ok" : "NO", r_ft, r_as, plain ? "plain" : "NO", sog, (unsigned long)idle);
+        test_report("HB13 harbour refused in FIRST TEST; a kind-4 request is inert outside harbour autonomy",
+                    b && r_ft == PROTO_R_WRONG_MODE && b2 && r_as == PROTO_R_OK && plain && sog > 5.0f && idle > 100u, d);
+    }
+}
+
+void sb_harbour_tests(void)
+{
+    harbour_tests();
+}
+
 void sb_tests(void)
 {
+    harbour_tests();
     can_tests();
     can_servo_tests();
     steer_model_tests();

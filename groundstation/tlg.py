@@ -32,6 +32,7 @@ RELAY_WHAT = {1: "command", 2: "table", 3: "states", 4: "board"}
 EVENTS_NOT_IN_HEADER = {
     30: ("STEERMODEL", ["what|why<<8", "k_stored*100|k_use*100<<16", "play_stored*10000|play_use*10000<<16",
                         "thr_travel_s*100"]),
+    32: ("HARBOUR", ["what|why<<8|state<<16", "xte*10", "kn*10", "holds|refusals<<16"]),   # step HX2
 }
 
 

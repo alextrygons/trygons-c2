@@ -53,6 +53,7 @@ prog_error_t program_validate(const program_t *p, const prog_limits_t *lim, uint
     if (!program_checksum_ok(p)) return PROG_BAD_CHECKSUM;
     if (p->n == 0u || p->n > PROG_MAX_WP) return PROG_BAD_COUNT;
     if (p->final_action > (uint8_t)PROG_END_HOLD) return PROG_BAD_ACTION;
+    if (p->flags & (uint8_t)~PROG_F_ALL) return PROG_BAD_ACTION;       /* step HX2: an unknown flag */
     for (uint16_t i = 0; i < p->n; i++) {
         const prog_wp_t *w = &p->wp[i];
         *bad_index = (uint8_t)i;

@@ -157,6 +157,29 @@ Every step while harb.state is RUN / SLOW:
 HARBOUR_STAT frame (4.2), log event EV_HARBOUR (4.4), one log field "harb" (u8 state | why << 4;
 the black-box slot has 2 bytes left), monitor: nothing new (harbour only lowers the AUTO throttle).
 
+### 2.7 As built (HX2)
+- Every 2.2-2.6 item is in app/harbour.c (pure validation) + smallboat.c (entry, HOLD, exits, lost link) + link.c (frames,
+  parameters); CLAUDE.md Z "Step HX2 AS BUILT" lists the names. Choices made in HX2 (within the design):
+  - START begins on the route leg waypoint 1 -> 2 (the boat must be inside ITS corridor, along -corr .. length + corr);
+    RESUME on the active leg k-1 -> k - the corridor is always the CHECKED line, never a leg from where the boat is.
+    A harbour route needs >= 2 waypoints.
+  - The HARBOUR STOP alarm is raised for every HOLD reason except USER and the planned ARRIVED (a STOP waypoint / the
+    final HOLD; why 15, added): those close at rate_down, without the alarm; every other reason = emergency() each
+    step (also a fault arriving during a USER / ARRIVED ramp).
+  - A kind-4 request is stored but INERT outside harbour autonomy: it never counts as AUTO's / UNCREWED HDG LOCK's /
+    the shore override's lease (nav_fresh), never caps / steers (counted in harb.k4_idle).
+  - AUTO PAUSE in harbour = HOLD USER; AUTO RESUME / SKIP / RETURN are refused while it runs (only HARBOUR RESUME +
+    CONFIRM leaves a HOLD); a plain AUTO START of a harbour route = plain AUTO (the HA-fold case).
+  - The speed's leg input is min(cruise target, the leg's set speed). Storm I86 found that AUTO's rough-water
+    slow-down RAISED a target below nerv_min_kn (5 kn) to 5 kn; fixed for every AUTO (a slow-down never raises).
+  - Found in HB4 (sim): at 4 kn the boat turns slowly (~2 deg/s), so a proposal steered to the corridor edge can
+    overshoot the edge rule by several metres before the own guidance brings it back - the CORRIDOR HOLD (+5 m) is the
+    backstop that then acts. The planner (HX5) must not lead the boat to the edge; W146 may want a wider margin.
+  - The drift cut (SOG > 1 kn for 10 s at idle + neutral): a boat coasting down from 5 kn in neutral may stay above
+    1 kn for ~10 s (the sim's 6 s speed constant) - with the shipped grace 0 nothing changes; W147 should look at it.
+  - A cap below the in-gear idle speed (sim: 1.5 kn) can only bring the throttle to idle - the boat still makes its
+    idle speed in forward; only the STOP flag / a cap < 0.05 kn (HOLD) stops it. HX5's planner sends STOP for that.
+
 ## 3. Lost link in harbour (M0-6) - FIRMWARE, SERIAL review
 
 ### 3.1 Today (section B)

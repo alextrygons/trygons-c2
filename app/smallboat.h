@@ -65,6 +65,7 @@
 #include "battery.h"
 #include "gear.h"
 #include "generator.h"
+#include "harbour.h"
 #include "joybridge.h"
 #include "joymap.h"
 #include "slam.h"
@@ -144,6 +145,9 @@
                                              outside the geofence (navreq alarm SB_NAV_ALM_FENCE) while in UNCREWED HDG
                                              LOCK -> STANDBY (idle + neutral first). WARNING (an ordinary alarm) */
 /* advisories of the second word: never a mode change, never lower the power limit */
+#define SB_ALM2_HARBOUR_STOP      0x100u  /* HARBOUR STOP (step HX2, CLAUDE.md Z): harbour autonomy went to its HOLD (idle +
+                                             neutral) - the lease lapsed, the planner's STOP, the corridor, refused
+                                             headings, GPS / compass, the station's HOLD; an ORDINARY alarm (buzzer + SAVE) */
 #define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT | SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER)
 /* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
  * LOW BATTERY keeps its buzzer (step 4 design, test BV2) - TO CONFIRM by the owner. */
@@ -192,6 +196,8 @@
 #define SB_NAV_CAP       1u     /* AUTO: speed cap only */
 #define SB_NAV_HEADING   2u     /* AUTO: steer this heading (avoidance) + speed cap */
 #define SB_NAV_HDG_SET   3u     /* HDG LOCK: set the locked heading once (driver ACCEPTED) */
+#define SB_NAV_HARBOUR   4u     /* step HX2: harbour autonomy's planner proposal (heading + cap + hflags), applied ONLY while
+                                   harbour autonomy runs (sb_t.harb, harbour.h); else stored but inert (counted) */
 #define SB_NAV_ALM_FENCE 0x10u  /* navreq alarm bit 16 (step 13q2c): the boat is OUTSIDE the geofence (gateway) - in
                                    UNCREWED HDG LOCK the AURIX goes to STANDBY; elsewhere ignored */
 typedef struct {
@@ -209,6 +215,8 @@ typedef struct {
     uint32_t count, applied_hdg, losses, rejected;
     uint32_t too_far;                   /* AUTO headings ignored: too far off the leg track */
     uint8_t  too_far_seq;
+    /* step HX2: kind SB_NAV_HARBOUR appends u8 hflags (HARB_HF_) | u8 nearest_m (255 none) | u8 n_tracks */
+    uint8_t  hflags, nearest_m, n_tracks;
 } sb_navreq_t;
 
 /* HELM: the one station whose commands are accepted (section B). */
@@ -399,6 +407,8 @@ typedef struct {
     /* DP (section P): CRUISE / TRIP speed limit, entry only slower than dp_max_entry_kn (TO CONFIRM) */
     float    dp_max_kn;                 /* 3 kn */
     float    dp_max_entry_kn;           /* 2 kn */
+    /* harbour autonomy (step HX2, harbour.h): parameters harb_* (PARAM_SET, STANDBY only) */
+    harb_cfg_t harb;
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -637,7 +647,8 @@ typedef enum {
     CONF_DP,                /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
     CONF_THR_TRAVEL,        /* a SHORTER thr_travel_s (owner-signed value, OD-4; STANDBY, never a mode change) */
     CONF_AUTO_RETURN,       /* AUTO RETURN: the program backwards from the current leg to waypoint 1 */
-    CONF_CHECK              /* CONFIRM_ONLY (academy practical test, step 21): changes NOTHING on the boat */
+    CONF_CHECK,             /* CONFIRM_ONLY (academy practical test, step 21): changes NOTHING on the boat */
+    CONF_HARBOUR            /* step HX2: harbour autonomy START / RESUME (sb_t.harb.req_act) - the captain's one YES */
 } confirm_kind_t;
 
 typedef struct {
@@ -744,6 +755,8 @@ typedef struct {
     engine_t    eng;           /* remote restart + hold-to-crank (section N, engine.c) */
     thruster_t  thrust;        /* DP thrusters (section P, thruster.c): settings from the boat file, heat budget */
     dp_t        dp;            /* DP control (section P, dp.c): SPOT / JOG / CRUISE / TRIP; DP_OFF outside MODE_DP */
+    harb_t      harb;          /* harbour autonomy (step HX2, harbour.h): a SUB-STATE of MODE_AUTO */
+    uint8_t     harb_step0;    /* harb.state at the START of this step (the lost-link latch reads it, 3.2 / MED-3) */
     struct {                   /* DroneCAN bus + node table (CLAUDE.md T, step 11d; hal_can_*) */
         bool     fitted;       /* hal_can_bus() answers (false = no CAN: nothing below matters) */
         hal_can_bus_t bus;
@@ -817,6 +830,15 @@ typedef struct {
         bool     gave_up;      /* HELM released to nobody by its holder: lost at once (no waiting) */
         uint8_t  limit_s;      /* the detection time in force this step (3 near shore / no report) */
         uint32_t lt_sets;      /* LINK TIME commands taken */
+        /* step HX2 (CLAUDE.md Z M0-6, docs/harbour_design.md 3): a loss that began while harbour autonomy ran
+         * (latched on the loss edge from the step's starting state; cleared when the link returns, at the kill,
+         * at every reset). The kill then waits detection + harb_ll_grace_s (0 = today's rule, until W147), earlier
+         * only on a harb_ll_cut fault (sb_harb_ll_cut). */
+        bool     harbour;
+        uint8_t  harb_cut;     /* the first cut fault seen during the grace (SB_HLC_, 0 none) */
+        uint32_t drift_ms;     /* trusted SOG > harb_ll_drift_kn at idle + neutral since (0 = not) */
+        bool     sb_press;     /* the STANDBY button pressed during the grace */
+        uint32_t harb_grace_kills;  /* kills after the full grace (info / tests) */
     } ll;
     struct {                   /* distance to the shore from the gateway (GW_SHORE) */
         uint32_t rx_ms;        /* 0 = never */
@@ -1147,6 +1169,41 @@ sb_result_t sb_thr_travel_set(sb_t *s, float seconds);
  * pending CONFIRM request (SB_ERR_REFUSED; a CONFIRM_ONLY pending is replaced by the new token), the joystick must be
  * able to confirm (SB_ERR_JOY_NOT_READY). Entering STANDBY / another request cancels it like every request. */
 sb_result_t sb_confirm_only(sb_t *s, uint8_t station, uint16_t token);
+
+/* Harbour autonomy (step HX2, CLAUDE.md Z, docs/harbour_design.md 2 + 3; harbour.h): PROTO_T_HARBOUR from the HELM
+ * station (station == helm, checked here too). action HARB_ACT_START / RESUME (corr_m = the station's corridor
+ * half-width, clamped to 4 m .. harb_corr_m - below 4 m = SB_ERR_BAD_VALUE; kn = its speed, min(kn, harb_max_kn,
+ * HARB_MAX_KN_CEIL)): every entry condition (2.2) at the request AND again at the CONFIRM - not FIRST TEST / BENCH /
+ * TRAINING / DP, the AUTO START modes (STANDBY not stopping, HDG LOCK, AUTO, MANUAL centred, REMOTE / MANEUVER),
+ * the stick centred, a CONFIRM possible, no other CONFIRM pending, the stored program flagged HARBOUR (>= 2
+ * waypoints) AND loaded + checked over the gateway (via_gw), GPS trusted with unc <= harb_unc_m, compass, armed,
+ * no gear / CAN fault, no lost link / kill, a FRESH kind-4 request without STOP, the boat inside the leg's corridor
+ * (START: waypoint 1 -> 2; RESUME: the active leg), SOG <= max + 0.5 kn - then the CONFIRM (CREWED onboard,
+ * UNCREWED the shore captain's) within confirm_ms (CONF_HARBOUR) = MODE_AUTO + harb RUN. A refusal says why in
+ * harb.why (HARB_WHY_, HARBOUR_STAT). HARB_ACT_HOLD = HOLD (why USER, the normal closing rate) while it runs (a
+ * pending CONF_HARBOUR is cancelled); free for every crew station on the gateway (like AUTO PAUSE). */
+sb_result_t sb_harbour_cmd(sb_t *s, uint8_t station, uint8_t action, float corr_m, float kn);
+/* the last navigation request is a harbour proposal fresher than min(its lease, harb_lease_ms) */
+bool sb_harbour_lease_ok(const sb_t *s);
+/* harbour autonomy runs (MODE_AUTO + harb RUN / SLOW / HOLD) */
+bool sb_harbour_on(const sb_t *s);
+/* a START would pass its checks now (HARBOUR_STAT flags b1; the station's own corridor / speed = the parameters) */
+bool sb_harbour_entry_ok(const sb_t *s);
+/* the lost-link harbour grace is running (HARBOUR_STAT flags b4) and its time left (s) */
+bool  sb_harbour_grace(const sb_t *s);
+float sb_harbour_grace_left_s(const sb_t *s);
+/* the first harb_ll_cut fault present now (SB_HLC_, 0 = none): during the harbour grace the kill is immediate */
+#define SB_HLC_ESTOP    1u
+#define SB_HLC_TRIP     2u
+#define SB_HLC_CAN      3u
+#define SB_HLC_HEADING  4u      /* compass AND gyro lost */
+#define SB_HLC_GPS      5u      /* GPS lost / suspect */
+#define SB_HLC_GATEWAY  6u      /* GATEWAY LOST */
+#define SB_HLC_GEAR     7u      /* an engine / gear fault */
+#define SB_HLC_FENCE    8u      /* a geofence breach (the gateway's navreq alarm / the alarm in force) */
+#define SB_HLC_STANDBY  9u      /* the STANDBY button pressed on board */
+#define SB_HLC_DRIFT    10u     /* trusted SOG > harb_ll_drift_kn for HARB_LL_DRIFT_MS at idle + neutral (a stuck gear) */
+uint8_t sb_harb_ll_cut(const sb_t *s);
 
 /* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
 bool sb_restart_ready(const sb_t *s);

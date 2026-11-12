@@ -131,13 +131,19 @@ def main():
     lines += ["%s I63 WB clause: %d CREWED MANEUVER entries by the CONFIRM checked%s" % (
         "FAIL" if mnvc_fail else ("NOTE" if mnvc == 0 else "PASS"), mnvc,
         " - NEVER REACHED, the WB clause not tested" if mnvc == 0 else "")]
+    # step HX2: a run of >= 200 episodes must reach every harbour invariant of the AURIX side (I85 / I86 / I89 / I91 /
+    # I92) - else they passed without testing anything
+    hx2 = {i: inv.get(i, [0])[0] for i in (85, 86, 89, 91, 92)}
+    hx2_fail = run[0] >= 200 and min(hx2.values()) == 0
+    lines += ["%s HX2 harbour invariants reached: %s" % ("FAIL" if hx2_fail else "PASS",
+                                                        ", ".join("I%d %d checks" % kv for kv in sorted(hx2.items())))]
     if fails_text:
         lines += ["", "Failing seeds (minimal reproductions):"] + fails_text[:200]
     text = "\n".join(lines)
     with open(os.path.join(OUT, "storm_report.txt"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
     print(text)
-    return 0 if (bad == 0 and selftest_ok and not i59_fail and not mnvc_fail) else 1
+    return 0 if (bad == 0 and selftest_ok and not i59_fail and not mnvc_fail and not hx2_fail) else 1
 
 
 if __name__ == "__main__":

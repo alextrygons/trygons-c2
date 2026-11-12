@@ -107,6 +107,12 @@
                                        * that CHANGES NOTHING on the boat (smallboat.h sb_confirm_only; the answer =
                                        * TELEM2 group R). HELM station; CREWED only; never FIRST TEST; never replaces
                                        * another pending CONFIRM request */
+#define PROTO_T_HARBOUR       0x3Cu   /* step HX2 (CLAUDE.md Z): u8 action (harbour.h HARB_ACT_: 0 START, 1 RESUME, 2 HOLD) |
+                                       * u8 corridor half-width in 0.1 m (clamped to 4 m .. harb_corr_m; < 4 m = BAD_VALUE) |
+                                       * u8 max speed kn*10 (min(this, harb_max_kn, 8 kn)). HELM station; START / RESUME
+                                       * then the joystick CONFIRM within 10 s (CREWED onboard, UNCREWED shore) = the
+                                       * captain's one YES (a copilot's needs the captain's ACCEPT on the gateway); HOLD
+                                       * free. Never FIRST TEST. Refusal reasons in HARBOUR_STAT why. */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
@@ -135,6 +141,9 @@
 #define PROTO_T_CAN_NODES     0x8Eu   /* USB only, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table (link.c can_nodes) */
 #define PROTO_T_ACCEL         0x8Fu   /* step FW-TR, both ports, with every telemetry: 3-axis acceleration (link.c accel_frame), DISPLAY / LOG ONLY */
 #define PROTO_ACCEL_LEN       28u
+#define PROTO_T_HARBOUR_STAT  0x90u   /* step HX2, both ports (the gateway port only with room), 5 Hz: harbour autonomy
+                                       * (link.c harbour_stat; groundstation/proto.py decode_harbour_stat) */
+#define PROTO_HARBOUR_STAT_LEN 18u
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u
