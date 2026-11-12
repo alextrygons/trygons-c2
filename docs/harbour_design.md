@@ -80,15 +80,18 @@ clamped by the parameters). harb.ll (lost link began in harbour, 3).
 
 ### 2.2 Entry (captain's YES) - PROTO_T_HARBOUR (station command, HELM only) + CONF_HARBOUR
 
-- Station command PROTO_T_HARBOUR {u8 action 0 START / 1 RESUME / 2 HOLD, u8 corridor_dm/5, u8 max_kn
-  x10} through GW_CMD (the frame number: HX2 picks the next free one, proposal 0x3C, checked against
-  link.c's gateway-only range). A copilot's START / RESUME = the captain's ACCEPT (proto.DRIVING_CMDS);
+- Station command PROTO_T_HARBOUR {u8 action 0 START / 1 RESUME / 2 HOLD, u8 corridor in 0.1 m units
+  (0..255 = 0..25.5 m), u8 max_kn x10} through GW_CMD (proposal 0x3C: free - link.c dispatches the
+  gateway-only frames by their exact type, no range check). The AURIX CLAMPS both station values:
+  harb.corr_m = min(frame, harb_corr_m), harb.max_kn = min(frame, harb_max_kn, HARB_MAX_KN_CEIL)
+  (review LOW-6; tested in HB3). A copilot's START / RESUME = the captain's ACCEPT (proto.DRIVING_CMDS);
   HOLD is free for every crew station (like AUTO PAUSE).
 - START / RESUME -> a pending CONF_HARBOUR (new confirm kind) answered within confirm_ms 10 s by the
   CONFIRM (CREWED onboard joystick; UNCREWED the shore captain's joystick, GW_RJOY b2), same rules as
   every CONFIRM (stick centred, armed, only for a pending request; refused while another is pending).
 - Conditions checked at the request AND at the CONFIRM (any missing = NACK with the reason, nothing
-  changes): not FIRST TEST, not BENCH, not the big boat; mode STANDBY (not stopping) / HDG LOCK /
+  changes): HARBOUR START and RESUME are added BY NAME to the "held stick" refusal list (joy.off_centre,
+  also while ignored after STANDBY: PC NACK 8 "centre the joystick", chirp - review LOW-1); not FIRST TEST, not BENCH, not the big boat; mode STANDBY (not stopping) / HDG LOCK /
   AUTO / MANUAL with the stick centred / UNCREWED REMOTE or MANEUVER (the AUTO START set + the 13q2
   rules); the stored program is flagged HARBOUR (prog flags b0, set by the gateway's harbour route
   upload) AND loaded over the gateway link + checked by it (autop.via_gw, the DP TRIP rule 121);
@@ -102,7 +105,8 @@ clamped by the parameters). harb.ll (lost link began in harbour, 3).
 ### 2.3 Validation of each harbour proposal (gw_navreq kind SB_NAV_HARBOUR = 4)
 
 Every step while harb.state is RUN / SLOW:
-1. Lease: a navreq of kind HARBOUR fresher than its lease (harbour lease 1000 ms default, frame
+1. Lease: a navreq of kind HARBOUR fresher than the EFFECTIVE lease = min(the frame's lease,
+   harb_lease_ms 1000) - the gateway can only shorten it, never lengthen it (review MED-2; frame
    limits 500..3000 ms for this kind). Lapsed / another kind / never = HOLD (why LEASE). NOT
    "carry on at nav_lost_kn" (that stays AUTO's rule outside harbour).
 2. STOP flag (hflags b0) or cap < SB_SHDG_STOP_KN = HOLD (why PLANNER) - the planner's "unsure".
@@ -133,8 +137,11 @@ Every step while harb.state is RUN / SLOW:
 
 ### 2.5 HOLD (M0-4: "stop and hold position")
 
-- HX2a (required): throttle idle at the normal rate_down (a fault-caused HOLD = idle AT ONCE: sb
-  emerg), then NEUTRAL by the gear state machine, heading held (gyro if no compass) until idle +
+- HX2a (required): throttle idle. Which rate (review MED-1, explicit): ONLY why USER (the station's
+  HOLD / AUTO PAUSE) and the planned arrival use the normal rate_down; EVERY other HOLD reason
+  (LEASE, PLANNER = the gateway's STOP incl. U5 / U7 an object too close, CORRIDOR, HEADING, GPS,
+  COMPASS, LINK, FAULT) = emergency() = idle AT ONCE with no rate limit (sb emerg; storm I47 counts
+  these harbour HOLD reasons among its emergency conditions). Then NEUTRAL by the gear state machine, heading held (gyro if no compass) until idle +
   neutral, then the steering holds (OD-10). Alarm SB_ALM2_HARBOUR_STOP (0x100, an ordinary alarm,
   not an advisory: buzzer + SAVE). The mode stays AUTO (harb HOLD) so the captain sees why and can
   RESUME; the boat drifts at idle + neutral.
@@ -156,7 +163,12 @@ shore information) -> ENGINE KILL as soon as idle + neutral; open sea -> after l
 LINK TIME near shore is always 3 s. In a harbour the boat is ALWAYS "near shore", so today a 3 s
 link drop kills the engine of a boat in the harbour basin - with no steerage left in traffic.
 
-### 3.2 The change (W147 default)
+### 3.2 The change (W147 default) - SHIPS DISABLED until the owner answers W147
+Review MED-4: delaying a kill is a change on the unsafe side, and "TO CONFIRM = never guessed in
+code". HX2 builds the mechanism with harb_ll_grace_s DEFAULT 0 = today's section B behaviour
+(near-shore kill as soon as idle + neutral); the 60 s value is set only after the owner's YES to
+W147 (a separate one-line commit, part of a flash gate). Everything below describes the mechanism
+with a non-zero grace.
 - A loss that begins while harbour autonomy runs (harb.state != OFF at the moment of the loss;
   latched in ll.harbour) = STANDBY idle + neutral first as today (the hold = idle + neutral, steering
   holds), alarm LINK LOST, BUT the kill waits: ENGINE KILL only once idle + neutral AND
@@ -168,11 +180,25 @@ link drop kills the engine of a boat in the harbour basin - with no steerage lef
   an engine / gear fault, geofence breach, the STANDBY button pressed on board (someone is there:
   UNCREWED would not apply, but a press is a STANDBY-cutting event). "Any fault that STANDBY would cut
   today" = the WHY_ list of HX2 table harb_ll_cut[] (one place, tested by HB-LL).
+- The latch ll.harbour (review MED-3): set on the LOSS EDGE from the harb.state of the START of the
+  step (lostlink_step reads a copy taken before any mode handling of that step, so the STANDBY it
+  forces cannot clear it first); CLEARED when the link returns, at the kill, and at every reset - a
+  later loss in plain STANDBY gets the normal near-shore rule. HB11 tests both (loss in the same step
+  as a mode change; loss -> return -> second loss in STANDBY = the near-shore kill).
 - Link back within the grace: stays STANDBY at idle + neutral, alarm at the station, never resumes
   by itself (unchanged rule) - the captain decides.
 - CREWED: unchanged (never a kill; REMOTE LINK LOST alarm). FIRST TEST: harbour refused anyway.
 - The max engine time without a link becomes 3 + 60 s in a harbour (was 3 s), shown on screen 2's
   link panel countdown.
+- CPU1 / the OA-3 dead-man: the lost-link kill timing lives ONLY in core 0's lostlink_step; CPU1's
+  dead-man pulse conditions (UNCREWED + no trip + core-0 heartbeat + throttle node OK + actuator
+  frames + no kill latch) do not include the link, so they are unchanged. HX2's SERIAL review checks
+  this against the code.
+- Gear during the grace: "neutral" is the existing confirmation (the neutral switch when fitted, else
+  the gear state machine + the gear frame sent: servo.gear_sent, 13q2d); a DroneCAN gear servo has no
+  position feedback, so a gear stuck in forward at idle is seen only by the neutral switch or a SOG
+  rise - HX2 adds to harb_ll_cut "SOG > 1 kn and rising for 10 s at idle + neutral during the grace"
+  = kill at once (W147 asks).
 - Not changed: the open-sea rule (10 s), the LINK TIME override (13q1) outside harbour, the latch
   (power-on reset / remote restart), I31 / I38.
 
@@ -197,7 +223,11 @@ u8 hflags (b0 STOP, b1 degraded = a sensor lost, b2 give-way (COLREGs), b3 stati
 traffic), b4 camera-only obstacle slowing), u8 nearest_m (0..250, 255 none), u8 n_tracks.
 gw_navreq accepts kind 4 only with len >= 13; lease 500..3000 for kind 4. A harbour request never
 needs a cap = 0xFFFF check change: kind 4 always carries a cap (the route speed when nothing slows).
-Outside harbour autonomy a kind-4 request = ignored (counted), never applied.
+Outside harbour autonomy a kind-4 request = ignored (counted), never applied. ONE navreq slot: while
+a harbour route is armed, Gateway.nav_compose FOLDS every other cap into the kind-4 frame (the
+shallow cap, the collision cap, a held vision cap - still never released silently: CLEAR SLOWDOWN)
+and sends nothing of kind 1 / 2; a kind 1 / 2 frame arriving in harbour = "another kind" = HOLD
+(review LOW-3).
 
 ### 4.2 PROTO_T_HARBOUR_STAT (AURIX -> stations, NEW frame, 5 Hz; TELEM2 is FULL)
 Proposal 0x90 (the next free telemetry number): u8 state | u8 why | i16 xte dm | u16 corr dm |
@@ -222,7 +252,7 @@ route, 11 NOT_CHECKED (121), 12 OUT_OF_CORRIDOR at entry, 13 TOO_FAST at entry, 
 harb_max_kn 5 (1..8, W144), harb_corr_m 10 (4..20, W146; the route's own value <= it),
 harb_corr_margin_m 2, harb_corr_stop_m 5 (2..10), harb_max_dev_deg 60 (20..90),
 harb_rot_dps 8 (2..15), harb_lease_ms 1000 (500..3000), harb_unc_m 5 (2..10),
-harb_back_kn 2, harb_ll_grace_s 60 (10..300, W147). Gateway (gateway.json "harbour"): min_moving_m 15,
+harb_back_kn 2, harb_ll_grace_s 0 until W147, then 60 (0 or 10..300). Gateway (gateway.json "harbour"): min_moving_m 15,
 min_static_m 8 (W145), horizon_s 40, cycle_ms 200, sensor stale limits, degraded_kn 2, narrow_kn 3.
 
 ### 4.6 Station <-> gateway JSON (HX5 / HX6)
@@ -313,9 +343,11 @@ Relative bearing + aspect classify each encounter with a CPA < 2 x min_moving_m 
   starboard turns allowed (port turns = infeasible); «ΑΝΤΙΘΕΤΗ ΠΟΡΕΙΑ – ΣΤΡΟΦΗ ΔΕΞΙΑ».
 - CROSSING FROM STARBOARD (bearing 6..112.5 deg): we give way: slow / pass astern; a turn to port
   across its bow infeasible; «ΔΙΝΩ ΔΡΟΜΟ ΣΕ ΣΚΑΦΟΣ ΔΕΞΙΑ».
-- CROSSING FROM PORT: we are stand-on but keep the speed / slow if it does not act (CPA shrinking
+- CROSSING FROM PORT: we are stand-on (Rule 17: keep course and speed) but - an owner choice beyond
+  Rule 17, W145 asks - slow if it does not act (CPA shrinking
   under min_moving_m for 5 s = slow, then STOP); never a turn to port across its bow.
-- OVERTAKING (we are faster, target ahead +-22.5 deg off its stern): keep clear by min_moving_m,
+- OVERTAKING (COLREG 13: we come up from more than 22.5 deg abaft its beam = within 67.5 deg either
+  side of its stern, and we are faster; review LOW-4): keep clear by min_moving_m,
   slowing preferred in a narrow corridor; BEING OVERTAKEN: hold course and speed (stand-on).
 - Ambiguous classification (aspect unknown, a track turning, two encounters at once) = SLOW, then
   STOP (M0-4). Small craft (kayak / swimmer / dinghy) and buoys: not a COLREGs case = keep
@@ -371,16 +403,20 @@ H19 a vessel that does not give way (stand-on then stop), H20 planner crash.
 for the gateway planner against the simulated world; next free numbers)
 - I85 lost link in harbour: no kill before detection + harb_ll_grace_s unless a harb_ll_cut fault;
   always a kill by then once idle + neutral (UNCREWED); never in CREWED.
-- I86 never above min(leg kn, harb_max_kn, navreq cap) in harbour (the modelled throttle / SOG target).
+- I86 the storm recomputes the cap ITSELF from its own inputs (leg speed, the parameters, the last
+  navreq it sent, the station values) and checks the AURIX's cruise target <= it AND the true world
+  SOG <= cap + 0.5 kn after a 10 s settle (review MED-5); the mutation "cap removed" must fail it.
 - I87 never a heading change for a track that is not range_ok (gateway: the decision record).
 - I88 never closer than min_moving_m / min_static_m to any world object when the sensors saw it
   (world truth), except a HOLD already commanded (then the closing speed only from the object).
-- I89 never outside corr_m + harb_corr_stop_m (AURIX xte), HOLD at once beyond it.
+- I89 beyond corr_m + harb_corr_stop_m (the storm's own xte from the world truth) => HOLD in the
+  same step, and no throttle above idle while beyond (drift at idle + neutral may carry the boat
+  further: allowed; review MED-5).
 - I90 every unsure condition U1-U12 -> STOP within its time (planner) and HOLD on the AURIX within
   lease + 1 step.
 - I91 STANDBY button / e-stop / joystick takeover win in the same step in harbour (as AUTO).
-- I92 a lapsed / missing / wrong-kind lease in harbour = HOLD within lease + 1 step; never the
-  AUTO nav_lost_kn rule.
+- I92 a lapsed / missing / wrong-kind lease in harbour = HOLD within the EFFECTIVE lease
+  (min(frame, harb_lease_ms)) + 1 step; never the AUTO nav_lost_kn rule.
 - Mutation checks (HX5 / HX7): disable the range_ok gate, the corridor clamp, the lease HOLD, the
   turn-rate slew, the lost-link grace each in turn -> the storm must FAIL.
 
@@ -513,6 +549,11 @@ Furuno / Garmin open interfaces beyond Mayara's own list.
   a safety rule -> SERIAL review in HX2, the owner's W147.
 - Open: W144 (5 kn), W145 (15 / 8 m), W146 (+-10 m), W147 (grace 60 s + the cut list), W148 (sensors),
   NEW W149 (DP SPOT as the harbour HOLD when thrusters are fitted; never after a lost link).
+- Review of 0491d5d (opus, api_review.py): MED-1..MED-5 + LOW-1/3/4/6 folded into this file
+  (HOLD rates listed, effective lease, the ll.harbour latch, the grace ships at 0 until W147, I86 /
+  I89 reworded); LOW-2 (the vision line) + LOW-5 (section B / I27 / I28 are amended by HX2 in the
+  same commit as the code) in CLAUDE.md. Checked: alarm_bits2 is 32 bits (0x100 free), EV 32 free,
+  0x90 / 0x3C free.
 
 ## 13. One-page sensor summary for the owner
 
