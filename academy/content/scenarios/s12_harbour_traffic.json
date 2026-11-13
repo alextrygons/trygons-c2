@@ -1,0 +1,108 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s12_harbour_traffic",
+  "level": "DRIVER",
+  "order": 12,
+  "runs_on": "sim",
+  "title_el": "Κίνηση στο λιμάνι (επίβλεψη αυτονομίας)",
+  "title_en": "Traffic in the harbour (supervising autonomy)",
+  "intro_el": "Βγαίνετε από το λιμάνι σε χαμηλή ταχύτητα με την αυτονομία. Ένα πλοιάριο θα έρθει από δεξιά. Στην εκπαίδευση ο προσομοιωτής δεν έχει τον σχεδιαστή πορείας του υπολογιστή του πλοίου: εσείς πρέπει να σταματήσετε ή να αναλάβετε.",
+  "intro_en": "You leave the harbour at low speed with the autonomy. A boat will come from starboard. In training the simulator has no gateway planner: YOU must stop or take over.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 4
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 3,
+    "hazard": {
+      "type": "ais",
+      "collide_s": 45,
+      "speed_kn": 4,
+      "cross_deg": -90,
+      "name": "HARBOUR FERRY"
+    },
+    "say_el": "Πλοιάριο από δεξιά μέσα στο λιμάνι! Σταματήστε ή αναλάβετε!",
+    "say_en": "A boat from starboard inside the harbour! Stop or take over!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        }
+      ],
+      [
+        {
+          "f": "throttle",
+          "le": 2
+        }
+      ]
+    ],
+    "good_s": 5,
+    "max_s": 15
+  },
+  "forbid": [
+    {
+      "check": [
+        {
+          "f": "heading",
+          "delta_le": -20
+        }
+      ],
+      "why_el": "Στροφή αριστερά μπροστά σε πλοίο από δεξιά: περνάτε μπροστά από την πλώρη του. Στο λιμάνι πρώτα σταματάτε.",
+      "why_en": "A turn to port in front of a boat from starboard: you cross ahead of its bow. In a harbour you stop first."
+    }
+  ],
+  "observe_s": 40,
+  "outcome": {
+    "min_m": 15
+  },
+  "right_el": "STANDBY (ΣΤΟΠ) αμέσως ή ανάληψη με το joystick. Δεν στρίβετε μπροστά από την πλώρη. Στον πραγματικό λιμένα η αυτονομία μόνο επιβραδύνει ή σταματά· σταματά και μόνη της όταν δεν είναι σίγουρη (HOLD) και τότε ΕΣΕΙΣ αποφασίζετε: συνέχεια με ΣΥΝΕΧΕΙΑ ή ανάληψη.",
+  "right_en": "STANDBY (STOP) at once or take over with the joystick. You do not turn across its bow. In the real harbour the autonomy only slows or stops; it stops by itself when it is not sure (HOLD) and then YOU decide: carry on with RESUME or take over.",
+  "debrief_el": "Όρια: 5 κόμβοι το πολύ, 15 μ. από κινούμενο, 8 μ. από σταθερό, διάδρομος ±10 μ. (παράμετροι). Το STANDBY κερδίζει πάντα. Ένα HOLD δεν σημαίνει βλάβη: σημαίνει «δεν είμαι σίγουρο».",
+  "debrief_en": "Limits: at most 5 kn, 15 m from a moving vessel, 8 m from a static one, +-10 m corridor (parameters). STANDBY always wins. A HOLD is not a fault: it means 'I am not sure'."
+}

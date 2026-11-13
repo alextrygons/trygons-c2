@@ -1,0 +1,152 @@
+{
+  "_help": "Simulator lesson (ACADEMY_SPEC C, step 18). runs_on sim: it only ever runs against the simulator on this PC. setup = what the academy does first (simulator inputs: stick centred, GPS ok, STANDBY button, start power limit, alarms acknowledged). Each step: do_el / do_en = what the trainee does, check = the SIMULATOR STATE that proves it (telemetry field + condition, academy/lesson.py), hint_el / hint_en shown after hint_s seconds, fail_s = a time limit (too late = failed, retry), hold_s = the state must hold that long, at_start = a simulator event the lesson starts first. required = must be passed before the exam of this level.",
+  "kind": "lesson",
+  "id": "l07_harbour_autonomy",
+  "level": "DRIVER",
+  "order": 7,
+  "required": false,
+  "runs_on": "sim",
+  "title_el": "Αυτόνομος λιμένας: STOP ή ΑΝΑΛΗΨΗ ΕΛΕΓΧΟΥ",
+  "title_en": "Harbour autonomy: STOP or TAKE OVER",
+  "intro_el": "Στον πραγματικό λιμένα το σκάφος ακολουθεί μια ελεγμένη διαδρομή με ΠΟΤΕ πάνω από 5 κόμβους, και ο υπολογιστής του πλοίου προτείνει μόνο να επιβραδύνει ή να σταματήσει. ΕΣΕΙΣ επιβλέπετε. Η καθημερινή σας λίστα: 1) πρώτα άδειος λιμένας και χαμηλή ταχύτητα, 2) διαβάστε τον πίνακα «ΛΙΜΕΝΑΣ» (κατάσταση, αισθητήρες), 3) το STANDBY του πίνακα σταματά πάντα, 4) με το joystick αναλαμβάνετε αμέσως. Εδώ το ΠΡΑΓΜΑΤΙΚΟ λογισμικό αυτονομίας δεν τρέχει (ο προσομοιωτής δεν έχει πύλη και αισθητήρες): εξασκείστε στις δύο ενέργειες που κάνετε εσείς. Την ίδια την αυτονομία δείτε στο DEMO_HARBOUR. Τα όρια (5 κόμβοι, 15 μ. από κινούμενο, 8 μ. από σταθερό, ±10 μ. διάδρομος) είναι παράμετροι και δείχνονται στο εγχειρίδιο.",
+  "intro_en": "In the real harbour the boat follows a checked route at NEVER more than 5 knots and the gateway planner may only slow or stop it. YOU supervise. Your routine: 1) an empty harbour first, at low speed, 2) read the HARBOUR panel (state, sensors), 3) the panel STANDBY always stops, 4) with the joystick you take over at once. Here the REAL autonomy software does not run (the simulator has no gateway and no sensors): you practise the two actions that are yours. See the autonomy itself in DEMO_HARBOUR. The limits (5 kn, 15 m from a moving vessel, 8 m from a static one, +-10 m corridor) are parameters and are shown in the manual.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "steps": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών. Μην αγγίζετε το joystick.",
+      "hint_en": "HDG LOCK is on the panel buttons. Do not touch the joystick.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Δώστε γκάζι μπροστά: σπρώξτε το joystick προς τα πάνω (μπροστά) και κρατήστε το.",
+      "do_en": "Give forward throttle: push the joystick up (forward) and hold it.",
+      "hint_el": "Σύρετε τη λαβή προς τα πάνω και σημειώστε «Κράτημα joystick» ώστε να μείνει εκεί. Το γκάζι ανεβαίνει αργά: περιμένετε λίγο.",
+      "hint_en": "Drag the knob up and tick \"Hold the stick\" so that it stays there. The throttle rises slowly: wait a moment.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "throttle",
+          "ge": 5
+        }
+      ],
+      "hint_s": 25
+    },
+    {
+      "do_el": "ΣΤΟΠ! Ο πίνακας δείχνει HOLD ή βλέπετε σκάφος μπροστά: πατήστε STANDBY αμέσως (δεν ρωτάτε, δεν περιμένετε).",
+      "do_en": "STOP! The panel shows HOLD or you see a boat ahead: press STANDBY at once (you do not ask, you do not wait).",
+      "hint_el": "Το STANDBY του πίνακα κερδίζει σε κάθε τρόπο και δεν μπορεί να το παρακάμψει ο υπολογιστής.",
+      "hint_en": "The panel STANDBY wins in every mode and the PC can never override it.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        },
+        {
+          "f": "throttle",
+          "le": 1
+        }
+      ],
+      "hint_s": 15
+    },
+    {
+      "do_el": "Φέρτε το joystick στο κέντρο. Μετά θα πλησιάζατε αργά, με τον κινητήρα σε νεκρά κοντά στον άνθρωπο.",
+      "do_en": "Bring the joystick back to the centre. Then you would approach slowly, engine in neutral near the person.",
+      "hint_el": "Βγάλτε το «Κράτημα joystick» ή αφήστε τη λαβή. Μετά το STANDBY το joystick αγνοείται μέχρι να κεντραριστεί.",
+      "hint_en": "Untick \"Hold the stick\" or let go of the knob. After STANDBY the stick is ignored until it is centred.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        },
+        {
+          "f": "joy_y",
+          "ge": -0.05
+        },
+        {
+          "f": "joy_y",
+          "le": 0.05
+        }
+      ],
+      "hint_s": 15,
+      "hold_s": 1.0
+    },
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών. Μην αγγίζετε το joystick.",
+      "hint_en": "HDG LOCK is on the panel buttons. Do not touch the joystick.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "ΑΝΑΛΗΨΗ ΕΛΕΓΧΟΥ: κινήστε το joystick δεξιά ή αριστερά. Το σκάφος περνά σε χειροκίνητο και η αυτονομία παύει.",
+      "do_en": "TAKE OVER: move the joystick to the right or to the left. The boat goes to manual and the autonomy ends.",
+      "hint_el": "Σύρετε τη λαβή στο πλάι. Στον πραγματικό λιμένα (σκάφος με πλήρωμα) το joystick κερδίζει πάντα.",
+      "hint_en": "Drag the knob sideways. In the real harbour (crewed boat) the stick always wins.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Αφήστε το joystick να γυρίσει στο κέντρο και κρατήστε το εκεί.",
+      "do_en": "Let the joystick return to the centre and keep it there.",
+      "hint_el": "Αφήστε τη λαβή. Το MANUAL μένει: μόνο εσείς επιστρέφετε τον έλεγχο.",
+      "hint_en": "Let go of the knob. MANUAL stays: only you hand control back.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        },
+        {
+          "f": "joy_x",
+          "ge": -0.05
+        },
+        {
+          "f": "joy_x",
+          "le": 0.05
+        }
+      ],
+      "hint_s": 20,
+      "hold_s": 1.0
+    },
+    {
+      "do_el": "Τελειώστε με STANDBY.",
+      "do_en": "Finish with STANDBY.",
+      "hint_el": "Το κόκκινο κουμπί STANDBY του πίνακα.",
+      "hint_en": "The red STANDBY panel button.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      "hint_s": 20
+    }
+  ]
+}
