@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import subprocess
+import types
 import sys
 import tempfile
 import time
@@ -99,11 +100,25 @@ _PS = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,
        "(Get-Date '1970-01-01T00:00:00Z').ToUniversalTime()).TotalSeconds } else { 0 } }} | ConvertTo-Json -Compress")
 
 
+def _decode(b):
+    """A process's output as text: bytes decoded as UTF-8 with errors="replace" - a command line with a non-UTF-8 byte
+    (seen on Windows) must never make the list unreadable; a real read failure is still an exit code / empty output."""
+    if isinstance(b, str):
+        return b
+    return (b or b"").decode("utf-8", errors="replace")
+
+
+def _run_bytes(cmd, timeout, **kw):
+    """subprocess.run with bytes output, decoded tolerantly -> an object with returncode / stdout / stderr as str."""
+    r = subprocess.run(cmd, capture_output=True, timeout=timeout, **kw)
+    return types.SimpleNamespace(returncode=r.returncode, stdout=_decode(r.stdout), stderr=_decode(r.stderr))
+
+
 def _processes(timeout):
     out = {}
     if os.name == "nt":
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS], capture_output=True,
-                           text=True, timeout=timeout, creationflags=NO_WINDOW)
+        r = _run_bytes(["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS], timeout,
+                       creationflags=NO_WINDOW)
         if r.returncode != 0 or not (r.stdout or "").strip():
             raise ValueError("PowerShell exit %d: %s" % (r.returncode, (r.stderr or "")[:200]))
         rows = json.loads(r.stdout)
@@ -114,8 +129,7 @@ def _processes(timeout):
                                               (row.get("Name") or "").lower(), row.get("ExecutablePath") or "",
                                               row.get("CommandLine") or "", int(row.get("Created") or 0))
     else:
-        r = subprocess.run(["ps", "-eo", "pid=,ppid=,etimes=,comm=,args="], capture_output=True, text=True,
-                           timeout=timeout)
+        r = _run_bytes(["ps", "-eo", "pid=,ppid=,etimes=,comm=,args="], timeout)
         if r.returncode != 0:
             raise ValueError("ps exit %d" % r.returncode)
         now = time.time()
@@ -1108,6 +1122,28 @@ def selftest(out=print):
             bad.append("(d) the baseline changed after a failed process list read")
         late2.kill()
         late2.wait(10)
+        # a command line with a non-UTF-8 byte is read (replaced), not a failure; a broken list is still None
+        class _R:
+            def __init__(self, rc, out):
+                self.returncode, self.stdout, self.stderr = rc, out, b""
+        row = (b'[{"ProcessId":4242,"ParentProcessId":1,"Name":"python.exe","ExecutablePath":"x","CommandLine":"py '
+               + bytes([0xE3]) + b' end","Created":1},'
+               + b'{"ProcessId":%d,"ParentProcessId":1,"Name":"python.exe","ExecutablePath":"x","CommandLine":"me","Created":1}]' % os.getpid())
+        real_run = subprocess.run
+        try:
+            subprocess.run = lambda *a, **k: _R(0, row)
+            got = _processes(5) if os.name == "nt" else {4242: 1}
+            if 4242 not in got or "py" not in (got[4242].cmd if os.name == "nt" and hasattr(got[4242], "cmd") else "py"):
+                bad.append("a non-UTF-8 byte in a command line made the process list unreadable")
+            subprocess.run = lambda *a, **k: _R(1, b"")
+            if os.name == "nt":
+                try:
+                    _processes(5)
+                    bad.append("a failing PowerShell (exit 1) was not an error")
+                except ValueError:
+                    pass
+        finally:
+            subprocess.run = real_run
         # the real read of a broken list: PowerShell / ps failing = None, never {}
         saved_ps = globals()["_PS"]
         globals()["_PS"] = "throw 'broken'"
