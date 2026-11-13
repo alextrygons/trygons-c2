@@ -28,6 +28,20 @@ RUN_LIMIT_S = float(os.environ.get("TRYGONS_HARBOUR_RUN_S", "1500"))        # th
 RESULTS = os.path.join(REPO, "test_results", "harbour")
 
 
+# HX7-fix3 (owner answer 2, 2026-11-13): KNOWN LIMITS = an episode that is EXPECTED to FAIL exactly the listed check(s)
+# for a stated design reason. It stays RED in substance: printed as [KNOWN LIMIT] with its reason EVERY run, any OTHER
+# failed check = FAIL, and an unexpected PASS = FAIL (the limit must be re-judged, never a silent pass) - exactly like
+# the XFAILs. The criterion itself is unchanged.
+KNOWN_LIMITS = {
+    "S4": {"checks": ("C1 never touches while the boat moves",),
+           "reason": "KNOWN LIMIT S4 (owner 2026-11-13, NOT 'unavoidable'): an overtaking vessel that does not give way "
+                     "hits the boat ~12 s after the not-yielding STOP while it still coasts at ~0.5 kn in HOLD - a "
+                     "stopped boat coasting in HOLD cannot avoid a vessel overtaking from astern; the captain takes over "
+                     "(FIRST_TEST.md 7, MANUAL ch. 27). The design answer (COLREGs 13 / 17: keep speed or offset to "
+                     "starboard instead of STOP) is the owner's open design question in PROGRESS.md WAITING FOR OWNER"},
+}
+
+
 def storm_spec(seed):
     """A seeded random harbour world (1-3 objects + maybe a sensor fault): the same seed = the same world."""
     import scenarios as sc
@@ -97,6 +111,7 @@ def run_one(name, out_path):
         res["ok"] = bool(res["checks"]) and all(c[1] for c in res["checks"])
         res["xfail"] = spec.get("xfail")
         res["class"] = out.get("class")
+        res["stops"] = getattr(ep, "stops", [])[:60]
     finally:
         ep.close()
     res["secs"] = round(time.time() - t_start, 1)
@@ -157,21 +172,37 @@ def load(path, why):
         return {"name": os.path.basename(path), "ok": False, "checks": [("RIG", False, why)]}
 
 
-def report(done, order):
+def report(done, order, known=None):
     fails = 0
+    known = known if known is not None else []
     for n in order:
         r = done.get(n) or {"ok": False, "checks": [("RIG", False, "no result")]}
         ok = r.get("ok")
         xf = r.get("xfail")
-        if xf and not ok:                       # a documented FINDING (reported to the owner): shown, not counted
+        kl = KNOWN_LIMITS.get(n)
+        if kl:
+            bad = [c[0] for c in r.get("checks", []) if not c[1]]
+            if ok:
+                tag, ok = "FAIL", False         # XPASS: the known limit no longer shows - re-judge it, never silent
+                xf = "XPASS - the KNOWN LIMIT no longer shows (passed by chance? or fixed): re-judge KNOWN_LIMITS"
+            elif bad and all(any(b.startswith(k) for k in kl["checks"]) for b in bad):
+                tag, xf = "KNOWN LIMIT", kl["reason"]
+            else:
+                tag = "FAIL"                    # another check failed too: a real failure
+                xf = kl["reason"] + " - BUT other checks failed too"
+        elif xf and not ok:                     # a documented FINDING (reported to the owner): shown, not counted
             tag = "XFAIL"
         elif xf and ok:
             tag, ok = "FAIL", False             # the finding is fixed: remove the xfail mark (never a silent pass)
         else:
             tag = "PASS" if ok else "FAIL"
-        fails += 0 if (ok or tag == "XFAIL") else 1
+        fails += 0 if (ok or tag in ("XFAIL", "KNOWN LIMIT")) else 1
+        if tag == "KNOWN LIMIT":
+            known.append(n)
         print("[%s] %s - %s (%s s)" % (tag, n, r.get("title", ""), r.get("secs", "?")), flush=True)
-        if xf:
+        if kl:
+            print("       %s" % xf)
+        elif xf:
             print("       finding: %s" % ("XPASS - the finding no longer shows: remove xfail from scenarios.py"
                                           if tag == "FAIL" else xf))
         for c in r.get("checks", []):
@@ -210,13 +241,17 @@ def main():
         names = [s["name"] for s in sc.build()] + ["S%d" % (a.seed + i) for i in range(a.episodes)]
     t = time.time()
     done = run_parallel(names, max(1, a.jobs))
-    fails = report(done, names)
+    known = []
+    fails = report(done, names, known)
     cls = {}
     for n in names:
         k = (done.get(n) or {}).get("class") or "-"
         cls[k] = cls.get(k, 0) + 1
     print("classes (HX7-fix2): %s" % ", ".join("%s %d" % kv for kv in sorted(cls.items())), flush=True)
-    print("harbour scenarios: %d run, %d failed, %.0f s" % (len(names), fails, time.time() - t), flush=True)
+    for n in known:
+        print("KNOWN LIMIT %s (not a pass): %s" % (n, KNOWN_LIMITS[n]["reason"]), flush=True)
+    print("harbour scenarios: %d run, %d failed, %d known limit(s) %s, %.0f s" % (len(names), fails, len(known), known,
+                                                                                 time.time() - t), flush=True)
     return 1 if fails else 0
 
 

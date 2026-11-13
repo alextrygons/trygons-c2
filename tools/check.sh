@@ -475,7 +475,7 @@ grep -E "^\[FAIL\]|^       FAIL|harbour scenarios:" "$TEMP/harbour_scen.txt"
 strays_check "harbour_scenarios"
 echo "== harbour end-to-end storm (HX7): 30 seeded random worlds against the real simulator"
 ( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py storm --episodes 30 --seed 1 --jobs 3 > "$TEMP/harbour_e2e_storm.txt" 2>&1 ) || { echo "HARBOUR E2E STORM FAILED (see $TEMP/harbour_e2e_storm.txt)"; fail=1; }
-grep -E "^\[FAIL\]|^       FAIL|harbour scenarios:" "$TEMP/harbour_e2e_storm.txt"
+grep -E "^\[FAIL\]|^       FAIL|^KNOWN LIMIT|harbour scenarios:" "$TEMP/harbour_e2e_storm.txt"
 strays_check "harbour_e2e_storm"
     stage_end harbour
 }

@@ -35,6 +35,15 @@ FINDING_3 = ("HX7-3 (HX7-fix2: persistence built, these still fail): in a +-10 m
              "~3-4 m over 10 s) = 27-29 m of 29.75 m: the escape is feasible only in some cycles for SECONDS at a time "
              "(rig events: U13 'no free path', blockers = the vessel) - a 0.8 s persistence cannot bridge it; H8r is "
              "refused at the START (the overtaker is already a threat)")
+# HX7-fix3 (owner answer 4, 2026-11-13): H4r / H8r / H19r are EXPECTED SAFE STOP tests (no longer XFAIL): the boat
+# must stop and hold and never come closer to the vessel than the minimum distance (15 m to a moving vessel, hull to
+# hull, on the estimated AND the true position). A wider corridor is a per-route owner decision; the default stays
+# +-10 m (docs/harbour_design.md open notes).
+SAFE_STOP_WHY = ("expected safe STOP: in a +-10 m corridor (usable +-5.75 m) a vessel 24 m off the line needs 15 m + "
+                 "both hull halves (6 m) + 2 sigma of its predicted position (~3-4 m) = 27-29 m of separation, only "
+                 "29.75 m is available - no path keeps 15 m reliably, so the planner STOPs and holds; the minimum "
+                 "distance must still hold (owner answer 4)")
+SAFE_STOP_MIN_M = 15.0  # the minimum distance to a moving vessel (design I88), never less
 ALM_COLL = 0x800000 | 0x1000000                     # proto ALARMS: COLLISION RISK / COLLISION RISK - DRIVER DECISION
 ARRIVED = 15            # app/harbour.h HARB_WHY_ARRIVED (a planned stop: the route's last waypoint)
 ROUTE = [(0.0, 0.0, 5.0), (80.0, 0.0, 5.0), (150.0, 0.0, 5.0)]
@@ -91,7 +100,7 @@ def build():
                 [vessel("headon", (70.0, 1.0), 38.0, 270.0, 2.0, ais=237000004)], expect={"safe_pass_or_hold": 1, "unavoidable": ("headon",), "min_x": 10.0}))
     sc.append(S("H4r", "head-on vessel that does NOT give way, passing 24 m to port of the line (room: steer clear, keep 15 m)",
                 [vessel("headon", (70.0, 24.0), 38.0, 270.0, 2.0, ln=6.0, beam=2.5, ais=237000014)],
-                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
+                why=SAFE_STOP_WHY, expect={"safe_pass_or_hold": 1, "safe_stop": ("headon",)}))
     sc.append(S("H5", "crossing from starboard (no AIS)",
                 [vessel("cross_s", (70.0, 0.0), 38.0, 0.0, 2.0)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H6", "crossing from port (AIS)",
@@ -102,13 +111,21 @@ def build():
                 [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0,
                                                                      "start_may_be_refused": 1, "refused_for": "not_yielding"}))
     sc.append(S("H8c", "being overtaken by a fast vessel that does NOT give way, the start CLEAR (no threat at "
-                "the start: it runs NORTH 40 m to port, then turns onto the line astern at 5 m/s): START passes, then the not-yielding STOP",
-                [{"id": "fast", "kind": "vessel", "path": [[-40.0, -60.0], [-40.0, 4.0], [600.0, 4.0]], "speed": 5.0,
-                  "len": 9.0, "beam": 3.0, "h": 2.0, "rcs": 0.8, "refl": 0.4, "ais": None}],
+                "the start: it is 275 m astern at t0, on the line, 5.5 m/s): START passes, it closes in, the not-yielding STOP",
+                # HX7-fix3: the HX7-fix2 path [(-40, -60), (-40, 4), (600, 4)] never reached the line - simworld moves an
+                # object along path[0] -> path[1] only (back and forth), so the vessel stayed 40 m astern (closest
+                # 42.2 m). A first fix-3 try (160 m astern, 5 m/s) was refused at the START: 32 s to reach the standing
+                # boat < the planner's horizon_s 40 = a threat at the start. Now: 275 m astern at 5.5 m/s = 50 s to the
+                # standing boat (clear at the start); with the boat under way (~2 m/s) it catches up around T ~ 75 s,
+                # x ~ 140 m - so this scenario has its own longer route (250 m) and run time. The 40 m encounter (P3)
+                # and every other criterion unchanged
+                [vessel("fast", (-275.0, 1.0), 0.0, 90.0, 5.5)],
+                route=[(0.0, 0.0, 5.0), (120.0, 0.0, 5.0), (250.0, 0.0, 5.0)], secs=130.0,
                 expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 10.0}))
     sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
                 [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
-                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
+                why=SAFE_STOP_WHY, expect={"safe_pass_or_hold": 1, "safe_stop": ("fast",), "start_may_be_refused": 1,
+                                           "refused_for": "not_yielding"}))
     sc.append(S("H9", "a kayak (no AIS) crossing ahead",
                 [mover("kayak", "kayak", (70.0, 0.0), 36.0, 0.0, 1.0, 4.0, 0.7, 0.4, 0.15, 0.5)],
                 expect={"safe_pass_or_hold": 1}))
@@ -137,7 +154,9 @@ def build():
                 expect={"safe_pass_or_hold": 1, "unavoidable": ("rogue",), "min_x": 10.0}))
     sc.append(S("H19r", "a fast vessel that does NOT give way, head-on 24 m to port (room: steer clear, keep 15 m)",
                 [vessel("rogue", (70.0, 24.0), 38.0, 270.0, 3.5, ln=6.0, beam=2.5, ais=237000029)],
-                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
+                why=SAFE_STOP_WHY, expect={"safe_pass_or_hold": 1, "safe_stop": ("rogue",), "min_x": 10.0}))
+    # (H19r min_x 10 m as H19: the fast head-on vessel is judged not giving way ~150 m away and the expected safe STOP
+    # comes at ~22 m - the boat left (RUN / SLOW + 10 m), SS1 / SS2 / P3 judge the encounter itself; owner answer 4)
     sc.append(S("H20", "the planner crashes at 20 s (the AURIX lease lapses -> HOLD)", [],
                 faults=[{"t": 20.0, "what": "planner_crash"}], expect={"hold_within": (20.0, 5.0)}))
     return sc
@@ -148,6 +167,62 @@ def by_name():
 
 
 # ------------------------------------------------------------------ evaluation
+def _min_gaps(S_, oid):
+    """(least hull gap to oid on the estimated position, on the TRUE position, true samples / all samples)."""
+    est = min((g for s in S_ for o, g, _m in s[17] if o == oid), default=999.0)
+    tru = [g for s in S_ if len(s) > 22 and s[22] for o, g in s[22] if o == oid]
+    return est, min(tru, default=999.0), len(tru), len(S_)
+
+
+def _safe_stop_checks(S_, ex):
+    """HX7-fix3 (owner answer 4): an EXPECTED SAFE STOP - stopped (HOLD, SOG < 0.5 kn) before the vessel's closest
+    approach, held still until then, and never closer than SAFE_STOP_MIN_M on the estimated AND the true position."""
+    r = []
+    for oid in ex["safe_stop"]:
+        est, tru, n_t, n = _min_gaps(S_, oid)
+        r.append(("SS1 never closer than %.0f m to %s (hull to hull, estimated AND true position)" % (SAFE_STOP_MIN_M, oid),
+                  est >= SAFE_STOP_MIN_M and tru >= SAFE_STOP_MIN_M and n_t >= 0.9 * n,
+                  "least gap %.1f m estimated, %.1f m true (%d / %d samples with the true position)" % (est, tru, n_t, n)))
+        tc = min(S_, key=lambda s: min((g for o, g, _m in s[17] if o == oid), default=999.0))[0]
+        st = [s[0] for s in S_ if s[5] == "HOLD" and s[4] < 0.5]
+        moved = st and [(s[0], round(s[4], 2)) for s in S_ if st[0] <= s[0] <= tc and s[4] >= 0.5]
+        r.append(("SS2 STOPPED (HOLD, SOG < 0.5 kn) before the closest approach (%.1f s) and held still until it" % tc,
+                  bool(st) and st[0] <= tc and not moved,
+                  "standing at %s s; moving after it %s" % (st[0] if st else None, (moved or [])[:2])))
+    return r
+
+
+def _early_stop_class(S_, ep, out):
+    """HX7-fix3 (owner answer 3): an EVIDENCED early STOP in a random world (the boat stopped before 25 m): PASS only
+    if ALL hold - the logged STOP cause names a TRACK, that track matches a REAL world object (track position within
+    EARLY_MATCH_M of the object) within EARLY_RANGE_M (hull gap at the STOP), the boat ends in HOLD (standing) or
+    STANDBY, and there is no contact (every object's hull gap >= 0.5 m all the time). Each condition is its own check."""
+    r = []
+    stops = getattr(ep, "stops", None) or []
+    named = [(e, b) for e in stops for b in e["blockers"] if b.get("track")]
+    real = [(e, b) for e, b in named if b.get("match") is not None and b["match_d"] <= EARLY_MATCH_M
+            and b.get("gap") is not None and b["gap"] <= EARLY_RANGE_M]
+    r.append(("P1e-a the logged STOP cause names a TRACK", bool(named),
+              "%d STOPs, track blockers %s" % (len(stops), [(e["t"], b["id"]) for e, b in named][:4])))
+    r.append(("P1e-b ... that track matches a REAL object (<= %.0f m) within %.0f m of the boat" % (EARLY_MATCH_M,
+                                                                                                  EARLY_RANGE_M),
+              bool(real), "matches %s" % ([(e["t"], b["id"], b.get("match"), b.get("match_d"), b.get("gap"))
+                                          for e, b in (real or named)][:4],)))
+    last = S_[-1]
+    r.append(("P1e-c the boat ends in HOLD (standing) or STANDBY", (last[5] == "HOLD" and last[4] < 0.5)
+              or last[7] == "STANDBY", "end state %s, mode %s, SOG %.2f" % (last[5], last[7], last[4])))
+    mg = out.get("min_gap", {})
+    worst = min(((v[0], k) for k, v in mg.items()), default=(999.0, None))
+    tru = min((g for s in S_ if len(s) > 22 and s[22] for _o, g in s[22]), default=999.0)
+    r.append(("P1e-d no contact (every object >= 0.5 m, estimated AND true position)", worst[0] >= 0.5 and tru >= 0.5,
+              "least gap %.1f m to %s (true %.1f m)" % (worst[0], worst[1], tru)))
+    return r
+
+
+EARLY_MATCH_M = 6.0     # a STOP's track -> the real object it stands for (centre to centre)
+EARLY_RANGE_M = 40.0    # ... within the encounter distance of P3 (hull to hull)
+
+
 def evaluate(spec, ep, out):
     """[(check name, ok, detail)] for one finished episode."""
     r = []
@@ -169,6 +244,16 @@ def evaluate(spec, ep, out):
             r0.append(("E ... and the reason is the vessel not giving way (U13, the vessel named)",
                        bool(rf.get("stop")) and rf.get("why") == "harb.why_not_yielding" and bool(rf.get("not_yielding")),
                        "refusal %s" % rf))
+        if ex.get("safe_stop"):
+            # HX7-fix3 (owner answer 4): the boat never moved = stopped; the minimum distance must still hold
+            for oid in ex["safe_stop"]:
+                est, tru, n_t, n = _min_gaps(S_, oid)
+                r0.append(("SS1 never closer than %.0f m to %s (estimated AND true position)" % (SAFE_STOP_MIN_M, oid),
+                           est >= SAFE_STOP_MIN_M and tru >= SAFE_STOP_MIN_M and n_t >= 0.9 * n,
+                           "least gap %.1f m estimated, %.1f m true (%d / %d samples)" % (est, tru, n_t, n)))
+                close = min(est, tru)
+                r0.append(("P3 the encounter happened (the vessel came within 40 m hull to hull)", close < 40.0,
+                           "closest %.1f m" % close))
         return r0
     if out.get("upload") != 0 or out.get("start") != 0:
         r.append(("RIG-START", False, "route upload %r, START %r (0 = ok)" % (out.get("upload"), out.get("start"))))
@@ -192,9 +277,14 @@ def evaluate(spec, ep, out):
                       "not giving way before 25 m)", ran and bool(dd) and bool(hold),
                       "U13 at %s s, DRIVER DECISION at %s s, standing at %s s" % (u13[0], dd[0] if dd else None,
                                                                                  hold[0] if hold else None)))
+        elif xmax < 25.0 and any(b.get("track") for e in (getattr(ep, "stops", None) or []) for b in e["blockers"]):
+            # HX7-fix3 (owner answer 3): the EVIDENCED early STOP class (all four conditions asserted; the 25 m
+            # precondition stays for every other world)
+            out["class"] = "early_stop"
+            r.extend(_early_stop_class(S_, ep, out))
         else:
             out["class"] = "normal"
-    need_x = 0.0 if out.get("class") == "unavoidable" else float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
+    need_x = 0.0 if out.get("class") in ("unavoidable", "early_stop") else float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
     r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
               "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
     fired = {e[1] for e in ep.events}
@@ -279,11 +369,8 @@ def evaluate(spec, ep, out):
         passed = last[1] > 120.0
         r.append(("E passed it or stopped for it (no contact either way)", seen_hold or done or passed,
                   "HOLD %s, DONE %s, last x %.0f" % (seen_hold, done, last[1])))
-    if ex.get("passed_no_hold"):
-        held = [s[0] for s in S_ if s[5] == "HOLD" and s[13] != ARRIVED]
-        passed = last[1] > 120.0 or any(s[5] == "DONE" for s in S_)
-        r.append(("E steered clear of the vessel that does not give way: passed, no HOLD", passed and not held,
-                  "last x %.0f, HOLD at %s" % (last[1], held[:1])))
+    if ex.get("safe_stop"):
+        r.extend(_safe_stop_checks(S_, ex))
     if "degraded_after" in ex:
         t_f = ex["degraded_after"]
         late = [s for s in S_ if s[0] > t_f + 12.0 and s[7] == "AUTO" and s[4] > 2.5]
@@ -321,15 +408,17 @@ def evaluate(spec, ep, out):
                   "throttle above 1 %%: %s" % ([(q[0], q[16]) for q in idle[:1]],)))
     if "camera_only" in ex or "ais_only" in ex:
         t_f = ex.get("camera_only", ex.get("ais_only"))
-        def ymed(i):
-            # the boat's position here is the simulated AURIX's 1 Hz GPS estimate: one fix may jump 3 m sideways
-            # (H17: 0.8 -> 3.1 -> -0.6 m in 1.2 s at 2.8 kn - no boat moves so); a TURN = the mean over 3 s
-            w = [q[2] for q in S_ if abs(q[0] - S_[i][0]) <= 1.5]
-            return abs(sum(w) / len(w))
-        turned = [S_[i][:8] for i, s in enumerate(S_) if s[0] > t_f + 3.0 and s[5] in ("RUN", "SLOW") and
-                  ((len(s) > 20 and s[20]) or ymed(i) > 2.5)]
+        # HX7-fix3 (owner answer 1; REPLACES HX7-fix2's 3 s mean / 2.5 m, which was not signed off): the ORIGINAL
+        # instantaneous check |lateral offset| > 2.5 m, now on the simulator's TRUE boat position (sample [21], the
+        # world truth - never the 1 Hz GPS estimate, whose fix noise is 1.5 m per axis), OR the planner's own turn
+        # decision (sample [20]). A sample without a fresh true position counts as a TURN (never a silent pass).
+        win = [s for s in S_ if s[0] > t_f + 3.0 and s[5] in ("RUN", "SLOW")]
+        turned = [s[:8] for s in win if (len(s) > 20 and s[20]) or len(s) < 22 or s[21] is None or abs(s[21][1]) > 2.5]
+        r.append(("E never a turn for a camera / AIS-only object (no planner turn, |TRUE lateral offset| <= 2.5 m at "
+                  "every sample)", not turned,
+                  ("turned / no true position %s" % (turned[:1],)) if turned else
+                  ("straight: max |true y| %.2f m over %d samples" % (max(abs(s[21][1]) for s in win), len(win))
+                   if win else "no RUN / SLOW samples after the fault")))
         slowed = any(s[5] in ("SLOW", "HOLD") and s[0] > t_f for s in S_)
-        r.append(("E never a turn for a camera / AIS-only object (no planner turn, |3 s mean offset| < 2.5 m)", not turned,
-                  "turned %s" % (turned[:1],) if turned else "straight"))
         r.append(("E ... but it slows / stops", slowed, "slow or hold seen: %s" % slowed))
     return r
