@@ -4667,6 +4667,10 @@ THE BUTTONS.
     the boat is CREWED, the shore joystick when it is UNCREWED. It is greyed while the
     boat says it is not ready (no checked harbour route on the boat, the boat not
     in a state that allows it, outside the first corridor, GPS not trusted ...).
+    While a checked harbour route is on the boat, the boat is in STANDBY with fresh
+    data and a station holds HELM, the gateway sends the boat a harmless READY
+    message (no turn, never faster than the route or 5 kn): that is what makes START
+    pressable - ONE press starts it. The READY message moves nothing by itself.
   TAKE OVER: CREWED: move the onboard joystick - it always wins over the
     autopilot. UNCREWED: this sends the normal REMOTE request (the captain with the
     manual licence; the shore joystick centred). It is not a way around any
@@ -4737,9 +4741,17 @@ WHAT TO DO WHEN ...
     stops (HOLD) and you decide.
   A camera shows an obstacle that the radar and the LiDAR do not confirm: the boat
     slows and may stop, it never turns for a camera alone. Look yourself.
-  A vessel does not give way: the boat stops in time inside its corridor; a corridor
-    of +-10 m rarely lets it pass a moving vessel at 15 m, so expect a HOLD and wait
-    for the other vessel to pass, then RESUME.
+  A vessel does not give way (radar / LiDAR confirmed, it keeps its speed and course
+    and would hit the boat even if the boat stopped): the boat first STEERS CLEAR
+    inside its corridor if a path keeps 15 m from it (starboard first, never faster
+    than the route), with COLLISION RISK on the screens. If no such path exists - in a
+    +-10 m corridor with the vessel on the line there is none - the boat STOPS at once
+    and you get the red WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice
+    callout (+ COLLISION RISK - DRIVER DECISION). TAKE OVER AT ONCE: a stopped boat is
+    NOT safe from a vessel that ignores it. Harbour autonomy never reverses, never
+    speeds up and never leaves the corridor to get out of the way - only YOU can
+    (TAKE OVER, then drive; sound the horn). CHECKLIST: hear that warning = take the
+    controls, do not press RESUME.
   A harbour mode that keeps stopping with "UNSURE": do not press RESUME again and
     again - drive by hand.
 

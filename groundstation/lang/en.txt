@@ -2405,6 +2405,11 @@ harb.why_standon_port = VESSEL ON PORT - STAND-ON
 harb.why_overtaking = OVERTAKING A VESSEL - keeping clear
 harb.why_overtaken = BEING OVERTAKEN - stand-on
 harb.why_stop = UNSURE - STOP
+harb.why_ny_avoid = VESSEL NOT GIVING WAY - STEERING CLEAR IN THE CORRIDOR
+harb.why_not_yielding = VESSEL NOT GIVING WAY - STOP - TAKE OVER
+alarm.harb_notyield = VESSEL NOT GIVING WAY – TAKE OVER
+say.alarm.harb_notyield = Vessel not giving way, take over
+harb.ev_notyield = Harbour: a vessel is not giving way – the boat stopped, take over (TAKE OVER or STOP)
 # harbour autonomy supervision + teach and repeat (step HX6; groundstation/harbourview.py, harbourmap.py, harbourpanel.py)
 ov.harbour = HARBOUR
 alarm.harbour_stop = HARBOUR STOP: THE BOAT HOLDS

@@ -2409,6 +2409,11 @@ harb.why_standon_port = ΣΚΑΦΟΣ ΑΡΙΣΤΕΡΑ – ΔΙΑΤΗΡΩ ΠΟΡ�
 harb.why_overtaking = ΠΡΟΣΠΕΡΝΩ ΣΚΑΦΟΣ – κρατώ απόσταση
 harb.why_overtaken = ΜΕ ΠΡΟΣΠΕΡΝΑ ΣΚΑΦΟΣ – διατηρώ πορεία
 harb.why_stop = ΑΒΕΒΑΙΟΤΗΤΑ – ΣΤΑΣΗ
+harb.why_ny_avoid = ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΑΠΟΜΑΚΡΥΝΣΗ ΣΤΟΝ ΔΙΑΔΡΟΜΟ
+harb.why_not_yielding = ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΣΤΑΣΗ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ
+alarm.harb_notyield = ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ
+say.alarm.harb_notyield = Σκάφος δεν δίνει δρόμο, πάρτε τον έλεγχο
+harb.ev_notyield = Λιμένας: σκάφος δεν δίνει δρόμο – το σκάφος σταμάτησε, πάρτε τον έλεγχο (TAKE OVER ή STOP)
 # εποπτεία αυτόνομης κίνησης λιμένα + εκμάθηση και επανάληψη (βήμα HX6; groundstation/harbourview.py, harbourmap.py, harbourpanel.py)
 ov.harbour = ΛΙΜΕΝΑΣ
 alarm.harbour_stop = ΣΤΑΣΗ ΛΙΜΕΝΑ: ΤΟ ΣΚΑΦΟΣ ΚΡΑΤΑΕΙ

@@ -29,6 +29,16 @@ proposals the way the AURIX validates them (slew 8 deg/s, the 60 deg check, the 
        camera-only obstacle never turned for, determinism (same seed = same decisions)
   HP16 mutation checks: the steer_ok gate removed -> HP6 fails; unsure -> stop removed -> HP8 fails; the distance
        check removed -> HP10 fails
+  HP17 (HX7-fix, HX7-2) a vessel that does NOT give way: detected only when range-confirmed, keeping its speed and
+       course and meeting the boat even if it stops; no room (+-10 m, on the line) = STOP + U13 + alarm COLLISION |
+       DECISION; room (+-20 m, 22 m to port) = steers clear (starboard, never port, cap <= the route, inside the
+       corridor) with COLLISION RISK; a slowing vessel / a camera-only one = never "not yielding" and never a turn;
+       a vessel only on starboard with no port allowed (head-on) = STOP, never a port escape; mutations: the
+       detection removed / the alarm dropped / the escape's distance check removed -> caught
+  HP18 (HX7-fix, HX7-1) the READY lease: STANDBY + a checked route + fresh + HELM = a kind-4 frame with the LEG TRACK
+       (never the planner's offset heading), cap <= min(planner, leg, 5 kn, other caps), lease 1000, no own alarm;
+       no HELM / stopping / stale telemetry / not STANDBY / no route / a stale HARBOUR_STAT = the request untouched
+       at once; once RUN the planner's own frame; mutation: the planner's heading in the READY frame -> caught
 """
 import asyncio
 import math
@@ -487,13 +497,17 @@ class FakeGw:
         self.mode = proto.MODE_AUTO
         self.profile = proto.PROFILE_CREWED
         self.telem_rx = time.time()
+        self.helm = "alice"
+        self.stopping = False
+        gw = self
+        self.stations = type("Sts", (), {"helm_station": lambda s: (gw.helm, "")})()
 
     def own(self):
         return {"fresh": True, "lat": self.lat, "lon": self.lon, "heading": 0.0, "sog": 4.0, "unc": 2.0,
                 "mode": self.mode, "profile": self.profile}
 
     def telem_fresh(self):
-        return {"pos_source": 1, "prog_gw": True, "prog_n": 2, "auto_wp": 1}
+        return {"pos_source": 1, "prog_gw": True, "prog_n": 2, "auto_wp": 1, "stopping": self.stopping}
 
     def audit(self, kind, **kw):
         self.audits.append(dict(kw, kind=kind))
@@ -513,9 +527,15 @@ def hp11():
     hp.on_stat(stat(0, route=True))
     a_pre_auto = hp.active()
     gw.mode = proto.MODE_STANDBY
-    no_window = hp.active()                            # review MED-2: no START asked = no pre-start kind 4
-    hp.note_start()
-    a_pre = hp.active() and not no_window
+    # HX7-fix (HX7-1): the READY lease needs NO START first - only STANDBY (not stopping), fresh telemetry, HELM held
+    a_pre = hp.active()
+    gw.helm = None
+    no_helm = hp.active()
+    gw.helm = "alice"
+    gw.stopping = True
+    no_stop = hp.active()
+    gw.stopping = False
+    a_pre = a_pre and not no_helm and not no_stop
     pre_modes = []
     for m, prof in ((proto.MODE_REMOTE, proto.PROFILE_UNCREWED), (proto.MODE_HDG_LOCK, proto.PROFILE_UNCREWED),
                     (proto.MODE_MANEUVER, proto.PROFILE_UNCREWED), (proto.MODE_DP, proto.PROFILE_CREWED),
@@ -524,9 +544,6 @@ def hp11():
         pre_modes.append(hp.active())
     a_pre = a_pre and not any(pre_modes)               # round 2 MED-3: the pre-start window only in STANDBY
     gw.mode = proto.MODE_STANDBY
-    hp.start_mono -= 31.0
-    a_pre = a_pre and not hp.active()                  # the window lapsed (30 s)
-    hp.note_start()
     hp.on_stat(stat(0, route=False))
     a_none = hp.active()
     hp.on_stat(stat(4))
@@ -746,10 +763,145 @@ def hp16():
                                                      len(b4), len(b5)))
 
 
+# --- HP17 / HP18 (HX7-fix) --------------------------------------------------------------------------------------
+def ny_run(tracks_at, planner_mod=P, corr=10.0, route_kn=4.0, times=tuple(10.0 + 0.2 * k for k in range(14))):
+    """Several planner cycles (the not-yielding judgement needs a history) -> the last decision."""
+    pl = planner_mod.Planner()
+    d = None
+    for t in times:
+        d = pl.plan(t, inp(tracks_at(t - times[0]), corr=corr, route_kn=route_kn))
+    return d
+
+
+def hp17_cases(planner_mod=P):
+    out = {}
+    # (a) no room: head-on ON the line, +-10 m
+    out["noroom"] = ny_run(lambda dt: [trk(1, 0.5, 100.0 - 2.5 * dt, 0.0, -2.5)], planner_mod)
+    # (b) room: +-20 m corridor, 22 m to PORT (x < 0 = port of a northbound leg), coming south
+    out["room"] = ny_run(lambda dt: [trk(1, -22.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=6.0, beam=2.5)], planner_mod,
+                         corr=20.0)
+    # (c) the same vessel SLOWING (2.5 -> 1.2 m/s): it may be giving way - never "not yielding"
+    sp = lambda dt: max(1.2, 2.5 - 0.6 * dt)    # noqa: E731
+    out["slowing"] = ny_run(lambda dt: [dict(trk(1, 0.5, 100.0 - 2.0 * dt, 0.0, -sp(dt)))], planner_mod)
+    # (d) camera-only (not steer_ok) in the room geometry: never "not yielding", never a turn
+    out["camera"] = ny_run(lambda dt: [trk(1, -22.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=6.0, beam=2.5, steer=False,
+                                           src="C")], planner_mod, corr=20.0)
+    # (e) head-on 9 m to STARBOARD in a +-20 m corridor: the only way out would be a PORT turn (not allowed head-on)
+    out["stbd_only"] = ny_run(lambda dt: [trk(1, 9.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=4.0, beam=2.0)], planner_mod,
+                              corr=20.0)
+    return out
+
+
+def hp17_ok(o):
+    a, b, c, d, e = o["noroom"], o["room"], o["slowing"], o["camera"], o["stbd_only"]
+    bad = []
+    if not (a["stop"] and a["why"] == "harb.why_not_yielding" and a["alarm"] & 3 == 3 and a["not_yielding"]
+            and any(str(r).startswith("U13 ") for r in a["reasons"])):
+        bad.append("no room: %s %s %s" % (a["stop"], a["why"], a["alarm"]))
+    if b["stop"] or port_turn(b) or not b["not_yielding"] or not (b["alarm"] & 1) or b["cap_kn"] > 4.0 + 1e-9 \
+            or abs(b.get("offset") or 0.0) > 20.0:
+        bad.append("room: stop %s heading %s ny %s alarm %s cap %s" % (b["stop"], b["heading"], b["not_yielding"],
+                                                                       b["alarm"], b["cap_kn"]))
+    if c["not_yielding"] or c["why"] == "harb.why_not_yielding":
+        bad.append("slowing flagged: %s" % c["not_yielding"])
+    if d["not_yielding"] or (not d["stop"] and (port_turn(d) or stbd_turn(d))):
+        bad.append("camera-only: ny %s turn %s" % (d["not_yielding"], d["heading"]))
+    if not e["stop"] and port_turn(e):
+        bad.append("starboard vessel: a port escape %s" % e["heading"])
+    return bad
+
+
+def hp17():
+    import importlib
+    import types
+    o = hp17_cases()
+    bad = hp17_ok(o)
+    src = open(os.path.join(HERE, "harbour", "planner.py"), encoding="utf-8").read()
+    importlib.import_module("harbour.colregs")
+
+    def mutant(old, new):
+        assert old in src, old
+        m = types.ModuleType("harbour.planner_mut17")
+        m.__package__ = "harbour"
+        exec(compile(src.replace(old, new), "planner_mut17", "exec"), m.__dict__)
+        return m
+    muts = {
+        "detection removed": ('        threats = self._threats(now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end)',
+                              '        threats = []'),
+        "alarm dropped": ('"harb.why_not_yielding", ALM_COLLISION | ALM_DECISION,', '"harb.why_not_yielding", 0,'),
+        "escape distance removed": ("""                ok_m, cl, _b = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, movers, {"big": []}, ax, ay, ux, uy,
+                                         nx, ny, s_end, H=H)""", """                ok_m, cl, _b = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, [], {"big": []}, ax, ay, ux, uy,
+                                         nx, ny, s_end, H=H)"""),
+    }
+    caught = {}
+    for name, (old, new) in muts.items():
+        mb = hp17_ok(hp17_cases(mutant(old, new)))
+        if name == "escape distance removed":
+            # the mutant may escape where nothing keeps 15 m: the no-room case then MOVES (or the room case too close)
+            r = ny_run(lambda dt: [trk(1, 0.5, 100.0 - 2.5 * dt, 0.0, -2.5)], mutant(old, new))
+            mb = mb or ([] if r["stop"] else ["no room moves"])
+        caught[name] = bool(mb)
+    report("HP17 a vessel that does not give way: steer clear with room, STOP + alarm without; mutations caught",
+           not bad and all(caught.values()),
+           "bad %s; no room %s / %s; room heading %s cap %s; mutations caught %s" % (
+               bad, o["noroom"]["why"], o["noroom"]["alarm"], o["room"]["heading"], o["room"]["cap_kn"], caught))
+
+
+def hp18(planner_mod=P):
+    det = []
+    gw = FakeGw()
+    gw.mode = proto.MODE_STANDBY
+    gw.lat, gw.lon = simworld.xy_to_ll(37.82, 23.60, 8.0, 0.0)      # 8 m off the line (beyond the usable corridor):
+    hp = planner_mod.HarbourPlanner(gw)                              # the planner itself WOULD steer back (an offset)
+    hp.on_stat(stat(0))
+    base = {"kind": proto.NAV_CAP, "heading": None, "cap_kn": 3.0, "reason": 2, "alarm": 4}
+    r = hp.fold(dict(base), gw.own())
+    d = hp.dec or {}
+    ok_sent = r["kind"] == proto.NAV_HARBOUR and r.get("ready") and abs(P.wrap(r["heading"] - 0.0)) < 1e-6 and         r["cap_kn"] <= min(3.0, 4.0, 5.0, d.get("cap_kn") or 0.0) + 1e-9 and r["lease_ms"] == 1000 and         r["alarm"] == 4 and not (r["hflags"] & 1)
+    steered = d.get("heading") is not None and abs(P.wrap(d["heading"])) > 0.5     # the planner WOULD have steered
+    det.append("ready %s heading %.1f (planner %s) cap %s" % (ok_sent, r["heading"], d.get("heading"), r["cap_kn"]))
+    lapses = {}
+    for name, fn, undo in (("no HELM", lambda: setattr(gw, "helm", None), lambda: setattr(gw, "helm", "alice")),
+                           ("stopping", lambda: setattr(gw, "stopping", True), lambda: setattr(gw, "stopping", False)),
+                           ("MANUAL", lambda: setattr(gw, "mode", proto.MODE_MANUAL),
+                            lambda: setattr(gw, "mode", proto.MODE_STANDBY)),
+                           ("stale STAT", lambda: setattr(hp, "stat_rx", hp.stat_rx - 2.0), lambda: hp.on_stat(stat(0))),
+                           ("no route", lambda: hp.on_stat(stat(0, route=False)), lambda: hp.on_stat(stat(0)))):
+        fn()
+        hp.dec = None
+        o = gw.own()
+        lapses[name] = hp.fold(dict(base), o) == base
+        undo()
+    o = gw.own()
+    o["fresh"] = False
+    hp.dec = None
+    lapses["stale telemetry"] = hp.fold(dict(base), o) == base
+    hp.on_stat(stat(1))
+    hp.dec = None
+    run = hp.fold(dict(base), gw.own())
+    run_ok = run["kind"] == proto.NAV_HARBOUR and not run.get("ready")
+    det.append("lapses %s run %s" % (lapses, run_ok))
+    ok = ok_sent and steered and all(lapses.values()) and run_ok
+    return ok, det
+
+
+def hp18_report():
+    ok, det = hp18()
+    import types
+    src = open(os.path.join(HERE, "harbour", "planner.py"), encoding="utf-8").read()
+    old = '            hdg = lt if lt is not None else (o_hdg if o_hdg is not None else 0.0)'
+    m = types.ModuleType("harbour.planner_mut18")
+    m.__package__ = "harbour"
+    exec(compile(src.replace(old, '            hdg = hdg'), "planner_mut18", "exec"), m.__dict__)
+    mok, _d = hp18(m)
+    report("HP18 the READY lease: leg track, never a raised cap, lapses at once; mutation caught", ok and not mok,
+           "%s; mutant (planner heading) passes: %s" % ("; ".join(det), mok))
+
+
 def main():
     t0 = time.time()
     for fn in (hp1, hp2, hp3, hp4, hp5, hp6_report, hp7, hp8_report, hp9, hp10_report, hp11, hp12, hp13, hp14, hp15,
-               hp16):
+               hp16, hp17, hp18_report):
         try:
             fn()
         except Exception as e:

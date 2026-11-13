@@ -3651,6 +3651,7 @@ class App:
                         self.uav_page.update(d.get("uav"))    # the UAV magazine page (CLAUDE.md V, U2)
                     self.uav_notices(d.get("uav"))
                     self.adsb_sync(d.get("adsb"))
+                    self.harbour_alarm_sync()           # HX7-fix: a vessel not giving way (station-local WARNING)
                     self.mob_sync(d.get("sar"))
                     if self.callouts:
                         self.callouts.gw(d)
@@ -3671,6 +3672,7 @@ class App:
                 elif kind == "harbour_view":
                     d["_rx"] = time.time()
                     self.harbour_view = d                       # HX6: 2.5 Hz display copy (read only)
+                    self.harbour_alarm_sync()
                 elif kind == "harbour_ack":
                     self.on_harbour_ack(d)
                 elif kind == "uav_ack":
@@ -6315,6 +6317,28 @@ class App:
             return None
         self.harbour_model = harbourview.model(h, self.harbour_view, time.time(), i18n.lang())
         return self.harbour_model
+
+    def harbour_alarm_sync(self):
+        """HX7-fix (finding HX7-2): the planner STOPPED for a vessel that does not give way and no path keeps the
+        minimum distances (why harb.why_not_yielding) = a station-local WARNING «ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ
+        ΕΛΕΓΧΟ» + its voice callout once per rise (MasterLamps.set_local: never an AURIX alarm; the AURIX's own COLLISION
+        RISK + DRIVER DECISION advisories come with the navreq). DISPLAY only: nothing is sent."""
+        try:
+            m = self.harbour_state() or {}
+        except Exception:
+            m = {}
+        on = m.get("why_key") == "harb.why_not_yielding" and m.get("state") in ("RUN", "SLOW", "HOLD")
+        code = "harb_notyield"
+        lamps = getattr(self, "lamps", None)
+        if lamps is None:
+            return
+        if on and code not in lamps.local:
+            lamps.set_local(code, T("alarm.harb_notyield"), alerts.WARNING)
+            self.event(T("harb.ev_notyield"))
+            if getattr(self, "sound", None):
+                self.sound.alarm("harb_notyield", alerts.WARNING)
+        elif not on and code in lamps.local:
+            lamps.set_local(code, None)
 
     def harbour_relevant(self, m):
         """Show the panel only while there is something to supervise: the mode runs / finished, the AURIX holds a

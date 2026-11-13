@@ -19,6 +19,8 @@
        START goes straight to the gateway (its ACCEPT), a NO sends nothing, a single operator is asked by cmd()
   HU11 the banner on both screens, never red; the panel fits 1366x768 .. 1920x1080 at 100 / 125 / 150 %, el + en;
        no colour / font literal in the new modules
+  HU13 (HX7-fix) the planner's "vessel not giving way - STOP" = a station-local WARNING «ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ –
+       ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ» + ONE voice callout per rise, cleared when it ends; nothing sent; a "steering clear" is no WARNING
   HU12 the route window on the real station: MAKE from a saved track, CHECK (gateway ack 129 refuses SEND, OK allows),
        SEND = the normal upload frames with the harbour flag, never a start; a TEST sample is never sent
 
@@ -663,6 +665,37 @@ def hu12(env):
                ok_make, ok_first, ok_chk, ok_ref, ok_send, ok_plain, ok_sample, ok_short, ok_closed))
 
 
+def hu13(env):
+    ap = env.ap
+    cap = Cap(env)
+    i18n.set_lang("el", save=False)
+    said = []
+    snd = ap.sound
+    ap.sound = type("S", (), {"alarm": lambda s, code, level: said.append((code, level))})()
+    try:
+        ap.lamps.set_local("harb_notyield", None)
+        cap.clear()
+        station(env, state="RUN", why_key="harb.why_ny_avoid")
+        ap.harbour_alarm_sync()
+        avoid_quiet = "harb_notyield" not in ap.lamps.local and not said
+        station(env, state="HOLD", why_key="harb.why_not_yielding", stop=True)
+        ap.harbour_alarm_sync()
+        ap.harbour_alarm_sync()                                  # a second sync = no second voice
+        lamp = ap.lamps.local.get("harb_notyield")
+        on_ok = lamp is not None and lamp[0] == "ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ" and             lamp[1] == alerts.WARNING and said == [("harb_notyield", alerts.WARNING)]
+        station(env, state="HOLD", why_key="harb.why_stop")
+        ap.harbour_alarm_sync()
+        off_ok = "harb_notyield" not in ap.lamps.local
+        sent_none = cap.frames == [] and cap.msgs == []
+    finally:
+        ap.sound = snd
+        i18n.set_lang("en", save=False)
+    report("HU13 a vessel not giving way: the station-local WARNING + one voice, cleared after; nothing sent",
+           avoid_quiet and on_ok and off_ok and sent_none,
+           "avoid quiet %s, on %s (%s, said %s), off %s, sent nothing %s" % (avoid_quiet, on_ok, lamp, said, off_ok,
+                                                                           sent_none))
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="trygons_harbourui_")
     for fn in (hu2, hu3, hu4, hu5, hu6, hu7, hu8, hu9):
@@ -685,7 +718,7 @@ def main():
     try:
         env = TS.Env(rig, tmp)
         keep_t = (rig.ap.t, rig.ap.t_rx)
-        for fn in (hu10, hu11, hu12):
+        for fn in (hu10, hu11, hu12, hu13):
             try:
                 env.reset()
                 fn(env)

@@ -60,8 +60,17 @@ DEFAULTS = {
     "tentative_hits": 2,                                 # ... with at least this many range hits (its window)
     "vessel_moving_mps": 0.2,                            # a vessel-class track faster than this = MOVING (15 m)
     "obstacle_moving_mps": 0.25,                         # HX5-r2 storm: any other track faster than this = MOVING
-                                                         # (a kayak at 0.5-1 m/s estimated slower kept only 8 m)                                # U12: the own position / heading older than this = STOP                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
-}                                                        # judged over this shorter time = slow on; else STOP
+                                                         # (a kayak at 0.5-1 m/s estimated slower kept only 8 m)
+    # HX7-fix (owner option (a), finding HX7-2): a range-confirmed MOVING track that does NOT give way = observed for
+    # >= ny_min_obs_s, its speed not falling (>= ny_slow_frac x its highest speed over ny_window_s), its course
+    # steady (<= ny_turn_deg), and its constant-velocity path meets the boat EVEN IF THE BOAT STOPS (stopping is no
+    # refuge): then the planner steers clear inside the corridor if a path keeps the minimum distances, else STOP +
+    # the "vessel not giving way - TAKE OVER" alarm (never a creep towards it)
+    "ny_window_s": 4.0, "ny_min_obs_s": 2.0, "ny_slow_frac": 0.85, "ny_turn_deg": 15.0,
+    # HX7-fix (finding HX7-1): the READY lease before the captain's START (STANDBY only): heading = the leg track,
+    # cap = the most restrictive of the planner's cap, the route leg and ready_kn
+    "ready_kn": 5.0,
+}
 
 # The explanation line (design 7.5): key -> (el, en); the same keys in groundstation/lang el.txt / en.txt (HP test).
 WHY = {
@@ -77,7 +86,13 @@ WHY = {
     "harb.why_overtaking": ("ΠΡΟΣΠΕΡΝΩ ΣΚΑΦΟΣ – κρατώ απόσταση", "OVERTAKING A VESSEL - keeping clear"),
     "harb.why_overtaken": ("ΜΕ ΠΡΟΣΠΕΡΝΑ ΣΚΑΦΟΣ – διατηρώ πορεία", "BEING OVERTAKEN - stand-on"),
     "harb.why_stop": ("ΑΒΕΒΑΙΟΤΗΤΑ – ΣΤΑΣΗ", "UNSURE - STOP"),
+    "harb.why_ny_avoid": ("ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΑΠΟΜΑΚΡΥΝΣΗ ΣΤΟΝ ΔΙΑΔΡΟΜΟ",
+                          "VESSEL NOT GIVING WAY - STEERING CLEAR IN THE CORRIDOR"),
+    "harb.why_not_yielding": ("ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΣΤΑΣΗ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ",
+                              "VESSEL NOT GIVING WAY - STOP - TAKE OVER"),
 }
+# navreq alarm bits (app/link.c gw_navreq: 1 collision, 2 driver decision) - the EXISTING advisory path
+ALM_COLLISION, ALM_DECISION = 1, 2
 
 
 def why_text(key, detail=""):
@@ -110,11 +125,43 @@ class Planner:
         self.u4_until = 0.0
         self.since = {}                 # slow-then-stop timers: "U6" / "U8" -> since when
         self.cycles = 0
+        self.hist = {}                  # HX7-fix: track id -> [(t, speed m/s, course deg)] (the not-yielding judgement)
 
     def reset(self):
         self.prev = None
         self.last_t = None
         self.since = {}
+        self.hist = {}
+
+    # --- HX7-fix: the not-yielding judgement ------------------------------------------------------------------
+    def _observe(self, now, tracks):
+        """Keep each track's recent (time, speed, course) - plan() calls it every cycle with `now`."""
+        w = float(self.c["ny_window_s"])
+        seen = set()
+        for t in tracks:
+            i = t.get("id")
+            if i is None:
+                continue
+            seen.add(i)
+            h = self.hist.setdefault(i, [])
+            if h and now < h[-1][0]:
+                h.clear()                                   # a clock step back: start again
+            h.append((now, float(t.get("speed") or 0.0), float(t.get("course") or 0.0)))
+            while h and now - h[0][0] > w:
+                h.pop(0)
+        for i in [k for k in self.hist if k not in seen]:
+            del self.hist[i]
+
+    def _not_slowing(self, t, now):
+        """True = observed long enough, the speed not falling, the course steady (it keeps coming as it is)."""
+        c = self.c
+        h = self.hist.get(t.get("id")) or []
+        if len(h) < 3 or now - h[0][0] < float(c["ny_min_obs_s"]) - 1e-6:
+            return False
+        sp_now, cs_now = h[-1][1], h[-1][2]
+        if sp_now < float(c["ny_slow_frac"]) * max(q[1] for q in h):
+            return False                                    # it slows down: it may be giving way
+        return all(abs(wrap(q[2] - cs_now)) <= float(c["ny_turn_deg"]) for q in h)
 
     # --- the unsure list (design 7.4) --------------------------------------------------------------------------
     def _unsure(self, now, inp):
@@ -176,8 +223,9 @@ class Planner:
         own = inp.get("own") or {}
         dec = {"t": now, "stop": True, "heading": None, "cap_kn": 0.0, "hflags": 0, "nearest_m": 255, "n_tracks": 0,
                "reasons": [], "slow": [], "colregs": [], "turn": False, "turn_for": [], "blockers": [], "offset": None,
-               "why": "harb.why_stop", "detail": ""}
+               "why": "harb.why_stop", "detail": "", "alarm": 0, "not_yielding": []}
         tracks = [t for t in (inp.get("tracks") or []) if isinstance(t, dict) and t.get("x") is not None]
+        self._observe(now, tracks)
         # a TENTATIVE range track (radar / LiDAR hits, not confirmed yet: <= 1 s LiDAR, <= 4 s radar; spray, sea
         # clutter, a new object) is not planned around until it is confirmed - else every spray return would latch a
         # HOLD. Camera-only / AIS-only tracks (never "confirmed": no range hits) ARE obstacles (slow / STOP only).
@@ -230,6 +278,8 @@ class Planner:
                 dec["slow"] = slow
                 dec["why"] = e.key
                 dec["detail"] = e.why
+                dec["alarm"] = e.alarm
+                dec["not_yielding"] = list(e.ny)
                 self.prev = None
                 return dec
         dec["reasons"] = stop
@@ -363,7 +413,23 @@ class Planner:
             if best is None or cost < best[0]:
                 best = (cost, o, v_kn, blk)
         dec["blockers"] = sorted(str(x) for x in straight_block)
-        if best is None and not amb:
+        # HX7-fix (finding HX7-2, owner option (a)): a range-confirmed moving track that does not give way and whose
+        # path meets the boat even if the boat STOPS - standing still is no refuge from it
+        threats = self._threats(now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end)
+        dec["not_yielding"] = sorted(str(t.get("id")) for t in threats)
+        if threats:
+            dec["alarm"] |= ALM_COLLISION
+        esc = None
+        if best is None and threats and not amb and turns_ok:
+            # steer clear FIRST: a path inside the corridor that keeps the minimum distances from every moving track
+            # until the threat has passed (and from every static object over the full horizon), starboard first (a
+            # port turn only where COLREGs allows one: no_port), at the highest speed that keeps it feasible (never
+            # above the cap: the speeds are the cap's fractions)
+            esc = self._escape(threats, speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c,
+                               ax, ay, ux, uy, nx, ny, s_end)
+            if esc is not None:
+                best = (0.0, esc[0], esc[1], set())
+        if best is None and not amb and not threats:
             # slow, then STOP (design 7.4): nothing is feasible over the full horizon - the slowest STRAIGHT candidate
             # (no turn: M0-3 holds for any obstacle) judged over slow_horizon_s keeps the boat creeping on while the
             # danger is still far; once that fails too = STOP (the HOLD is latched on the AURIX: only when needed)
@@ -373,6 +439,13 @@ class Planner:
             if ok and not is_turn(round(e_straight, 2)):
                 best = (0.0, round(e_straight, 2), v_min, blk)
                 dec["slow"].append("nothing free over %.0f s: creeping straight" % float(c["horizon_s"]))
+        if best is None and threats:
+            # ... STOP second: no path keeps the minimum distances - STOP at once (never a creep towards it) and the
+            # loud state: the existing navreq COLLISION RISK + DRIVER DECISION advisories + the station's WARNING
+            # «ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ» (the captain takes over: a stopped boat is NOT safe from it)
+            raise _Stop("U13 a vessel not giving way (%s) - no free path inside the corridor - STOP, TAKE OVER"
+                        % ", ".join(dec["not_yielding"]), "harb.why_not_yielding", ALM_COLLISION | ALM_DECISION,
+                        dec["not_yielding"])
         if best is None:
             for k, w in ((colregs.HEAD_ON, "harb.why_head_on"), (colregs.CROSS_STBD, "harb.why_giveway_stbd"),
                          (colregs.OVERTAKING, "harb.why_overtaking"), (colregs.CROSS_PORT, "harb.why_standon_port")):
@@ -402,11 +475,61 @@ class Planner:
             if k in kinds and not amb:
                 why = w
                 break
+        if threats and (esc is not None or dec["turn"]):
+            why = "harb.why_ny_avoid"                       # steering clear of a vessel that does not give way
         dec["why"] = why
         dec["detail"] = detail or ("%.1f kn" % v_kn)
         dec["ms"] = round((time.perf_counter() - t_start) * 1000.0, 1)
         self.prev = (o, v_kn)
         return dec
+
+    def _threats(self, now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end):
+        """HX7-fix: the movers that do NOT give way: range-confirmed (steer_ok), not slowing / turning (_not_slowing),
+        and their constant-velocity path comes inside the minimum moving distance of the boat even if the boat STOPS
+        here and now (the boat simulated STANDING where it is: only the other vessel's own motion closes the gap - a
+        slow boat ahead that we would coast up to is not a vessel that fails to give way; the planner's normal
+        candidates keep its distance)."""
+        out = []
+        for t in movers:
+            if not t.get("steer_ok") or not self._not_slowing(t, now):
+                continue
+            ok, _cl, _b = self._sim(round(e0, 2), 0.0, s0, e0, psi, usable + 1e3, hdg, 0.0, [t], {"big": []}, ax, ay,
+                                    ux, uy, nx, ny, s_end)
+            if not ok:
+                out.append(t)
+        return out
+
+    def _escape(self, threats, speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c, ax, ay,
+                ux, uy, nx, ny, s_end):
+        """HX7-fix: the escape path -> (offset, speed kn) or None. Judged against EVERY moving track at the full
+        minimum distance until the threats have passed (their TCPA + 5 s, at least slow_horizon_s, at most the
+        horizon) and against every static object over the full horizon; inside the usable corridor; starboard (or
+        straight) first, a port offset only when COLREGs allows one; then the highest speed."""
+        c = self.c
+        tc = 0.0
+        for t in threats:
+            _d, tt = colregs.cpa(float(t["x"]) - own_c["x"], float(t["y"]) - own_c["y"],
+                                 float(t["vx"]) - own_c["vx"], float(t["vy"]) - own_c["vy"])
+            tc = max(tc, tt)
+        H = min(float(c["horizon_s"]), max(float(c["slow_horizon_s"]), tc + 5.0))
+        found = []
+        for v_kn in speeds:
+            for o in offs:
+                port = o < e0 - tol
+                if port and no_port:
+                    continue
+                ok_m, cl, _b = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, movers, {"big": []}, ax, ay, ux, uy,
+                                         nx, ny, s_end, H=H)
+                if not ok_m:
+                    continue
+                ok_s, _c2, _b2 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, [], sidx, ax, ay, ux, uy, nx, ny,
+                                           s_end)
+                if ok_s:
+                    found.append((1 if port else 0, -v_kn, -cl, abs(o - e0), o, v_kn))
+        if not found:
+            return None
+        found.sort()
+        return found[0][4], found[0][5]
 
     @staticmethod
     def _seen_by_ok(t, degraded):
@@ -522,10 +645,12 @@ class _Late(Exception):
 
 
 class _Stop(Exception):
-    def __init__(self, why, key="harb.why_stop"):
+    def __init__(self, why, key="harb.why_stop", alarm=0, ny=()):
         Exception.__init__(self, why)
         self.why = why
         self.key = key
+        self.alarm = alarm
+        self.ny = tuple(ny)
 
 
 # --- the gateway glue ------------------------------------------------------------------------------------------------
@@ -578,10 +703,28 @@ class HarbourPlanner:
         # HDG LOCK) - never in UNCREWED HDG LOCK / REMOTE / MANEUVER / AUTO / DP, where the kind 1 / 2 lease is
         # needed (a kind-4 request is inert there on the AURIX = their lease would lapse)
         # round 2 MED-3 / LOW-5: only in STANDBY (no kind 1 / 2 cap acts there) and only with FRESH telemetry
-        pre = bool(o.get("fresh")) and o.get("mode") == MODE_STANDBY
-        win = self.start_mono is not None and time.monotonic() - self.start_mono <= float(
-            self.planner.c["start_window_s"])
-        return bool(self.stat.get("harb_route")) and st == 0 and pre and win
+        # HX7-fix (finding HX7-1): no START needed first any more - the READY lease (ready_frame: the leg track, the
+        # most restrictive cap, inert on the AURIX outside harbour autonomy) is sent while a checked harbour route is
+        # loaded, the boat is in STANDBY (not stopping) with fresh telemetry and a gateway station holds HELM - so
+        # entry_ok can become true and the captain's first START passes. Any of them missing = no kind 4 at once.
+        return bool(self.stat.get("harb_route")) and st == 0 and self.ready_ok(o)
+
+    def ready_ok(self, o):
+        """The READY lease's conditions besides the AURIX's HARBOUR_STAT (route loaded, state OFF)."""
+        if not (bool(o.get("fresh")) and o.get("mode") == MODE_STANDBY):
+            return False
+        try:
+            d = self.gw.telem_fresh() or {}
+        except Exception:
+            return False
+        if not d or d.get("stopping"):
+            return False                                # not yet idle + neutral after the STANDBY
+        sts = getattr(self.gw, "stations", None)
+        try:
+            helm = sts.helm_station()[0] if sts is not None and hasattr(sts, "helm_station") else None
+        except Exception:
+            helm = None
+        return helm is not None                         # nobody holds HELM = nobody can start: no lease
 
     def real_link(self):
         a = str((self.gw.cfg or {}).get("aurix", ""))
@@ -700,12 +843,23 @@ class HarbourPlanner:
                 stop = True
         o_hdg = o.get("heading")
         hdg = dec["heading"] if dec["heading"] is not None else (o_hdg if o_hdg is not None else 0.0)
+        alarm = int(req.get("alarm") or 0)
+        ready = (self.stat or {}).get("harb_state") not in RUNNING
+        if ready:
+            # HX7-fix: the READY lease (before the START): NO heading offset (the leg track the planner judged; else
+            # the bow), the most restrictive cap (the planner's, the route leg's, ready_kn), the same lease, no alarm of
+            # its own - harmless: inert on the AURIX until the captain's START + CONFIRM, and only ever lower
+            lt = dec.get("leg_track")
+            hdg = lt if lt is not None else (o_hdg if o_hdg is not None else 0.0)
+            cap = min(cap, float(self.planner.c["ready_kn"]))
+        else:
+            alarm |= int(dec.get("alarm") or 0)         # HX7-fix: not yielding = COLLISION (+ DECISION when stopped)
         if stop:
             hf |= 0x01
             cap = 0.0
         return {"kind": NAV_HARBOUR, "heading": hdg, "cap_kn": cap, "reason": reason,
-                "alarm": int(req.get("alarm") or 0), "hflags": hf, "nearest_m": dec["nearest_m"],
-                "n_tracks": dec["n_tracks"], "lease_ms": int(self.planner.c["lease_ms"])}
+                "alarm": alarm, "hflags": hf, "nearest_m": dec["nearest_m"],
+                "n_tracks": dec["n_tracks"], "lease_ms": int(self.planner.c["lease_ms"]), "ready": ready}
 
     def view(self):
         """The decision as the stations draw it (HX6, read only): the AURIX state, the planner's heading / cap /
@@ -720,7 +874,8 @@ class HarbourPlanner:
                 "stat_fresh": self.stat_fresh(), "stop": d.get("stop"), "heading": d.get("heading"),
                 "cap_kn": d.get("cap_kn"), "why_key": d.get("why"), "text_el": d.get("text_el"),
                 "text_en": d.get("text_en"), "colregs": d.get("colregs"), "turn": d.get("turn"),
-                "unsure": list(d.get("reasons") or [])[:6], "hflags": d.get("hflags")}
+                "unsure": list(d.get("reasons") or [])[:6], "hflags": d.get("hflags"),
+                "not_yielding": list(d.get("not_yielding") or [])[:6]}
 
     def status(self):
         d = self.dec or {}
@@ -730,5 +885,6 @@ class HarbourPlanner:
                 "stat_fresh": self.stat_fresh(), "gate": self.gate,
                 "stop": d.get("stop"), "why": d.get("why"), "text_el": d.get("text_el"), "text_en": d.get("text_en"),
                 "cap_kn": d.get("cap_kn"), "heading": d.get("heading"), "reasons": d.get("reasons"),
-                "colregs": d.get("colregs"), "turn": d.get("turn"), "decisions": self.decisions,
+                "colregs": d.get("colregs"), "turn": d.get("turn"), "not_yielding": d.get("not_yielding"),
+                "decisions": self.decisions,
                 "stops": self.stops, "errors": self.errors, "ms": d.get("ms")}

@@ -15,6 +15,15 @@ the C fault storm's (storm.c, step HX2); this file checks the PLANNER's own inva
   I89h never further off the line than the corridor half-width while not in HOLD
   I90  every unsure reason that is not U2 / U6 / U9 (judged here from the tracker flags) = STOP in the same cycle;
        radar + LiDAR both lost (health LOST, injected) = STOP in the same cycle
+  I93  (HX7-fix, HX7-1) the READY lease before the START (randomized gateway states, the real HarbourPlanner glue):
+       only with a checked route + state OFF + a fresh HARBOUR_STAT + STANDBY (not stopping) + fresh telemetry + HELM
+       held - else the request goes out UNTOUCHED (no kind 4); when sent: the leg track as the heading (no offset),
+       the cap <= min(the leg, 5 kn, the other caps), the lease 1000 ms, no alarm of its own
+  I94  (HX7-fix, HX7-2) a vessel that does not give way ("rogue" family: constant velocity at the boat), judged here
+       from the WORLD TRUTH: its path passes the STANDING boat < 10 m hull to hull within 40 s and a steer_ok track
+       has followed it for >= 4 s -> a STOP for "no free path" must carry the not-yielding state (U13: the vessel
+       named, COLLISION RISK + DRIVER DECISION); never a creep towards it (I88 / I89h / I86h / I87 as for every
+       decision: the escape keeps the distances, the corridor, the cap, the steer_ok gate)
 
     python tests/acceptance/storm_harbour.py [--episodes N] [--seed S] [--secs 60] [--mutate steer_ok|unsure|distance]
     python tests/acceptance/storm_harbour.py --mutation-check      (each mutation must FAIL the storm)
@@ -42,7 +51,9 @@ NAMES = {"I86h": "planner cap <= min(leg, 5 kn), <= 2 kn degraded, never raised"
          "I87": "a turn away from the line only with a radar / LiDAR confirmed track ahead",
          "I88": "15 m moving / 8 m static kept to every seen object (or HOLD in time)",
          "I89h": "never outside the corridor while not in HOLD",
-         "I90": "every STOP-class unsure reason / both sensors lost = STOP in the same cycle"}
+         "I90": "every STOP-class unsure reason / both sensors lost = STOP in the same cycle",
+         "I93": "READY lease: only STANDBY + route + fresh + HELM; leg track, cap never raised, lease 1000 ms",
+         "I94": "a vessel not giving way + no free path = STOP with the not-yielding alarm"}
 
 
 def res(inv, ok, seed, text=""):
@@ -118,7 +129,9 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
     # "pass" (a passable harbour: an off-line buoy / kayak in a wide corridor, moored boats clear of it, no fault:
     # the boat must MAKE WAY past them - the reach counter), "ghost" (an AIS-only report / a camera-only object ON
     # the line in a wide corridor: a turn would be possible - only the steer_ok gate forbids it; the mutation check)
-    fam = rng.choices(["mixed", "pass", "ghost"], [0.6, 0.2, 0.2])[0]
+    # HX7-fix: + "rogue" (a vessel that does NOT give way: constant velocity at the boat, head-on / from astern, on the
+    # line (no room) or 22-26 m off it (room in a +-10 m corridor), corridor 10 / 20 m)
+    fam = rng.choices(["mixed", "pass", "ghost", "rogue"], [0.5, 0.17, 0.15, 0.18])[0]
     STATS["fam_" + fam] = STATS.get("fam_" + fam, 0) + 1
     extra = []
     if fam == "mixed":
@@ -139,6 +152,17 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
                 {"id": "moored", "kind": "moored", "x": -sx * rng.uniform(32.0, 40.0), "y": rng.uniform(40.0, 120.0),
                  "len": 10.0, "beam": 3.5, "hdg": 0.0, "h": 2.0, "rcs": 0.7, "refl": 0.5}]
         corr, route, camera = 20.0, rng.choice([4.0, 5.0]), False
+    elif fam == "rogue":
+        sx = rng.choice((-1.0, 1.0))
+        x = rng.uniform(-3.0, 3.0) if rng.random() < 0.5 else sx * rng.uniform(22.0, 26.0)
+        sp = rng.uniform(1.5, 3.5)
+        if rng.random() < 0.65:
+            objs = [TT.vessel("rogue", (x, rng.uniform(160.0, 240.0)), (x, -600.0), sp, ln=rng.choice((6.0, 9.0)),
+                              beam=2.5, h=2.0, rcs=0.8)]
+        else:
+            objs = [TT.vessel("rogue", (x, -rng.uniform(60.0, 100.0)), (x, 900.0), sp + 1.5,
+                              ln=rng.choice((6.0, 9.0)), beam=2.5, h=2.0, rcs=0.8)]
+        corr, route, camera = rng.choice([10.0, 10.0, 20.0]), rng.choice([4.0, 5.0]), False
     else:
         y = rng.uniform(60.0, 110.0)
         objs = [{"id": "moored", "kind": "moored", "x": rng.choice((-1.0, 1.0)) * rng.uniform(32.0, 40.0),
@@ -163,6 +187,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
         STATS["faults"] += 1
     seen = {}
     lost_at = {}
+    followed = {}                                       # I94: object id -> since when a steer_ok track follows it
     leg_psi = 0.0
     steps = int((max(secs, 90.0) if fam == "pass" else secs) / 0.2)    # a passable harbour: 90 s to make way
     for k in range(steps):
@@ -212,6 +237,33 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
         both = sim.health["radar"] == "LOST" and sim.health["lidar"] == "LOST"
         if sc or both:
             res("I90", dec["stop"], seed, "t %.1f unsure %s both lost %s -> stop %s" % (t, sc, both, dec["stop"]))
+        # I94 (own rule from the world truth): a rogue whose constant-velocity path passes the STANDING boat < 10 m
+        # hull to hull within 40 s, followed by a steer_ok track for >= 4 s, and the planner stops for "no free path"
+        if fam == "rogue":
+            for o in sim.w.truth(sim.t):
+                if o["id"] != "rogue":
+                    continue
+                sz = 0.5 * max(o["len"], o["beam"])
+                fol = any(tr.get("steer_ok") and math.hypot(tr["x"] - o["x"], tr["y"] - o["y"]) <= 10.0 + sz
+                          for tr in tracks)
+                if fol:
+                    followed.setdefault(o["id"], t)
+                else:
+                    followed.pop(o["id"], None)
+                vx = o["speed"] * math.sin(math.radians(o["hdg"]))
+                vy = o["speed"] * math.cos(math.radians(o["hdg"]))
+                dx, dy = o["x"] - boat.x, o["y"] - boat.y
+                vv = vx * vx + vy * vy
+                tc = max(0.0, -(dx * vx + dy * vy) / vv) if vv > 1e-9 else 0.0
+                cpa = math.hypot(dx + vx * min(tc, 40.0), dy + vy * min(tc, 40.0)) - sz - 3.0
+                no_path = dec["stop"] and all(str(r).startswith(("U5 ", "U13 ")) for r in dec.get("reasons") or [])
+                if cpa < 10.0 and tc <= 40.0 and t - followed.get(o["id"], 1e9) >= 4.0 and no_path:
+                    ok = bool(dec.get("not_yielding")) and (int(dec.get("alarm") or 0) & 3) == 3
+                    res("I94", ok, seed, "t %.1f a rogue (truth CPA %.1f m in %.0f s) and a STOP %s without the "
+                        "not-yielding alarm (alarm %s)" % (t, cpa, tc, dec.get("reasons"), dec.get("alarm")))
+            if dec.get("not_yielding"):
+                kk = "ny_stops" if dec["stop"] else "ny_moving"
+                STATS[kk] = STATS.get(kk, 0) + 1
         if dec["stop"]:
             STATS["stops"] += 1
         else:
@@ -287,6 +339,54 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
         STATS["passed_" + fam] = STATS.get("passed_" + fam, 0) + 1
 
 
+def ready_storm(seed, planner_mod=P):
+    """I93: the READY lease through the real HarbourPlanner glue on TP.FakeGw, randomized gateway states (own rule)."""
+    rng = random.Random(seed * 7919 + 17)
+    gw = TP.FakeGw()
+    hp = planner_mod.HarbourPlanner(gw)
+    pr = TP.proto
+    for _k in range(12):
+        gw.mode = rng.choice([pr.MODE_STANDBY] * 4 + [pr.MODE_MANUAL, pr.MODE_HDG_LOCK, pr.MODE_AUTO, pr.MODE_REMOTE,
+                                                      pr.MODE_DP])
+        gw.helm = rng.choice(["alice", "alice", "alice", None])
+        gw.stopping = rng.random() < 0.15
+        fresh = rng.random() > 0.15
+        route = rng.random() > 0.15
+        stat_fresh = rng.random() > 0.1
+        kn = rng.choice([2.0, 3.0, 4.0, 5.0, 6.0])
+        gw.prog_kn = [kn, kn]
+        gw.lat, gw.lon = TT.simworld.xy_to_ll(37.82, 23.60, rng.uniform(-6.0, 6.0), rng.uniform(0.0, 60.0))
+        gw.telem_rx = time.time()
+        own = gw.own()
+        own["fresh"] = fresh
+        hp.on_stat({"harb_state": 0, "harb_route": route, "harb_corr_m": 10.0, "harb_state_name": "OFF"})
+        if not stat_fresh:
+            hp.stat_rx -= 2.0
+        hp.dec = None
+        other = rng.choice([None, 1.0, 2.5, 4.5])
+        req0 = {"kind": pr.NAV_CAP if other is not None else pr.NAV_NONE, "heading": None,
+                "cap_kn": other, "reason": 2 if other else 0, "alarm": 4 if other else 0}
+        out = hp.fold(dict(req0), own)
+        cond = route and stat_fresh and fresh and gw.mode == pr.MODE_STANDBY and gw.helm and not gw.stopping
+        if not cond:
+            res("I93", out == req0, seed, "conditions not met (mode %s helm %s stopping %s fresh %s route %s stat %s) "
+                "but the request changed: %s" % (gw.mode, gw.helm, gw.stopping, fresh, route, stat_fresh, out))
+            continue
+        d = hp.dec or {}
+        lim = min(kn, 5.0, d.get("cap_kn") if d.get("cap_kn") is not None else 0.0)
+        if other is not None:
+            lim = min(lim, other)
+        ok = out.get("kind") == pr.NAV_HARBOUR and out.get("lease_ms") == 1000 and \
+            out.get("cap_kn") <= lim + 1e-9 and out.get("alarm") == req0["alarm"]
+        if ok and not (out["hflags"] & 1):
+            ok = d.get("leg_track") is not None and abs(P.wrap(out["heading"] - d["leg_track"])) < 1e-6
+            if ok and d.get("heading") is not None and abs(P.wrap(d["heading"] - d["leg_track"])) > 0.5:
+                STATS["ready_offline"] = STATS.get("ready_offline", 0) + 1     # the planner would have steered
+        res("I93", ok, seed, "the READY frame %s (planner %s / %s, limit %.1f)" % (
+            out, d.get("heading"), d.get("leg_track"), lim))
+        STATS["ready_sent"] = STATS.get("ready_sent", 0) + 1
+
+
 def mutant(old, new):
     src = open(os.path.join(REPO, "gateway", "harbour", "planner.py"), encoding="utf-8").read()
     assert old in src, old
@@ -302,9 +402,16 @@ MUTANTS = {
     "distance": ("m = math.hypot(px - x, py - y) - r - half - mm", "m = math.hypot(px - x, py - y) - r - half"),
     "degraded": ('            cap = min(cap, float(c["degraded_kn"]))' + chr(10) + '            why = "harb.why_degraded"',
                  '            why = "harb.why_degraded"'),
+    # HX7-fix: the not-yielding alarm dropped / the READY frame steering with the planner's heading / its HELM gate gone
+    "notyield": ('"harb.why_not_yielding", ALM_COLLISION | ALM_DECISION,', '"harb.why_not_yielding", 0,'),
+    "ready": ('            hdg = lt if lt is not None else (o_hdg if o_hdg is not None else 0.0)',
+              '            hdg = hdg'),
+    "ready_gate": ('        return helm is not None                         # nobody holds HELM',
+                   '        return True                         # nobody holds HELM'),
 }
 # each mutant must fail ITS invariant (round 2 S-MED-1), not just any
-TARGET = {"steer_ok": "I87", "unsure": "I90", "distance": "I88", "degraded": "I86h"}
+TARGET = {"steer_ok": "I87", "unsure": "I90", "distance": "I88", "degraded": "I86h", "notyield": "I94", "ready": "I93",
+          "ready_gate": "I93"}
 # (the cap / corridor mutants are caught by test_harbour_planner.py HP16 through HP9's 300 random plans)
 
 
@@ -315,6 +422,7 @@ def run(episodes, seed, secs, planner_mod=P, quiet=False, camera_p=0.3):
     t0 = time.time()
     for k in range(episodes):
         episode(seed + k, secs, planner_mod, camera_p)
+        ready_storm(seed + k, planner_mod)
     bad = 0
     if not quiet:
         print("\n=== HARBOUR AVOIDANCE STORM: %d episodes (seeds %d..%d), %.0f s each, %.1f min ===" % (
@@ -332,8 +440,9 @@ def run(episodes, seed, secs, planner_mod=P, quiet=False, camera_p=0.3):
     # reach: the storm must reach turns on confirmed tracks, STOPs, camera episodes and faults (else I87 / I90 could
     # never fail)
     if episodes >= 100:
-        for key in ("turns_steer", "stops", "camera_eps", "faults", "passed_obstacle"):
-            if STATS[key] == 0:
+        for key in ("turns_steer", "stops", "camera_eps", "faults", "passed_obstacle", "ny_stops", "ready_sent",
+                    "ready_offline"):
+            if STATS.get(key, 0) == 0:
                 bad += 1
                 print("FAIL reach: %s never happened in %d episodes" % (key, episodes))
     # the "pass" family must MAKE WAY (y > 80 m, not held) in at least half its episodes - a planner that only ever
@@ -356,10 +465,13 @@ def main():
     ap.add_argument("--secs", type=float, default=60.0)
     ap.add_argument("--mutate", choices=list(MUTANTS))
     ap.add_argument("--mutation-check", action="store_true")
+    ap.add_argument("--only", default="", help="mutation check: only these mutants (comma separated)")
     a = ap.parse_args()
     if a.mutation_check:
         ok = True
         for name, (old, new) in MUTANTS.items():
+            if a.only and name not in a.only.split(","):
+                continue
             # the camera on in most episodes: the steer_ok gate matters only with camera-only / AIS-only tracks
             n = run(min(a.episodes, 40), a.seed, a.secs, mutant(old, new), quiet=True, camera_p=0.9)
             inv = TARGET[name]

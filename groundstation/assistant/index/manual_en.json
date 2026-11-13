@@ -9642,10 +9642,10 @@
 "kind": "manual",
 "lines": [
 4670,
-4675
+4673
 ],
 "term": "",
-"text": "TAKE OVER: CREWED: move the onboard joystick - it always wins over the autopilot. UNCREWED: this sends the normal REMOTE request (the captain with the manual licence; the shore joystick centred). It is not a way around any rule. On screen 1 a line shows the state and the reason; STOP is on screen 2 and, always, the STANDBY button on the boat."
+"text": "While a checked harbour route is on the boat, the boat is in STANDBY with fresh data and a station holds HELM, the gateway sends the boat a harmless READY message (no turn, never faster than the route or 5 kn): that is what makes START pressable - ONE press starts it. The READY message moves nothing by itself."
 },
 {
 "ch": "27",
@@ -9654,11 +9654,11 @@
 "id": "en:743",
 "kind": "manual",
 "lines": [
-4677,
-4683
+4674,
+4679
 ],
 "term": "",
-"text": "IF SOMETHING GOES WRONG. The alarm HARBOUR STOP means the harbour mode stopped ITSELF for a reason that was not planned (the planner is unsure, the corridor was left, a sensor or the GPS or the compass was lost, the data from the shore ran out): the boat holds, idle and neutral, and a person must decide - read the reason in the panel, then TAKE OVER or RESUME. It is a red alarm like the other driver-decision alarms and is silenced on this PC with ACK ALARM. A planned stop (a route end, PAUSE) raises no alarm."
+"text": "TAKE OVER: CREWED: move the onboard joystick - it always wins over the autopilot. UNCREWED: this sends the normal REMOTE request (the captain with the manual licence; the shore joystick centred). It is not a way around any rule. On screen 1 a line shows the state and the reason; STOP is on screen 2 and, always, the STANDBY button on the boat."
 },
 {
 "ch": "27",
@@ -9667,11 +9667,11 @@
 "id": "en:744",
 "kind": "manual",
 "lines": [
-4683,
-4685
+4681,
+4687
 ],
 "term": "",
-"text": "If the link to the shore is lost on an UNCREWED boat the usual lost-link procedure runs: the boat stops, waits the grace time and, near the shore, or when the wait is over, the engine is stopped."
+"text": "IF SOMETHING GOES WRONG. The alarm HARBOUR STOP means the harbour mode stopped ITSELF for a reason that was not planned (the planner is unsure, the corridor was left, a sensor or the GPS or the compass was lost, the data from the shore ran out): the boat holds, idle and neutral, and a person must decide - read the reason in the panel, then TAKE OVER or RESUME. It is a red alarm like the other driver-decision alarms and is silenced on this PC with ACK ALARM. A planned stop (a route end, PAUSE) raises no alarm."
 },
 {
 "ch": "27",
@@ -9681,10 +9681,10 @@
 "kind": "manual",
 "lines": [
 4687,
-4692
+4689
 ],
 "term": "",
-"text": "THE ROUTE - TEACH AND REPEAT. A harbour route is made from a recording of YOU driving out of (or into) the harbour by hand: record the track as usual (TRACKS). Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the harbour's name, the route's name, the part of the track to use (From / To in per cent), the cut at the ends (15 m: the first and last metres stay manual), the corridor half-width (10 m, 4 to 10 m) and the tolerance (2 m)."
+"text": "If the link to the shore is lost on an UNCREWED boat the usual lost-link procedure runs: the boat stops, waits the grace time and, near the shore, or when the wait is over, the engine is stopped."
 },
 {
 "ch": "27",
@@ -9693,11 +9693,11 @@
 "id": "en:746",
 "kind": "manual",
 "lines": [
-4692,
-4700
+4691,
+4696
 ],
 "term": "",
-"text": "MAKE simplifies the track to at most 50 waypoints (Douglas-Peucker), keeps every leg at least 12 m, gives each leg the speed you drove (at most 5 kn) and draws the result on the map as a PREVIEW with its corridor (\"PREVIEW - not sent\"). If the first or last waypoint is closer than 15 m to the shore, or the chart does not know, you get a WARNING: those metres stay manual. CHECK asks the gateway: it refuses a route whose centre line OR corridor edge reaches shallow water (114) or no chart data (also 114), that leaves the geofence (120) or whose corridor is not clear (129), with the reason and the place."
+"text": "THE ROUTE - TEACH AND REPEAT. A harbour route is made from a recording of YOU driving out of (or into) the harbour by hand: record the track as usual (TRACKS). Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the harbour's name, the route's name, the part of the track to use (From / To in per cent), the cut at the ends (15 m: the first and last metres stay manual), the corridor half-width (10 m, 4 to 10 m) and the tolerance (2 m)."
 },
 {
 "ch": "27",
@@ -9706,11 +9706,11 @@
 "id": "en:747",
 "kind": "manual",
 "lines": [
-4700,
-4706
+4696,
+4704
 ],
 "term": "",
-"text": "SAVE keeps the route per harbour on this PC (groundstation/routes/harbour/<harbour>/<name>.json; your routes are not in git), LOAD brings one back. SEND works only after CHECK says OK: it is the normal route upload with the harbour flag (a copilot's goes to the captain's ACCEPT like every route) and it only STORES the route on the boat. It never starts the boat: START is a separate step with its own YES. The committed file for Daskalio is a TEST SAMPLE with invented points: it is marked \"not for navigation\" and can never be sent."
+"text": "MAKE simplifies the track to at most 50 waypoints (Douglas-Peucker), keeps every leg at least 12 m, gives each leg the speed you drove (at most 5 kn) and draws the result on the map as a PREVIEW with its corridor (\"PREVIEW - not sent\"). If the first or last waypoint is closer than 15 m to the shore, or the chart does not know, you get a WARNING: those metres stay manual. CHECK asks the gateway: it refuses a route whose centre line OR corridor edge reaches shallow water (114) or no chart data (also 114), that leaves the geofence (120) or whose corridor is not clear (129), with the reason and the place."
 },
 {
 "ch": "27",
@@ -9719,11 +9719,11 @@
 "id": "en:748",
 "kind": "manual",
 "lines": [
-4707,
-4708
+4704,
+4710
 ],
 "term": "",
-"text": "A route is a recording of a manual drive, not a chart and not a guarantee: the planner and the boat keep to the corridor, they do not make a place safe."
+"text": "SAVE keeps the route per harbour on this PC (groundstation/routes/harbour/<harbour>/<name>.json; your routes are not in git), LOAD brings one back. SEND works only after CHECK says OK: it is the normal route upload with the harbour flag (a copilot's goes to the captain's ACCEPT like every route) and it only STORES the route on the boat. It never starts the boat: START is a separate step with its own YES. The committed file for Daskalio is a TEST SAMPLE with invented points: it is marked \"not for navigation\" and can never be sent."
 },
 {
 "ch": "27",
@@ -9732,11 +9732,11 @@
 "id": "en:749",
 "kind": "manual",
 "lines": [
-4710,
-4715
+4711,
+4712
 ],
 "term": "",
-"text": "THE CAPTAIN'S CHECKLIST (step HX7). Before every harbour run: (1) the FIRST run in a new harbour is ALWAYS in an EMPTY harbour at low speed (2 kn), with a safety boat or the e-stop in hand; add speed and one moving vessel only after that; (2) read the panel: the radar and the LiDAR both OK, the route checked, the corridor as expected, GPS and compass fine; (3) the start is YOURS: the one YES, then the CONFIRM; (4) keep your hand on STOP / the joystick the whole time."
+"text": "A route is a recording of a manual drive, not a chart and not a guarantee: the planner and the boat keep to the corridor, they do not make a place safe."
 },
 {
 "ch": "27",
@@ -9745,11 +9745,11 @@
 "id": "en:750",
 "kind": "manual",
 "lines": [
-4715,
-4717
+4714,
+4719
 ],
 "term": "",
-"text": "The numbers on this page - 5 kn, 15 m from a moving vessel, 8 m from a fixed object, +-10 m corridor - are PARAMETERS of the boat; the boat's own limits are the ceiling."
+"text": "THE CAPTAIN'S CHECKLIST (step HX7). Before every harbour run: (1) the FIRST run in a new harbour is ALWAYS in an EMPTY harbour at low speed (2 kn), with a safety boat or the e-stop in hand; add speed and one moving vessel only after that; (2) read the panel: the radar and the LiDAR both OK, the route checked, the corridor as expected, GPS and compass fine; (3) the start is YOURS: the one YES, then the CONFIRM; (4) keep your hand on STOP / the joystick the whole time."
 },
 {
 "ch": "27",
@@ -9759,10 +9759,10 @@
 "kind": "manual",
 "lines": [
 4719,
-4726
+4721
 ],
 "term": "",
-"text": "STOP OR DRIVE YOURSELF? Press STOP when you want everything to stand still NOW: you do not ask, you do not wait. Drive yourself when you want the controls: the onboard joystick (a CREWED boat) or the REMOTE request (UNCREWED, with the licence). A HOLD (the boat stopped itself, \"I am not sure\") is not a fault: look at the reason, then decide - RESUME when it is clear, or TAKE OVER. A boat that is not sure never guesses: it stops. An object the boat cannot see is YOURS to watch: a small craft, a swimmer very close (inside the LiDAR's blind zone), anything in the water that gives no return."
+"text": "The numbers on this page - 5 kn, 15 m from a moving vessel, 8 m from a fixed object, +-10 m corridor - are PARAMETERS of the boat; the boat's own limits are the ceiling."
 },
 {
 "ch": "27",
@@ -9771,11 +9771,11 @@
 "id": "en:752",
 "kind": "manual",
 "lines": [
-4728,
-4731
+4723,
+4730
 ],
 "term": "",
-"text": "WHAT TO DO WHEN ... A sensor is lost (radar or LiDAR): the boat slows to 2 kn and turns only for what the other sensor confirms; both lost: it stops at once. Look at the panel, then drive yourself or wait."
+"text": "STOP OR DRIVE YOURSELF? Press STOP when you want everything to stand still NOW: you do not ask, you do not wait. Drive yourself when you want the controls: the onboard joystick (a CREWED boat) or the REMOTE request (UNCREWED, with the licence). A HOLD (the boat stopped itself, \"I am not sure\") is not a fault: look at the reason, then decide - RESUME when it is clear, or TAKE OVER. A boat that is not sure never guesses: it stops. An object the boat cannot see is YOURS to watch: a small craft, a swimmer very close (inside the LiDAR's blind zone), anything in the water that gives no return."
 },
 {
 "ch": "27",
@@ -9788,7 +9788,7 @@
 4735
 ],
 "term": "",
-"text": "The link to the shore is lost (UNCREWED): the boat stops (idle and neutral, then the steering holds), waits the lost-link time and then the engine is stopped; near the shore the engine is stopped at once. A CREWED boat: only an alarm, the crew drives."
+"text": "WHAT TO DO WHEN ... A sensor is lost (radar or LiDAR): the boat slows to 2 kn and turns only for what the other sensor confirms; both lost: it stops at once. Look at the panel, then drive yourself or wait."
 },
 {
 "ch": "27",
@@ -9801,7 +9801,7 @@
 4739
 ],
 "term": "",
-"text": "The GPS is lost or suspect: the harbour mode never uses dead reckoning - the boat stops (HOLD) and you decide. A camera shows an obstacle that the radar and the LiDAR do not confirm: the boat slows and may stop, it never turns for a camera alone. Look yourself."
+"text": "The link to the shore is lost (UNCREWED): the boat stops (idle and neutral, then the steering holds), waits the lost-link time and then the engine is stopped; near the shore the engine is stopped at once. A CREWED boat: only an alarm, the crew drives."
 },
 {
 "ch": "27",
@@ -9811,10 +9811,10 @@
 "kind": "manual",
 "lines": [
 4740,
-4742
+4743
 ],
 "term": "",
-"text": "A vessel does not give way: the boat stops in time inside its corridor; a corridor of +-10 m rarely lets it pass a moving vessel at 15 m, so expect a HOLD and wait for the other vessel to pass, then RESUME."
+"text": "The GPS is lost or suspect: the harbour mode never uses dead reckoning - the boat stops (HOLD) and you decide. A camera shows an obstacle that the radar and the LiDAR do not confirm: the boat slows and may stop, it never turns for a camera alone. Look yourself."
 },
 {
 "ch": "27",
@@ -9823,11 +9823,11 @@
 "id": "en:756",
 "kind": "manual",
 "lines": [
-4743,
-4749
+4744,
+4751
 ],
 "term": "",
-"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (stop, take the controls); the simulator has no gateway and no sensors, so the real planner is not part of them."
+"text": "A vessel does not give way (radar / LiDAR confirmed, it keeps its speed and course and would hit the boat even if the boat stopped): the boat first STEERS CLEAR inside its corridor if a path keeps 15 m from it (starboard first, never faster than the route), with COLLISION RISK on the screens. If no such path exists - in a +-10 m corridor with the vessel on the line there is none - the boat STOPS at once and you get the red WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice callout (+ COLLISION RISK - DRIVER DECISION). TAKE OVER AT ONCE: a stopped boat is NOT safe from a vessel that ignores it."
 },
 {
 "ch": "27",
@@ -9836,8 +9836,34 @@
 "id": "en:757",
 "kind": "manual",
 "lines": [
-4749,
-4756
+4751,
+4754
+],
+"term": "",
+"text": "Harbour autonomy never reverses, never speeds up and never leaves the corridor to get out of the way - only YOU can (TAKE OVER, then drive; sound the horn). CHECKLIST: hear that warning = take the controls, do not press RESUME."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:758",
+"kind": "manual",
+"lines": [
+4755,
+4761
+],
+"term": "",
+"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (stop, take the controls); the simulator has no gateway and no sensors, so the real planner is not part of them."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:759",
+"kind": "manual",
+"lines": [
+4761,
+4768
 ],
 "term": "",
 "text": "The presentation demo DEMO_HARBOUR.bat shows the whole thing without hardware: a simulated harbour with moored boats, a crossing ferry, a kayak and a buoy; the boat leaves the harbour on a harbour route; a presenter's guide window lists the steps and ticks them as they happen (it only watches - the captain's YES and the CONFIRM are clicked by the presenter). The scenario library tests/harbour (20 situations, run end to end against the simulated AURIX) and the sea plan in FIRST_TEST.md section 7 are for the people who build and test the boat, not for the daily user."
@@ -11898,7 +11924,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "71f870cfa069f3bbfcda4b334143debc902823c79c2b2b21c22b6c95abc03bb8",
+"MANUAL.txt": "6e06a872836233ea49ee48f215eb043db4a76d3348004d4f41ae042be95faa3b",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },

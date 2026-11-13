@@ -110,6 +110,61 @@ class RigSim(Sim):
         time.sleep(0.3)
 
 
+class _Station:
+    """The minimum of the ground station that App.harbour_start / App.harbour_state use: the REAL GatewayLink (alice),
+    the gateway's gw_status + harbour_view messages as the station receives them, cmd() = the station's send. The
+    handler code itself is the station's (groundstation/app.py), unchanged."""
+
+    def __init__(self, ep):
+        self.ep = ep
+        self.cl = ep.alice
+        self.link = ep.alice.l
+        self.gw_status = None
+        self.harbour_view = None
+        self.harbour_model = None
+        self.harbour_route = None
+        self.single_op = False
+        self.root = None
+        self.sent = []
+        self.seqs = []
+
+    def pump(self, t):
+        end = time.time() + t
+        while time.time() < end:
+            try:
+                kind, d = self.link.events.get(timeout=max(0.0, end - time.time()))
+            except Exception:
+                break
+            if kind == "gw_status":
+                self.gw_status = d
+            elif kind == "harbour_view":
+                d["_rx"] = time.time()
+                self.harbour_view = d
+            elif kind == "ack":
+                self.cl.acks.append(d)
+            elif kind == "telemetry":
+                self.cl.telem = d
+
+    def harbour_state(self):
+        import app as stapp
+        return stapp.App.harbour_state(self)
+
+    def cmd(self, ftype, payload=b"", what=""):
+        self.sent.append((ftype, bytes(payload)))
+        self.seqs.append(self.link.send(ftype, payload))
+
+    def wait_start(self, timeout):
+        if not self.seqs:
+            return None
+        return self.cl.wait_ack(self.seqs[-1], timeout)
+
+    def say(self, *a, **k):
+        pass
+
+    def event(self, *a, **k):
+        pass
+
+
 class Episode:
     """One end-to-end episode. spec = {objects, route [(x, y, kn)], max_kn, corr_m, secs, faults [(t_s, what)], ...}."""
 
@@ -180,21 +235,36 @@ class Episode:
         return a
 
     def start_harbour(self):
-        """START as the station sends it. FINDING HX7-1 (reported, not fixed): the station's START button is enabled
-        only while the AURIX's HARBOUR_STAT says entry_ok, but entry_ok needs the planner's kind-4 lease and the
-        gateway opens the planner's pre-start window only when a START passes it (note_start) - before any START
-        entry_ok is False, so the real button can never be pressed. The rig therefore sends a first START (NACK 6 =
-        the window opens), waits for entry_ok, then the real START + the shore stick's CONFIRM."""
-        s = self.spec
-        pl = proto.p_harbour(proto.HARB_START, s.get("corr_m", 10.0), s.get("max_kn", 5.0))
-        self.entry_before = bool(self.stat().get("harb_entry_ok"))
-        a = self.alice.cmd(proto.T_HARBOUR, pl, 12.0)
+        """START through the STATION'S OWN BUTTON PATH (HX7-fix, finding HX7-1 fixed): the station's model of the
+        gateway's real harbour_view (groundstation/harbourview.model) must enable the START button (`entry_ok` = the
+        planner's READY lease reached the AURIX: no earlier START needed), then the button's handler App.harbour_start
+        runs on a thin station object (the real GatewayLink of alice, the gateway's own gw_status; the captain's
+        vertical YES answered YES) and sends the ONE T_HARBOUR START; then the shore stick's CONFIRM. ONE press."""
+        import app as stapp
+        import ynbox
+        self.alice.l.send_msg({"t": "harbour_view_on", "on": True})
+        st = _Station(self)
+        end = time.time() + 15.0
+        m = {}
+        while time.time() < end:
+            st.pump(0.1)
+            m = st.harbour_state() or {}
+            if bool(st.link) and m.get("entry_ok"):          # = the panel's START enable (app.panel_harbour)
+                break
+        self.entry_before = bool(m.get("entry_ok"))
+        self.first_start = None
+        if not self.entry_before:
+            dec = self.g.hplan.dec or {}
+            return {"result": 6 if dec.get("stop") else -1, "why": "the START button never became enabled"}
+        old = ynbox.ask
+        ynbox.ask = lambda *a, **k: True                     # the captain's own YES
+        try:
+            stapp.App.harbour_start(st)
+        finally:
+            ynbox.ask = old
+        a = st.wait_start(12.0)
         self.first_start = None if a is None else a.get("result")
-        end = time.time() + 12.0
-        while time.time() < end and not self.stat().get("harb_entry_ok"):
-            self.alice.pump(0.1)
-        self.entry_after = bool(self.stat().get("harb_entry_ok"))
-        a = self.alice.cmd(proto.T_HARBOUR, pl, 12.0)
+        self.presses = st.sent
         # the AURIX asks the shore joystick's CONFIRM (UNCREWED): stick centred + the CONFIRM button
         self.stick["confirm"] = True
         time.sleep(0.6)
@@ -312,11 +382,16 @@ class Episode:
             self.samples.append((round(t, 2), x, y, hdg, sog, st.get("harb_state_name"), st.get("harb_xte_m"), mode,
                                  g, (self.g.hplan.dec or {}).get("cap_kn"), moving, go["id"] if go else None,
                                  st.get("harb_kn"), st.get("harb_why"), ((self.g.hplan.dec or {}).get("text_en") or "")[:70],
-                                 tel.get("ll_state"), tel.get("throttle"), allg))
+                                 tel.get("ll_state"), tel.get("throttle"), allg, int(tel.get("alarm_bits") or 0),
+                                 list((self.g.hplan.dec or {}).get("not_yielding") or [])))
             # a HOLD in the first 25 m from a HOST-LOAD transient ("planner cycle late" U4 / the tracker overload / the lease
             # lapsed while episodes share the PC) is the captain's RESUME once the planner says clear (what a person does);
             # counted + reported as an event, only before 25 m of progress, at most 6 times
+            if (self.g.hplan.dec or {}).get("not_yielding") and "NOT GIVING WAY - STOP" in (
+                    (self.g.hplan.dec or {}).get("text_en") or ""):
+                self.ny_stop_seen = True                 # HX7-fix: a real stop for a vessel not giving way: never resumed
             if (st.get("harb_state_name") == "HOLD" and x < 25.0 and self.resumes < 6 and t < 40.0
+                    and not getattr(self, "ny_stop_seen", False)
                     and st.get("harb_why") in (2, 3) and not (self.g.hplan.dec or {}).get("stop")
                     and "overload" not in (((self.g.hplan.dec or {}).get("text_en")) or "")
                     and time.time() - self.last_resume > 4.0 and self.alice is not None):

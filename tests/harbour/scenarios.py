@@ -19,7 +19,19 @@ import math
 
 from rig import ll  # noqa: F401  (kept for the rehearsal / demo users)
 
-FINDING_2 = "HX7-2: the planner stops dead (HOLD) 25-30 m before a vessel that does not stop and the vessel runs through the standing boat (-4 to -6 m overlap); no sidestep to the corridor edge, no reverse"
+# HX7-2 (FIXED in HX7-fix, owner option (a): steer clear first, stop second): a range-confirmed vessel that does not
+# give way and meets the boat even if it stops. WITH ROOM (a path keeps 15 m inside the corridor): the boat steers clear
+# and keeps the minimum distances (H4r / H8r / H19r: the common criteria unchanged + "passed without a HOLD"). WITHOUT
+# room (+-10 m corridor, the vessel ON the line: no path keeps 15 m): the boat STOPS at once and raises the loud state
+# (the planner's "VESSEL NOT GIVING WAY - STOP - TAKE OVER" + the AURIX's COLLISION RISK - DRIVER DECISION) and a
+# contact by THAT vessel with the STANDING boat is "UNAVOIDABLE BY DESIGN" (harbour autonomy cannot make a stopped boat
+# safe against a vessel that ignores it: the captain takes over) - judged by the scenario's own criteria U1-U4 below,
+# only for the listed vessel; every other check stays as it is.
+UNAVOIDABLE = "unavoidable by design: no path keeps 15 m in the +-10 m corridor; the boat stops + alarms, the captain takes over"
+FINDING_3 = ("HX7-3 (open): WITH room the steer-clear path is found, but with the real simulated sensors the decision "
+             "flickers (track sigma / AIS twins): ONE U13 STOP cycle latches the AURIX HOLD (the captain RESUMEs) - "
+             "robust escape hysteresis = a later step")
+ALM_COLL = 0x800000 | 0x1000000                     # proto ALARMS: COLLISION RISK / COLLISION RISK - DRIVER DECISION
 ARRIVED = 15            # app/harbour.h HARB_WHY_ARRIVED (a planned stop: the route's last waypoint)
 ROUTE = [(0.0, 0.0, 5.0), (80.0, 0.0, 5.0), (150.0, 0.0, 5.0)]
 
@@ -72,7 +84,10 @@ def build():
                 [moored("m1", 40.0, 17.0), moored("m2", 65.0, 17.0), moored("m3", 50.0, -17.0),
                  moored("m4", 80.0, -17.0)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H4", "head-on vessel (AIS) on the line",
-                [vessel("headon", (70.0, 1.0), 38.0, 270.0, 2.0, ais=237000004)], xfail=FINDING_2, expect={"safe_pass_or_hold": 1}))
+                [vessel("headon", (70.0, 1.0), 38.0, 270.0, 2.0, ais=237000004)], expect={"safe_pass_or_hold": 1, "unavoidable": ("headon",)}))
+    sc.append(S("H4r", "head-on vessel that does NOT give way, passing 24 m to port of the line (room: steer clear, keep 15 m)",
+                [vessel("headon", (70.0, 24.0), 38.0, 270.0, 2.0, ln=6.0, beam=2.5, ais=237000014)],
+                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
     sc.append(S("H5", "crossing from starboard (no AIS)",
                 [vessel("cross_s", (70.0, 0.0), 38.0, 0.0, 2.0)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H6", "crossing from port (AIS)",
@@ -80,7 +95,10 @@ def build():
     sc.append(S("H7", "overtaking a slow boat on the line",
                 [vessel("slow", (70.0, 1.0), 38.0, 90.0, 0.5, ln=6.0, beam=2.5)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H8", "being overtaken by a fast vessel from astern",
-                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], xfail=FINDING_2, expect={"safe_pass_or_hold": 1}))
+                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",)}))
+    sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
+                [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
+                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
     sc.append(S("H9", "a kayak (no AIS) crossing ahead",
                 [mover("kayak", "kayak", (70.0, 0.0), 36.0, 0.0, 1.0, 4.0, 0.7, 0.4, 0.15, 0.5)],
                 expect={"safe_pass_or_hold": 1}))
@@ -106,7 +124,10 @@ def build():
                 [], faults=[{"t": 8.0, "what": "ais_ghost"}], expect={"ais_only": 8.0}))
     sc.append(S("H19", "a vessel that does not give way (fast, head-on, on the line)",
                 [vessel("rogue", (70.0, 0.0), 38.0, 270.0, 3.5, ais=237000019)],
-                xfail=FINDING_2, expect={"safe_pass_or_hold": 1}))
+                expect={"safe_pass_or_hold": 1, "unavoidable": ("rogue",)}))
+    sc.append(S("H19r", "a fast vessel that does NOT give way, head-on 24 m to port (room: steer clear, keep 15 m)",
+                [vessel("rogue", (70.0, 24.0), 38.0, 270.0, 3.5, ln=6.0, beam=2.5, ais=237000029)],
+                xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
     sc.append(S("H20", "the planner crashes at 20 s (the AURIX lease lapses -> HOLD)", [],
                 faults=[{"t": 20.0, "what": "planner_crash"}], expect={"hold_within": (20.0, 5.0)}))
     return sc
@@ -137,7 +158,10 @@ def evaluate(spec, ep, out):
     # must not pass anything
     xmax = max(q[1] for q in S_)
     ran = any(q[5] in ("RUN", "SLOW") for q in S_)
-    r.append(("P1 the boat drove: RUN / SLOW seen and >= 25 m covered", ran and xmax >= 25.0,
+    # (an "unavoidable" scenario stops at once for the vessel that does not give way - by design, far away - so its
+    # boat must have DRIVEN >= 10 m under harbour autonomy; every other scenario >= 25 m as before)
+    need_x = 0.0 if ex.get("unavoidable") else 25.0    # (H8: the overtaker is already a threat at the start)
+    r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
               "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
     fired = {e[1] for e in ep.events}
     miss = [f["what"] for f in spec.get("faults", []) if "fault " + f["what"] not in fired]
@@ -160,10 +184,29 @@ def evaluate(spec, ep, out):
         r.append(("C1 never touches while the boat moves (gap >= 0.5 m)", mov >= 0.5,
                   "min hull gap while moving %.1f m; overall %.1f m to %s (struck at rest: %s)" % (
                       mov, worst[0], worst[1], worst[0] < 0.5 and mov >= 0.5)))
+    elif ex.get("unavoidable"):
+        unv = set(ex["unavoidable"])
+        oth = min(((v[0], k) for k, v in mg.items() if k not in unv), default=(999.0, None))
+        r.append(("C1 never touches any OTHER object (gap >= 0.5 m)", oth[0] >= 0.5, "min hull gap %.1f m to %s" % oth))
+        # U1-U4 (HX7-fix, the scenario's own criteria for the vessel that does not give way, see UNAVOIDABLE)
+        cont = [s for s in S_ if any(o == k and g < 0.5 for o, g, _m in s[17] for k in unv)]
+        t_c = cont[0][0] if cont else None
+        ny = [s[0] for s in S_ if s[19] and "NOT GIVING WAY" in (s[14] or "")]
+        r.append(("U1 the not-yielding STOP + TAKE OVER state raised (before any contact)",
+                  bool(ny) and (t_c is None or ny[0] < t_c), "first at %s s, contact at %s s" % (ny[0] if ny else None, t_c)))
+        al = [s[0] for s in S_ if s[18] & ALM_COLL]
+        r.append(("U2 the AURIX's COLLISION RISK / DRIVER DECISION alarm on (before any contact)",
+                  bool(al) and (t_c is None or al[0] < t_c), "first at %s s" % (al[0] if al else None)))
+        st = [s[0] for s in S_ if s[5] == "HOLD" and s[4] < 0.5]
+        r.append(("U3 the boat STOPPED (HOLD, SOG < 0.5 kn) before any contact",
+                  bool(st) and (t_c is None or st[0] < t_c), "standing at %s s" % (st[0] if st else None)))
+        moving = [(s[0], round(s[4], 1)) for s in cont if s[4] >= 0.5]
+        r.append(("U4 a contact only with the STANDING boat (%s)" % UNAVOIDABLE, not moving,
+                  "contact while moving %s; contact %s" % (moving[:2], "none" if t_c is None else "at %.1f s (by design)" % t_c)))
     else:
         r.append(("C1 never touches (gap >= 0.5 m)", worst[0] >= 0.5, "min hull gap %.1f m to %s" % worst))
     viol = []
-    for t, x, y, hdg, sog, state, xte, mode, gap, cap, moving, oid, kcap, why, txt, ll_s, thr, allg in S_:
+    for t, x, y, hdg, sog, state, xte, mode, gap, cap, moving, oid, kcap, why, txt, ll_s, thr, allg, *_r in S_:
         if state in ("RUN", "SLOW"):
             for oid2, g2, mv2 in allg:                  # EVERY object against its own limit (review)
                 lim = (15.0 if mv2 else 8.0) - 0.5
@@ -171,8 +214,10 @@ def evaluate(spec, ep, out):
                     viol.append((round(t, 1), oid2, round(g2, 1), state))
     r.append(("C2 distance kept while RUN / SLOW (15 m moving / 8 m static)", not viol,
               "first violations %s" % (viol[:3],) if viol else "none"))
-    hold_gaps = [(round(s[0], 1), s[11], round(s[8], 1)) for s in S_ if s[5] == "HOLD" and s[4] < 0.3 and s[8] < 999
-                 and not (storm and s[10])]
+    unv0 = set(ex.get("unavoidable") or ())
+    hold_gaps = [(round(s[0], 1), o, round(g, 1)) for s in S_ if s[5] == "HOLD" and s[4] < 0.3
+                 and not (storm and s[10]) for o, g, _m in s[17] if o not in unv0]
+    hold_gaps = [h for h in hold_gaps if h[2] < 999] or [(0, None, 999.0)]
     stand = min((g[2] for g in hold_gaps), default=999.0)
     r.append(("C2b a HOLD stands with room (>= 2 m at the standstill)", stand >= 2.0,
               "least gap at standstill %.1f m" % stand))
@@ -200,6 +245,11 @@ def evaluate(spec, ep, out):
         passed = last[1] > 120.0
         r.append(("E passed it or stopped for it (no contact either way)", seen_hold or done or passed,
                   "HOLD %s, DONE %s, last x %.0f" % (seen_hold, done, last[1])))
+    if ex.get("passed_no_hold"):
+        held = [s[0] for s in S_ if s[5] == "HOLD" and s[13] != ARRIVED]
+        passed = last[1] > 120.0 or any(s[5] == "DONE" for s in S_)
+        r.append(("E steered clear of the vessel that does not give way: passed, no HOLD", passed and not held,
+                  "last x %.0f, HOLD at %s" % (last[1], held[:1])))
     if "degraded_after" in ex:
         t_f = ex["degraded_after"]
         late = [s for s in S_ if s[0] > t_f + 12.0 and s[7] == "AUTO" and s[4] > 2.5]

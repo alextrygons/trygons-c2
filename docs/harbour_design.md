@@ -565,8 +565,42 @@ U5 no feasible candidate; U6 conflicting data: a range track and an AIS / camera
 U7 a track inside min_static_m (something got too close) = STOP; U8 ambiguous COLREGs (7.3);
 U9 more than 20 range tracks inside 100 m (clutter / a crowded quay) = slow; U10 static map / charts
 missing for the harbour; U11 sensor time skew > 100 ms; U12 the boat's own heading / yaw rate
-not fresh in the telemetry. STOP = navreq STOP flag; the AURIX holds; the alarm HARBOUR STOP; the
-captain resumes.
+not fresh in the telemetry; U13 (HX7-fix, owner option (a)) a range-confirmed MOVING vessel that does
+NOT give way (observed >= 2 s, speed not falling below 85 % of its highest over 4 s, course steady within
+15 deg) and whose constant-velocity path meets the boat EVEN IF THE BOAT STOPS, with no path that keeps the
+minimum distances = STOP at once (no creep towards it) + the navreq COLLISION RISK + DRIVER DECISION
+advisories + the station's WARNING «ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ» (7.6). STOP = navreq STOP flag;
+the AURIX holds; the alarm HARBOUR STOP; the captain resumes (U13: the captain TAKES OVER).
+
+### 7.6 A vessel that does not give way (HX7-fix, finding HX7-2, owner option (a): steer clear first, stop second)
+- Judged per cycle (Planner._threats): a mover that is steer_ok, not slowing / turning (Planner._not_slowing over
+  its own recent history), and whose CV path comes inside min_moving_m (+ 2 sigma + sizes, the planner's _sim) of
+  the boat simulated STOPPING now (the coast-down) - standing still is no refuge from it. Such a track sets the
+  COLLISION RISK navreq advisory while the boat runs (alarm bit 1).
+- Steer clear first: when the normal candidates find nothing, Planner._escape searches the same offsets x speeds
+  (never above the cap, inside the usable corridor), judged against EVERY mover at the full min_moving_m until the
+  threats' TCPA + 5 s (>= slow_horizon_s, <= the horizon) and against every static object over the full horizon;
+  straight or STARBOARD first, a port offset only where COLREGs allows one (no NO_PORT encounter), then the highest
+  speed; only when every straight-line blocker is steer_ok (M0-3). Explanation harb.why_ny_avoid.
+- Stop second: nothing keeps the distances = U13 STOP (harb.why_not_yielding) + COLLISION RISK + DRIVER DECISION
+  (the existing AURIX advisories, alarm bits 1 | 2 in the kind-4 frame) + the station-local WARNING with its voice
+  callout (groundstation app.harbour_alarm_sync, MasterLamps.set_local "harb_notyield"; never an AURIX alarm of its
+  own). The creeping-straight fallback is never used with such a threat.
+- LIMIT (stated, not solvable inside the rules): harbour autonomy cannot make a STOPPED boat safe from a vessel that
+  ignores it - it never reverses, never raises the speed above the route's, never leaves the corridor / the AURIX's
+  60 deg / 8 deg/s limits. In a +-10 m corridor a vessel ON the line leaves no path that keeps 15 m: the boat stops
+  far away (H4: at ~110 m) and the captain must TAKE OVER (MANUAL ch. 27 / MANUAL_EL ch. 22 checklist).
+
+### 7.7 The READY lease (HX7-fix, finding HX7-1)
+HarbourPlanner.active() before the START (HARBOUR_STAT state OFF) = a checked harbour route on the boat (harb_route
++ the gateway's own copy) + the boat in STANDBY, not stopping, fresh telemetry + a gateway station holding HELM
+(stations.helm_station) - the 30 s window after a station START (HX5 review MED-2) is REPLACED by these conditions.
+The frame (fold, ready = True): heading = the leg track the planner judged (no offset; the planner's own heading is
+never sent before the start), cap = min(the planner's cap, the leg, ready_kn 5, every other cap), lease 1000 ms, no
+alarm of its own; the planner's STOP = a STOP frame (entry refused). It is inert on the AURIX (kind 4 outside harbour
+autonomy: k4_idle; no kind 1 / 2 cap acts in STANDBY) - it only lets entry_ok become true, so the captain's FIRST
+START passes. Any condition missing = the request goes out untouched (no kind 4), the AURIX's lease lapses (1 s) as
+built. Storm I93 + its mutations (the planner's heading in the frame; the HELM gate removed).
 
 ### 7.5 The explanation line
 One line per decision, Greek + English (lang keys harb.why_*), e.g. «ΔΙΝΩ ΔΡΟΜΟ ΣΕ ΣΚΑΦΟΣ ΔΕΞΙΑ –
@@ -761,8 +795,8 @@ for the gateway planner against the simulated world; next free numbers)
 ### 9.3 As built (HX7): the end-to-end rig
 tests/harbour/ runs 9.1's scenarios against the REAL autopilot_sim (UNCREWED, speed 1 = real time: the gateway lease / the planner's 5 Hz / the sensors' clocks are wall time) and the real gateway modules in-process; the rig only builds worlds, sends
 the captain's station frames (route upload with the harbour flag, T_HARBOUR START, the shore stick's CONFIRM) and watches. Deviation from 9.1: H1-H20 + H3n (a narrow channel the planner may refuse). Pass criteria C1-C6 + the scenario's own: scenarios.py docstring.
-FINDING HX7-1 (not fixed here): the station's START is greyed until HARBOUR_STAT entry_ok, which needs the planner lease, which exists only after a START passed the gateway (planner.note_start) - the real button cannot be pressed first. Fix options: the
-gateway opens the pre-start window when a checked harbour route is stored + the station is HELM (no START needed), or the station sends a first START without the entry_ok gate. The rig sends a first START (NACK 6) to open the window.
+FINDING HX7-1: FIXED in HX7-fix (7.7, the READY lease): the rig now starts through the station's own button path (groundstation harbourview.model of the gateway's harbour_view = the START enable, then App.harbour_start: ONE press, result 0).
+FINDING HX7-2: FIXED in HX7-fix (7.6): H4 / H8 / H19 (no room) = the boat stops far away with the not-yielding WARNING; a contact by THAT vessel with the STANDING boat is "unavoidable by design" (the scenario's own criteria U1-U4); H4r / H8r / H19r (the vessel 24 m off the line: room) = the boat steers clear and keeps 15 m (the common criteria unchanged).
 The AURIX-side checks stay the C storm's (I85-I92); the planner's I86h-I90 stay in storm_harbour.py.
 
 ## 10. Failure analysis (what happens when ...)

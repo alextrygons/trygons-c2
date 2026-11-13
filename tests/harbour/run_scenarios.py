@@ -92,7 +92,7 @@ def run_one(name, out_path):
         res["events"] = ep.events
         res["entry_gate"] = {"entry_before_first_start": getattr(ep, "entry_before", None),
                              "first_start_result": getattr(ep, "first_start", None),
-                             "entry_after": getattr(ep, "entry_after", None)}
+                             "presses": len([1 for t, _p in getattr(ep, "presses", []) or []])}
         res["trace"] = [tuple(round(v, 1) if isinstance(v, float) else v for v in s) for s in ep.samples[::10]]
         res["ok"] = bool(res["checks"]) and all(c[1] for c in res["checks"])
         res["xfail"] = spec.get("xfail")
@@ -178,8 +178,9 @@ def report(done, order):
                 print("       %s %s: %s" % ("ok  " if c[1] else "FAIL", c[0], c[2]))
         eg = r.get("entry_gate")
         if eg and n == order[0]:
-            print("       note HX7-1: entry_ok before the first START = %s (first START result %s, then %s)" % (
-                eg.get("entry_before_first_start"), eg.get("first_start_result"), eg.get("entry_after")))
+            print("       HX7-1 (fixed): START button enabled before any START = %s, the ONE press -> result %s, "
+                  "T_HARBOUR frames sent %s" % (eg.get("entry_before_first_start"), eg.get("first_start_result"),
+                                                eg.get("presses")))
     return fails
 
 
