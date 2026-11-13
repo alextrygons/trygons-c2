@@ -473,7 +473,10 @@ class Episode:
                     return {"id": str(b), "track": True, "src": q.get("src"), "steer_ok": bool(q.get("steer_ok")),
                             "tx": round(qx, 1), "ty": round(qy, 1), "match": near[1]["id"] if near[1] else None,
                             "match_d": round(near[0], 1),
-                            "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None}
+                            "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None,
+                            # HX7-fix4 (H2 evidence): what the planner sizes the track by
+                            "len": q.get("len_m"), "beam": q.get("beam_m"), "sd": q.get("sd_m"),
+                            "static": q.get("static"), "cls": q.get("cls"), "speed": q.get("speed")}
                 ev["blockers"] = [_match(b) for b in dd.get("blockers") or []]
                 ev["not_yielding"] = [_match(b) for b in dd.get("not_yielding") or []]     # (U13 names them here)
                 if "static-map" in [str(b) for b in dd.get("blockers") or []]:
