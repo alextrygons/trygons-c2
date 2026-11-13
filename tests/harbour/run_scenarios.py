@@ -36,7 +36,7 @@ KNOWN_LIMITS = {
     "S4": {"checks": ("C1 never touches while the boat moves",),
            # review M1: the limit is narrow - every contact while moving is with THIS overtaker, in HOLD, after the
            # U13 not-yielding STOP, and the world is still the one judged (a changed storm_spec(4) = FAIL)
-           "object": "fast", "fingerprint": "d98d99a638ae7cf6",
+           "object": "fast", "fingerprint": "43445bc87cb700e6",
            "reason": "KNOWN LIMIT S4 (owner 2026-11-13, NOT 'unavoidable'): an overtaking vessel that does not give way "
                      "hits the boat ~12 s after the not-yielding STOP while it still coasts at ~0.5 kn in HOLD - a "
                      "stopped boat coasting in HOLD cannot avoid a vessel overtaking from astern; the captain takes over "
@@ -49,14 +49,18 @@ def known_limit_evidence(name, spec, ep):
     """review M1: is a failure of a KNOWN_LIMITS episode exactly the documented limit? -> (ok, detail)."""
     import hashlib
     kl = KNOWN_LIMITS[name]
-    fp = hashlib.sha256(json.dumps(spec["objects"], sort_keys=True).encode()).hexdigest()[:16]
+    fp = hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]   # r2 M-2: the WHOLE spec
     S_ = ep.samples
     u13 = [q[0] for q in S_ if len(q) > 19 and q[19] and "NOT GIVING WAY - STOP" in (q[14] or "")]
+    # r2 M-1: contacts on the estimated AND the true position (q[22]), the true position in >= 90 % of the samples
     cont = [(q[0], o, q[5], round(q[4], 2)) for q in S_ if q[4] >= 0.5 for o, g, _m in q[17] if g < 0.5]
+    cont += [(q[0], o, q[5], round(q[4], 2)) for q in S_ if q[4] >= 0.5 and len(q) > 22 and q[22]
+             for o, g in q[22] if g < 0.5]
+    n_t = len([q for q in S_ if len(q) > 22 and q[22]])
     bad = [c for c in cont if c[1] != kl["object"] or c[2] != "HOLD" or not u13 or c[0] < u13[0]]
-    ok = fp == kl["fingerprint"] and bool(cont) and not bad
-    return ok, "world %s (want %s); U13 at %s; contacts while moving %s; NOT the limit %s" % (
-        fp, kl["fingerprint"], u13[0] if u13 else None, cont[:2], bad[:2])
+    ok = fp == kl["fingerprint"] and bool(cont) and not bad and n_t >= 0.9 * len(S_)
+    return ok, "world %s (want %s); U13 at %s; contacts while moving %s; NOT the limit %s; true %d / %d" % (
+        fp, kl["fingerprint"], u13[0] if u13 else None, cont[:2], bad[:2], n_t, len(S_))
 
 
 def storm_spec(seed):

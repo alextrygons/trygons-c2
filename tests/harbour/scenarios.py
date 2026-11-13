@@ -43,6 +43,7 @@ SAFE_STOP_WHY = ("expected safe STOP: in a +-10 m corridor (usable +-5.75 m) a v
                  "both hull halves (6 m) + 2 sigma of its predicted position (~3-4 m) = 27-29 m of separation, only "
                  "29.75 m is available - no path keeps 15 m reliably, so the planner STOPs and holds; the minimum "
                  "distance must still hold (owner answer 4)")
+SS0_NEAR_M = 100.0      # SS0 (review r1 M3): a U5 STOP counts for the vessel only while it is the closest object this near
 SAFE_STOP_MIN_M = 15.0  # the minimum distance to a moving vessel (design I88), never less
 ALM_COLL = 0x800000 | 0x1000000                     # proto ALARMS: COLLISION RISK / COLLISION RISK - DRIVER DECISION
 ARRIVED = 15            # app/harbour.h HARB_WHY_ARRIVED (a planned stop: the route's last waypoint)
@@ -187,13 +188,26 @@ def _safe_stop_checks(S_, ex, ep_stops=None):
             g = [g for o, g, _m in s[17] if o == oid] + [g for o, g in (s[22] if len(s) > 22 and s[22] else []) if o == oid]
             return min(g, default=999.0)
         tc = min(S_, key=gap_at)[0]                     # the closest approach (estimated or true, review M3)
-        st = [s[0] for s in S_ if s[5] == "HOLD" and s[4] < 0.5]
+        # the standstill AFTER the boat got under way (a HOLD at the start, before RUN, is no stop for the vessel)
+        go = [s[0] for s in S_ if s[5] in ("RUN", "SLOW") and s[4] >= 1.0]
+        st = [s[0] for s in S_ if go and s[0] > go[0] and s[5] == "HOLD" and s[4] < 0.5]
         # SS0 (review M3): the HOLD is the planner's U13 not-yielding STOP for THIS vessel (its track matched to it)
-        ny = [e for e in (ep_stops or []) if "U13" in e["reason"] and any(
-              b.get("match") == oid and b.get("match_d", 999.0) <= EARLY_MATCH_M for b in e.get("not_yielding", []))]
-        r.append(("SS0 the STOP is the not-yielding STOP (U13) for %s, before the standstill" % oid,
-                  bool(ny) and bool(st) and ny[0]["t"] <= st[0],
-                  "U13 for %s at %s s, standing at %s s" % (oid, ny[0]["t"] if ny else None, st[0] if st else None)))
+        # (the planner names the vessel in a U13; a U5 "no free path" names no blocker - then THIS vessel must be the
+        # closest object on the TRUE position, within SS0_NEAR_M at the STOP: never a STOP far from the encounter)
+        def tied(e):
+            if "U13" in e["reason"]:
+                return any(b.get("match") == oid and b.get("match_d", 999.0) <= EARLY_MATCH_M
+                           for b in e.get("not_yielding", []))
+            if "U5" in e["reason"]:
+                q = min(S_, key=lambda s: abs(s[0] - e["t"]))
+                g = dict(q[22]) if len(q) > 22 and q[22] else {}
+                return oid in g and g[oid] <= SS0_NEAR_M and g[oid] == min(g.values())
+            return False
+        ny = [e for e in (ep_stops or []) if st and e["t"] <= st[0] and tied(e)]
+        r.append(("SS0 the STOP before the standstill is the planner's U13 (naming %s) or U5 with %s the closest "
+                  "object within %.0f m (true position)" % (oid, oid, SS0_NEAR_M), bool(ny) and bool(st),
+                  "tied STOP %s, standing at %s s" % ((ny[0]["t"], ny[0]["reason"][:40]) if ny else None,
+                                                      st[0] if st else None)))
         moved = st and [(s[0], round(s[4], 2)) for s in S_ if st[0] <= s[0] <= tc and s[4] >= 0.5]
         r.append(("SS2 STOPPED (HOLD, SOG < 0.5 kn) before the closest approach (%.1f s) and held still until it" % tc,
                   bool(st) and st[0] <= tc and not moved,
@@ -201,32 +215,42 @@ def _safe_stop_checks(S_, ex, ep_stops=None):
     return r
 
 
-def _halting_stop(S_, ep):
-    """The STOP that ended the boat's progress: the last logged STOP up to 5 s after the boat first reached its
-    furthest point (a STOP before it = the boat coasted on, one later = it was already standing)."""
+def _halting_stops(S_, ep):
+    """The STOP(s) that ended the boat's progress (review r2 H-1): the last logged STOP at or before the moment the
+    boat first reached its furthest point AND every STOP logged after it up to 5 s later (the reason text may change
+    while it comes to rest) - every one of them must carry the evidence."""
     xmax = max(q[1] for q in S_)
     t_x = min(q[0] for q in S_ if q[1] >= xmax - 0.5)
-    cand = [e for e in (getattr(ep, "stops", None) or []) if e["t"] <= t_x + 5.0]
-    return (cand[-1] if cand else None), t_x
+    stops = getattr(ep, "stops", None) or []
+    before = [e for e in stops if e["t"] <= t_x]
+    t_a = before[-1]["t"] if before else t_x
+    return [e for e in stops if t_a <= e["t"] <= t_x + 5.0], t_x
 
 
 def _early_stop_class(S_, ep, out):
-    """HX7-fix3 (owner answer 3; review H2 / M4): an EVIDENCED early STOP in a random world (the boat stopped before
-    25 m): PASS only if ALL hold - THE STOP that halted the boat (_halting_stop) names a TRACK, EVERY track it names
-    matches a REAL world object (track position within EARLY_MATCH_M of the object) and at least one of them is within
-    EARLY_RANGE_M (hull gap at the STOP), the boat ends in HOLD (standing) or STANDBY, and there is no contact (every
-    object's hull gap >= 0.5 m all the time, on the estimated AND the true position, the true position in >= 90 % of
-    the samples). Each condition is its own check."""
+    """HX7-fix3 (owner answer 3; review r1 H2 / M4, r2 H-1 / L-1): an EVIDENCED early STOP in a random world (the boat
+    stopped before 25 m): PASS only if ALL hold - EVERY STOP that halted the boat (_halting_stops) names a TRACK, every
+    track it names matches a REAL world object (track position within EARLY_MATCH_M of the object) and one of them is
+    within EARLY_RANGE_M (hull gap at the STOP, from the TRUE position), the boat ends in HOLD (standing) or STANDBY,
+    and there is no contact (every object's hull gap >= 0.5 m all the time, on the estimated AND the true position,
+    the true position in >= 90 % of the samples). Each condition is its own check."""
     r = []
-    e, t_x = _halting_stop(S_, ep)
-    tracks = [b for b in (e or {}).get("blockers", []) if b.get("track")]
-    real = [b for b in tracks if b.get("match") is not None and b["match_d"] <= EARLY_MATCH_M]
-    near = [b for b in real if b.get("gap") is not None and b["gap"] <= EARLY_RANGE_M]
-    r.append(("P1e-a the STOP that halted the boat names a TRACK", bool(tracks),
-              "halting STOP %s (furthest point at %.1f s): %s" % (e and e["t"], t_x, e and e["reason"][:70])))
-    r.append(("P1e-b ... EVERY track it names = a REAL object (<= %.0f m), one within %.0f m of the boat" % (
-              EARLY_MATCH_M, EARLY_RANGE_M), bool(tracks) and len(real) == len(tracks) and bool(near),
-              "tracks %s" % ([(b["id"], b.get("match"), b.get("match_d"), b.get("gap")) for b in tracks][:4],)))
+    hs, t_x = _halting_stops(S_, ep)
+
+    def named(e):
+        return [b for b in e.get("blockers", []) if b.get("track")]
+
+    def real_ok(e):
+        tr = named(e)
+        real = [b for b in tr if b.get("match") is not None and b["match_d"] <= EARLY_MATCH_M]
+        near = [b for b in real if b.get("gap") is not None and b["gap"] <= EARLY_RANGE_M]
+        return bool(tr) and len(real) == len(tr) and bool(near) and bool(e.get("true_pos"))
+    r.append(("P1e-a every STOP that halted the boat names a TRACK", bool(hs) and all(named(e) for e in hs),
+              "halting STOPs (furthest point at %.1f s): %s" % (t_x, [(e["t"], e["reason"][:50]) for e in hs][:4])))
+    r.append(("P1e-b ... EVERY track they name = a REAL object (<= %.0f m), one within %.0f m (true position)" % (
+              EARLY_MATCH_M, EARLY_RANGE_M), bool(hs) and all(real_ok(e) for e in hs),
+              "tracks %s" % ([(e["t"], e.get("true_pos"), [(b["id"], b.get("match"), b.get("match_d"), b.get("gap"))
+                                                             for b in named(e)]) for e in hs][:4],)))
     last = S_[-1]
     r.append(("P1e-c the boat ends in HOLD (standing) or STANDBY", (last[5] == "HOLD" and last[4] < 0.5)
               or last[7] == "STANDBY", "end state %s, mode %s, SOG %.2f" % (last[5], last[7], last[4])))
