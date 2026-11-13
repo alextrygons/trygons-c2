@@ -982,7 +982,7 @@ def hp19_report():
     import types
     bad, det = hp19()
     src = open(os.path.join(HERE, "harbour", "planner.py"), encoding="utf-8").read()
-    old = '        if now - self.keep_t0 > float(c["keep_max_s"]):'
+    old = '        if now - self.keep_t0 > float(c["keep_max_s"]) - 1e-6:'
     assert old in src
     m = types.ModuleType("harbour.planner_mut19")
     m.__package__ = "harbour"
@@ -992,10 +992,44 @@ def hp19_report():
            not bad and bool(mbad), "%s; %s; mutant (no time limit) caught %s" % (bad, "; ".join(det), mbad[:1]))
 
 
+def hp20(planner_mod=P):
+    """HX7-fix2 (H2): the LAST leg ends at the final waypoint (the AURIX stops there): a quay 22 m beyond it is no
+    reason to STOP early; the same geometry NOT on the last leg (the line goes on into the quay) = STOP as before."""
+    sm = staticmap.StaticMap()
+    sm.add_segment(-40.0, 122.0, 40.0, 122.0, 3.0)              # a quay across the line, 22 m past the waypoint
+    out = {}
+    for last in (True, False):
+        pl = planner_mod.Planner()
+        d = None
+        for k in range(6):
+            i = inp([], y=98.5 + 0.2 * k, kn=2.0, route_kn=3.0, smap=sm)
+            i["leg"] = ((0.0, -50.0), (0.0, 100.0))
+            i["last_leg"] = last
+            d = pl.plan(10.0 + 0.2 * k, i)
+        out[last] = d
+    return out
+
+
+def hp20_report():
+    import types
+    o = hp20()
+    ok = not o[True]["stop"] and o[False]["stop"]
+    src = open(os.path.join(HERE, "harbour", "planner.py"), encoding="utf-8").read()
+    old = '        self._end_s = L if inp.get("last_leg") else None'
+    assert old in src
+    m = types.ModuleType("harbour.planner_mut20")
+    m.__package__ = "harbour"
+    exec(compile(src.replace(old, '        self._end_s = None'), "planner_mut20", "exec"), m.__dict__)
+    mo = hp20(m)
+    report("HP20 the last leg: a quay beyond the final waypoint is no early STOP; not the last leg = STOP; mutant caught",
+           ok and mo[True]["stop"], "last leg stop %s (%s); not last stop %s; mutant (no last-leg model) stop %s" % (
+               o[True]["stop"], o[True]["reasons"][:1], o[False]["stop"], mo[True]["stop"]))
+
+
 def main():
     t0 = time.time()
     for fn in (hp1, hp2, hp3, hp4, hp5, hp6_report, hp7, hp8_report, hp9, hp10_report, hp11, hp12, hp13, hp14, hp15,
-               hp16, hp17, hp18_report, hp19_report):
+               hp16, hp17, hp18_report, hp19_report, hp20_report):
         try:
             fn()
         except Exception as e:

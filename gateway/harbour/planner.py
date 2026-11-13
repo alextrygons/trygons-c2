@@ -67,7 +67,8 @@ DEFAULTS = {
     # refuge): then the planner steers clear inside the corridor if a path keeps the minimum distances, else STOP +
     # the "vessel not giving way - TAKE OVER" alarm (never a creep towards it)
     "ny_window_s": 4.0, "ny_min_obs_s": 2.0, "ny_slow_frac": 0.85, "ny_turn_deg": 15.0,
-    "ny_hold_s": 10.0,
+    "ny_hold_s": 10.0,                                   # review M3: the not-yielding state LATCHED this long after
+                                                         # its last detection (a re-ID / U7 never clears it)
     # HX7-fix2 (finding HX7-3): DECISION PERSISTENCE. A cycle whose candidate search alone finds nothing (U5 / U13: a
     # noisy track sigma, an AIS twin for one cycle) right after a moving decision may KEEP that previous command for at
     # most keep_max_s (< the 1 s lease; the command was judged against the full 15 m one cycle before) - only if the
@@ -81,8 +82,7 @@ DEFAULTS = {
     "turn_persist_s": 3.0,
     # HX7-fix2 (H2): the last-leg arrival model: the coast-down starts end_lag_s of travel AFTER the final waypoint and
     # only within end_r_m of the line (below the route's 8 m arrival radius) - conservative both ways
-    "end_lag_s": 1.5, "end_r_m": 5.0,                                   # review M3: the not-yielding state LATCHED this long after
-                                                         # its last detection (a re-ID / U7 never clears it)
+    "end_lag_s": 1.5, "end_r_m": 5.0,
     # HX7-fix (finding HX7-1): the READY lease before the captain's START (STANDBY only): heading = the leg track,
     # cap = the most restrictive of the planner's cap, the route leg and ready_kn
     "ready_kn": 5.0,
@@ -240,6 +240,7 @@ class Planner:
     def plan(self, now, inp, deadline=None):
         """inp = {own {x, y, heading, sog_kn, fresh, gps_ok, unc}, leg ((ax, ay), (bx, by)) | None, corr_m, route_kn,
         tracks [...], flags {...}, static StaticMap | None, health {radar, lidar}, block [reasons]} -> decision dict."""
+        self._end_s = None                              # (review r2 LOW: never a previous cycle's leg end)
         return self._latch(now, self._plan_once(now, inp, deadline))
 
     def _latch(self, now, dec):
@@ -473,7 +474,7 @@ class Planner:
             if self.prev is not None:
                 cost += 0.5 * abs(o - self.prev[0]) / step + (0.5 if abs(v_kn - self.prev[1]) > 1e-6 else 0.0)
             cost -= 0.05 * min(clear, 10.0)
-            if held and self.turn_t is not None and now - self.turn_t <= float(c["turn_persist_s"]) and                     (o - e0) * getattr(self, "turn_side", 0.0) <= 0.0:
+            if held and self.turn_t is not None and now - self.turn_t <= float(c["turn_persist_s"]) and                     o * getattr(self, "turn_side", 0.0) < 0.0:      # (r2: only the OTHER side of the line costs more)
                 cost += 6.0                             # HX7-fix2: keep the side of a turn for a vessel not giving way
             if best is None or cost < best[0]:
                 best = (cost, o, v_kn, blk)
@@ -557,9 +558,9 @@ class Planner:
             self.keep_t0 = None
         else:
             self.kept += 1
-        if held and dec["turn"]:
+        if held and dec["turn"] and not kept and abs(o) > 1e-6:
             self.turn_t = now
-            self.turn_side = 1.0 if o > e0 else -1.0     # (review r1 L-3: the side kept explicitly)
+            self.turn_side = 1.0 if o > 0.0 else -1.0     # (r1 L-3 / r2: the side of the LINE, never refreshed by a keep)
         self.prev = (o, v_kn)
         self.prev_t = now                               # (review r1 H-1: the previous MOVING decision's time + leg)
         self.prev_leg = (ax, ay, bx, by)
@@ -579,7 +580,7 @@ class Planner:
             return False
         if self.keep_t0 is None:
             self.keep_t0 = now
-        if now - self.keep_t0 > float(c["keep_max_s"]):
+        if now - self.keep_t0 > float(c["keep_max_s"]) - 1e-6:
             return False
         o, v_kn = self.prev
         v_kn = min(v_kn, cap)                           # (r1 M-3: this cycle's cap applies)
@@ -592,7 +593,14 @@ class Planner:
             return False
         _ok, cl, _b2 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, movers, {"big": []}, ax, ay, ux, uy, nx, ny,
                                  s_end)
-        return cl >= -float(c["keep_margin_m"])
+        if cl < -float(c["keep_margin_m"]):
+            return False
+        # review r2 MED-3: and if the failure LASTS, the STOP comes at the end of the keep window: the path driven until
+        # then and the coast-down after it must also predict >= 3 m from every moving track
+        left = max(0.0, float(c["keep_max_s"]) - (now - self.keep_t0)) + float(c["dt_s"])
+        _ok2, cl2, _b3 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, movers, {"big": []}, ax, ay, ux, uy, nx, ny,
+                                   s_end, stop_after=left)
+        return cl2 >= -float(c["keep_margin_m"])
 
     def _threats(self, now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end):
         """HX7-fix: the movers that do NOT give way: range-confirmed (steer_ok), not slowing / turning (_not_slowing),
@@ -685,8 +693,10 @@ class Planner:
                     return True
         return False
 
-    def _sim(self, o, v_kn, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny, s_end, H=None):
-        """Simulate one candidate -> (feasible, min clearance margin, blocking track ids)."""
+    def _sim(self, o, v_kn, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny, s_end, H=None,
+             stop_after=None):
+        """Simulate one candidate -> (feasible, min clearance margin over the WHOLE horizon, blocking track ids).
+        stop_after: the target speed becomes 0 after this many seconds (a STOP sent later: the keep window)."""
         c = self.c
         dt = float(c["dt_s"])
         H = float(c["horizon_s"]) if H is None else float(H)
@@ -707,6 +717,8 @@ class Planner:
         end_s = getattr(self, "_end_s", None)
         while t < H - 1e-9:
             t += dt
+            if stop_after is not None and t > stop_after + 1e-9:
+                vt = 0.0                                # (HX7-fix2 r2: the STOP at the end of the keep window)
             if end_s is not None and vt > 0.0 and (x - ax) * ux + (y - ay) * uy >= end_s + v * float(c["end_lag_s"])                     and abs((x - ax) * nx + (y - ay) * ny) <= float(c["end_r_m"]):
                 vt = 0.0                                # (HX7-fix2) the last waypoint reached: the AURIX stops there
                 # (review r1 M-4: only within the arrival band end_r_m of the line, and end_lag_s of travel after the
