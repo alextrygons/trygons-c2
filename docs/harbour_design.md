@@ -932,6 +932,21 @@ Furuno / Garmin open interfaces beyond Mayara's own list.
   MANUAL_EL ch. 22). A WIDER corridor (H4r / H8r / H19r: a vessel 24 m off the line needs 27-29 m of
   separation, a +-10 m corridor gives 29.75 m = an expected safe STOP) is a PER-ROUTE owner decision;
   the default stays +-10 m (W146).
+- Open (HX7-fix4, 2026-11-13; W152): (a) STATIC-MAP PHANTOM (storm S14): a vessel that stands still
+  >= static_s (20 s) is laid into the static map (tau 1 h); when it LEAVES, its footprint stays and the
+  planner U5-STOPs for a phantom (S14: 29-45 m from any real object, the boat held at x 21 for the rest of
+  the run; fails SAFE, a false STOP). A release of the leaver's own cells was built + reviewed twice
+  (b40ddf4 / 24c20da: geometric, (generation, id) owner, 5 s dwell, any track / a recently deleted track in
+  the footprint keeps it; S14 then PASSED 62 m) and REVERTED (73c7bfc): review round 2 left a safety MED -
+  'no track in the footprint' is not proof the berth is free (occluded / out of view / track swap); the
+  right fix needs positive LiDAR free-space evidence = a perception design step. (b) QUAY TRACKS (library
+  H2, 2 of 3 runs alone + the gate): the quay's returns are tracked as steer_ok tracks with noise speeds
+  0.02-0.64 m/s; above obstacle_moving_mps 0.25 they are MOVERS (15 m + the 2-sigma growth), the end of
+  the route 18 m from the pier head is then 'no free path' -> U5 STOP 20-26 m before the final waypoint
+  (intermittent: the noise). Both = planner input (perception) faults, fail safe, NOT fixed (W152).
+  Storm classes since HX7-fix4: start_stop (S13, U13 before the boat got under way), fault_stop (S21,
+  owner decision 2026-11-13: the injected fault's designed HOLD), early_stop + P1e-e (a static-map
+  co-blocker must lie on a real object); tests/harbour/selftest_classes.py proves each fails its mutations.
 - Open: W144 (5 kn), W145 (15 / 8 m), W146 (+-10 m), W147 (grace 60 s + the cut list), W148 (sensors),
   NEW W149 (DP SPOT as the harbour HOLD when thrusters are fitted; never after a lost link).
 - Review of 0491d5d (opus, api_review.py): MED-1..MED-5 + LOW-1/3/4/6 folded into this file
