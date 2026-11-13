@@ -575,8 +575,15 @@ def ua7_registry():
         b = r.register(2, good_reading(sysid=12, params={"GRIP_ENABLE": 1}))
         c = r.register(3, good_reading(sysid=11))                    # duplicate sysid of slot 1
         def _slots():
-            with open(path, encoding="utf-8") as f:              # (closed at once: Windows replace / sharing)
-                return json.load(f).get("slots", {})
+            # HX7-fix3 (harness flake "ua7_registry crashed" only in the suite): this poll races the registry's
+            # writer thread - on Windows an open() while os.replace() swaps the file = PermissionError 13 (a
+            # delete-pending file; a reader + writer loop shows it in ~18 % of the reads); in the loaded suite the
+            # 3 saves overlap the 50 ms poll. A sharing violation / a half-written file = "not yet": poll again
+            try:
+                with open(path, encoding="utf-8") as f:          # (closed at once: Windows replace / sharing)
+                    return json.load(f).get("slots", {})
+            except (PermissionError, ValueError):
+                return {}
         until(lambda: os.path.exists(path) and _slots().get("3"), 5)
         r2 = registry.Registry(path)
         l1 = r2.launchable(1, {"sysid": 11})
