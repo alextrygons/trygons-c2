@@ -30,7 +30,7 @@ def xy_to_ll(lat0, lon0, x, y):
 
 
 def default_objects():
-    """The built-in harbour (a small basin like Daskalio's): two piers, three moored boats, a vessel with AIS, a vessel
+    """The built-in harbour (a small basin): two piers, three moored boats, a vessel with AIS, a vessel
     without AIS, a kayak, a swimmer, a buoy. The own boat is expected near the origin."""
     return [
         {"id": "breakwater", "kind": "pier", "x1": -160.0, "y1": 140.0, "x2": 70.0, "y2": 140.0, "w": 8.0, "h": 2.5,

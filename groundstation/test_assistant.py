@@ -3550,7 +3550,7 @@ def as29():
         "reference" in x for x in l6)
     out["AM7 corpus_scale: 1.0 at / below the reference, > 1 above it, grows with N"] =         IX.corpus_scale(IX.SCALE_REF_N["el"], "el") == 1.0 and IX.corpus_scale(10, "el") == 1.0 and         IX.corpus_scale(5000, "xx") == 1.0 and 1.0 < IX.corpus_scale(615, "el") < IX.corpus_scale(700, "el")
     sc = {lg: IX.Searcher(IX.load(lg)).scale for lg in ("el", "en")}
-    out["AM7 today's scale el ~1.028 / en ~1.018 (= the floor 7.40 / 7.33, MIN_SCORE 3.09 / 3.05)"] =         abs(sc["el"] - 1.0283) < 0.002 and abs(sc["en"] - 1.0179) < 0.002 and         IX.Searcher(IX.load("el")).search("σε ποια λειτουργία είμαι τώρα;")["scale"] == sc["el"]
+    out["AM7 today's scale el ~1.036 / en ~1.022 (= the floor 7.46 / 7.36; HX6 added a manual chapter: N 636 / 906)"] =         abs(sc["el"] - 1.0356) < 0.002 and abs(sc["en"] - 1.0224) < 0.002 and         IX.Searcher(IX.load("el")).search("σε ποια λειτουργία είμαι τώρα;")["scale"] == sc["el"]
     st = A.Answerer(A.StubLlm("1"), mode="extract")
     hit = [{"id": "el:1", "ch": "9", "chapter": "X", "heading": "", "term": "", "text": "Μία πρόταση εδώ.",
             "score": 7.3, "cover": 0.9, "after": []}]
