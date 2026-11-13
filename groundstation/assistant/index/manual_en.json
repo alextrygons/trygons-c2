@@ -9827,7 +9827,7 @@
 4751
 ],
 "term": "",
-"text": "A vessel does not give way (radar / LiDAR confirmed, it keeps its speed and course and would hit the boat even if the boat stopped): the boat first STEERS CLEAR inside its corridor if a path keeps 15 m from it (starboard first, never faster than the route), with COLLISION RISK on the screens. If no such path exists - in a +-10 m corridor with the vessel on the line there is none - the boat STOPS at once and you get the red WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice callout (+ COLLISION RISK - DRIVER DECISION). TAKE OVER AT ONCE: a stopped boat is NOT safe from a vessel that ignores it."
+"text": "A vessel does not give way (radar / LiDAR confirmed, it keeps its speed and course and would hit the boat even if the boat stopped): the boat first STEERS CLEAR inside its corridor if a path keeps 15 m from it (starboard first, never faster than the route), with COLLISION RISK on the screens. If no such path exists - in a +-10 m corridor with the vessel on the line there is none - the boat STOPS at once and you get the WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice callout (+ COLLISION RISK - DRIVER DECISION). TAKE OVER AT ONCE: a stopped boat is NOT safe from a vessel that ignores it."
 },
 {
 "ch": "27",
@@ -11924,7 +11924,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "6e06a872836233ea49ee48f215eb043db4a76d3348004d4f41ae042be95faa3b",
+"MANUAL.txt": "6de3282d2053e25dfdf971675565c767e548f078964c306ba0926505fd8c0e09",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },

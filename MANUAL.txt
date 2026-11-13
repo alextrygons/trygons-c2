@@ -4746,7 +4746,7 @@ WHAT TO DO WHEN ...
     inside its corridor if a path keeps 15 m from it (starboard first, never faster
     than the route), with COLLISION RISK on the screens. If no such path exists - in a
     +-10 m corridor with the vessel on the line there is none - the boat STOPS at once
-    and you get the red WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice
+    and you get the WARNING «VESSEL NOT GIVING WAY - TAKE OVER» with a voice
     callout (+ COLLISION RISK - DRIVER DECISION). TAKE OVER AT ONCE: a stopped boat is
     NOT safe from a vessel that ignores it. Harbour autonomy never reverses, never
     speeds up and never leaves the corridor to get out of the way - only YOU can

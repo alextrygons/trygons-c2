@@ -188,6 +188,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
     seen = {}
     lost_at = {}
     followed = {}                                       # I94: object id -> since when a steer_ok track follows it
+    ny_raised = [None]                                  # I94 (review M3): when the not-yielding STOP was first raised
     leg_psi = 0.0
     steps = int((max(secs, 90.0) if fam == "pass" else secs) / 0.2)    # a passable harbour: 90 s to make way
     for k in range(steps):
@@ -257,6 +258,13 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
                 tc = max(0.0, -(dx * vx + dy * vy) / vv) if vv > 1e-9 else 0.0
                 cpa = math.hypot(dx + vx * min(tc, 40.0), dy + vy * min(tc, 40.0)) - sz - 3.0
                 no_path = dec["stop"] and all(str(r).startswith(("U5 ", "U13 ")) for r in dec.get("reasons") or [])
+                if ny_raised[0] is not None and dec["stop"] and cpa < 10.0 and tc <= 40.0 and t - ny_raised[0] <= 10.0:
+                    # once raised it STAYS raised while the danger lasts (whatever the cycle's own reason: U7, re-ID ...)
+                    res("I94", (int(dec.get("alarm") or 0) & 3) == 3 and bool(dec.get("not_yielding")), seed,
+                        "t %.1f the not-yielding alarm dropped while the rogue still closes (CPA %.1f m): %s" % (
+                            t, cpa, dec.get("reasons")))
+                if dec["stop"] and dec.get("not_yielding") and ny_raised[0] is None:
+                    ny_raised[0] = t
                 if cpa < 10.0 and tc <= 40.0 and t - followed.get(o["id"], 1e9) >= 4.0 and no_path:
                     ok = bool(dec.get("not_yielding")) and (int(dec.get("alarm") or 0) & 3) == 3
                     res("I94", ok, seed, "t %.1f a rogue (truth CPA %.1f m in %.0f s) and a STOP %s without the "
@@ -379,9 +387,12 @@ def ready_storm(seed, planner_mod=P):
         ok = out.get("kind") == pr.NAV_HARBOUR and out.get("lease_ms") == 1000 and \
             out.get("cap_kn") <= lim + 1e-9 and out.get("alarm") == req0["alarm"]
         if ok and not (out["hflags"] & 1):
-            ok = d.get("leg_track") is not None and abs(P.wrap(out["heading"] - d["leg_track"])) < 1e-6
-            if ok and d.get("heading") is not None and abs(P.wrap(d["heading"] - d["leg_track"])) > 0.5:
-                STATS["ready_offline"] = STATS.get("ready_offline", 0) + 1     # the planner would have steered
+            # a READY frame (not STOP) only for a STRAIGHT solution: heading = the leg track = the planner's own
+            ok = d.get("leg_track") is not None and abs(P.wrap(out["heading"] - d["leg_track"])) < 1e-6 and \
+                d.get("heading") is not None and abs(P.wrap(d["heading"] - d["leg_track"])) <= 0.5
+        elif ok and d.get("heading") is not None and d.get("leg_track") is not None and \
+                abs(P.wrap(d["heading"] - d["leg_track"])) > 0.5:
+            STATS["ready_offline"] = STATS.get("ready_offline", 0) + 1     # an offset solution = STOP (review M2)
         res("I93", ok, seed, "the READY frame %s (planner %s / %s, limit %.1f)" % (
             out, d.get("heading"), d.get("leg_track"), lim))
         STATS["ready_sent"] = STATS.get("ready_sent", 0) + 1
@@ -404,8 +415,8 @@ MUTANTS = {
                  '            why = "harb.why_degraded"'),
     # HX7-fix: the not-yielding alarm dropped / the READY frame steering with the planner's heading / its HELM gate gone
     "notyield": ('"harb.why_not_yielding", ALM_COLLISION | ALM_DECISION,', '"harb.why_not_yielding", 0,'),
-    "ready": ('            hdg = lt if lt is not None else (o_hdg if o_hdg is not None else 0.0)',
-              '            hdg = hdg'),
+    "ready": ('            if lt is None or ph is None or abs(wrap(float(ph) - float(lt))) > 0.5:',
+              '            if False:'),
     "ready_gate": ('        return helm is not None                         # nobody holds HELM',
                    '        return True                         # nobody holds HELM'),
 }

@@ -158,8 +158,8 @@ def evaluate(spec, ep, out):
     # must not pass anything
     xmax = max(q[1] for q in S_)
     ran = any(q[5] in ("RUN", "SLOW") for q in S_)
-    # (an "unavoidable" scenario stops at once for the vessel that does not give way - by design, far away - so its
-    # boat must have DRIVEN >= 10 m under harbour autonomy; every other scenario >= 25 m as before)
+    # (an "unavoidable" scenario may stop at once for the vessel that does not give way - by design, far away; H8's
+    # overtaker is a threat from the start: there P1 = RUN / SLOW seen + P3 the encounter; every other scenario >= 25 m)
     need_x = 0.0 if ex.get("unavoidable") else 25.0    # (H8: the overtaker is already a threat at the start)
     r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
               "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
@@ -191,10 +191,10 @@ def evaluate(spec, ep, out):
         # U1-U4 (HX7-fix, the scenario's own criteria for the vessel that does not give way, see UNAVOIDABLE)
         cont = [s for s in S_ if any(o == k and g < 0.5 for o, g, _m in s[17] for k in unv)]
         t_c = cont[0][0] if cont else None
-        ny = [s[0] for s in S_ if s[19] and "NOT GIVING WAY" in (s[14] or "")]
+        ny = [s[0] for s in S_ if s[19] and "NOT GIVING WAY - STOP" in (s[14] or "")]
         r.append(("U1 the not-yielding STOP + TAKE OVER state raised (before any contact)",
                   bool(ny) and (t_c is None or ny[0] < t_c), "first at %s s, contact at %s s" % (ny[0] if ny else None, t_c)))
-        al = [s[0] for s in S_ if s[18] & ALM_COLL]
+        al = [s[0] for s in S_ if s[18] & 0x1000000]          # DRIVER DECISION (COLLISION alone = steering clear)
         r.append(("U2 the AURIX's COLLISION RISK / DRIVER DECISION alarm on (before any contact)",
                   bool(al) and (t_c is None or al[0] < t_c), "first at %s s" % (al[0] if al else None)))
         st = [s[0] for s in S_ if s[5] == "HOLD" and s[4] < 0.5]
