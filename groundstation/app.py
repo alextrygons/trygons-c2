@@ -3254,6 +3254,9 @@ class App:
         else:
             seq = self.link.send(ftype, payload)
         self.pending[seq] = what
+        if getattr(self, "harbour_upload_arm", None) is not None and ftype == proto.T_PROG_COMMIT:
+            self.harbour_upload_pending = (seq, self.harbour_upload_arm)      # HX6-r2
+            self.harbour_upload_arm = None
         if self.mob_auto_arm and ftype == proto.T_PROG_COMMIT:     # the return route's own commit (PF3-r)
             self.mob_auto_arm, self.mob_auto_seq = False, seq
         self.event("> " + i18n.from_en(what))
@@ -3586,6 +3589,13 @@ class App:
                     if d["cmd"] == proto.T_PROG_COMMIT and d["ok"]:
                         self.route_dirty = False
                         self.mob_route_stored(d["seq"])
+                        hp = getattr(self, "harbour_upload_pending", None)
+                        if hp and hp[0] == d["seq"]:
+                            self.harbour_route = hp[1]          # HX6-r2: the boat's route only once the commit was acknowledged
+                    if d["cmd"] == proto.T_PROG_COMMIT:
+                        hp = getattr(self, "harbour_upload_pending", None)
+                        if hp and hp[0] == d["seq"]:
+                            self.harbour_upload_pending = None
                     if d["cmd"] == proto.T_PARAM_GET and d["result"] == 10:
                         continue                # "Read all" probes past the last id
                     if d["cmd"] == proto.T_PARAM_SET and d["ok"]:
@@ -6434,8 +6444,9 @@ class App:
         frames = program.upload_frames(prog)
         for t, pl in frames[:-1]:
             self.link.send(t, pl)
+        self.harbour_upload_arm = route
         self.cmd(frames[-1][0], frames[-1][1], TE("what.harbour_route_upload", n=len(prog["wps"])))
-        self.harbour_route = route
+        self.harbour_upload_arm = None
         self.event(T("harb.ev_route", n=len(prog["wps"])))
         return True
 

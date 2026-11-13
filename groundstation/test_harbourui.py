@@ -618,7 +618,25 @@ def hu12(env):
     begin = [p for t, p in cap.frames if t == proto.T_PROG_BEGIN]
     ok_send = types[0] == proto.T_PROG_BEGIN and types.count(proto.T_PROG_WP) == len(r["wps"]) and types[-1] == proto.T_PROG_COMMIT \
         and len(begin) == 1 and begin[0][2] == 1 and begin[0][0] == len(r["wps"]) and proto.T_HARBOUR not in types \
-        and proto.T_AUTO_START not in types and ap.harbour_route is r and ap.harbour_preview is None
+        and proto.T_AUTO_START not in types and ap.harbour_route is None and ap.harbour_preview is None
+    # HX6-r2: the boat's route is set only by the ACK of that commit; a refused commit leaves it unset
+    pend = getattr(ap, "harbour_upload_pending", None)
+
+    def ack(seq, ok):
+        ap.link.events.put(("ack", {"seq": seq, "cmd": proto.T_PROG_COMMIT, "ok": ok, "result": 0 if ok else 114,
+                                    "text": "x", "cmd_name": "PROG_COMMIT"}))
+        rig.pump(0.6)
+    ok_ack = pend is not None
+    if ok_ack:
+        ack(pend[0], False)
+        ok_ack = ap.harbour_route is None and ap.harbour_upload_pending is None
+        win.send()
+        pend = ap.harbour_upload_pending
+        ok_ack = ok_ack and pend is not None
+        ack(pend[0] + 999, True)                               # an unrelated commit's ack
+        ok_ack = ok_ack and ap.harbour_route is None
+        ack(pend[0], True)
+        ok_ack = ok_ack and ap.harbour_route is r
     # the normal program is not flagged (the harbour flag never leaks into a plain route)
     plain = proto.p_prog_begin(3, 0)
     ok_plain = len(plain) == 2 and "flags" not in ap.prog
@@ -640,7 +658,7 @@ def hu12(env):
     report("HU12 the route window: MAKE from a saved track (preview drawn), SEND refused until the gateway's CHECK says OK (129 "
            "keeps it refused), SEND = the normal upload frames with the harbour flag and NEVER a start, a plain route stays "
            "unflagged, a TEST sample is never sent, a too-short part is refused",
-           ok_make and ok_first and ok_chk and ok_ref and ok_send and ok_plain and ok_sample and ok_short and ok_closed,
+           ok_make and ok_first and ok_chk and ok_ref and ok_send and ok_ack and ok_plain and ok_sample and ok_short and ok_closed,
            "make %s first %s chk %s refused %s send %s plain %s sample %s short %s closed %s" % (
                ok_make, ok_first, ok_chk, ok_ref, ok_send, ok_plain, ok_sample, ok_short, ok_closed))
 

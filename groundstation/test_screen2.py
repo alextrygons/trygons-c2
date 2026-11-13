@@ -794,7 +794,7 @@ ALLOWED = {"STANDBY", "AUTO", "ADS-B", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG"
            "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN",  # (13n3 GPX)
            "Windows", "Stefanos", "Microsoft",
            "ArduPilot", "MAVLink", "sysid", "UAV-", "mAh", "Mission", "Planner",   # X1: the product name "Mission Planner" in the .tlog button
-           "JOYSTICK", "GUIDED", "COLREGs", "LiDAR", "REMOTE", "STOP"}   # (HX6: the collision rules, the sensor, the mode name, the button)  # (U5: the owner's banner «JOYSTICK → UAV n»; GUIDED = an ArduPilot mode name)
+           "JOYSTICK", "GUIDED", "LiDAR", "STOP"}   # (HX6: LiDAR = the sensor's product name, STOP = the button's international label; both on the Greek screen)  # (U5: the owner's banner «JOYSTICK → UAV n»; GUIDED = an ArduPilot mode name)
            #  # (U2: the drones' autopilot / protocol / id, a drone's default name  # (13o: the Windows voice, a product + voice name)
 
 
