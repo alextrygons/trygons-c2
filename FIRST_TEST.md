@@ -546,6 +546,12 @@ recording (SCR) and the weather.
 7g. TRAFFIC: only after 7d-7f were clean three times and the owner has written the go in the bench log: moored boats
     both sides, a ferry, a kayak (no AIS). The captain on board, the safety boat out. Never with a swimmer in the
     water (the LiDAR's blind zone: residual risk, MANUAL chapter 27).
+7g2. KNOWN LIMIT (HX7-fix3, owner 2026-11-13; storm world S4): a STOPPED boat that still COASTS in HOLD (it has no
+    reverse and no thrusters in the harbour HOLD) CANNOT avoid a vessel OVERTAKING FROM ASTERN that does not give way.
+    The planner's STOP + «VESSEL NOT GIVING WAY - TAKE OVER» does not make the boat safe from it. CAPTAIN'S CHECKLIST:
+    look astern before every START and keep looking; a vessel closing from astern = TAKE OVER at once (drive clear,
+    sound the horn) - do not wait for the planner. (The design answer - keep speed or offset to starboard inside the
+    corridor instead of STOP, COLREGs rules 13 / 17 - is the owner's open design question in PROGRESS.md.)
 7h. UNCREWED harbour runs, link-lost tests and the engine-kill timing in harbour are NOT part of this plan: they need
     the owner's answer to W147 (the grace time) and their own plan after the CREWED runs.
 What to record after every run: whether the boat ever came closer than 15 m (moving) / 8 m (fixed) hull to hull (GPS +

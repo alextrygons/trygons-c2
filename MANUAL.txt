@@ -4752,6 +4752,12 @@ WHAT TO DO WHEN ...
     speeds up and never leaves the corridor to get out of the way - only YOU can
     (TAKE OVER, then drive; sound the horn). CHECKLIST: hear that warning = take the
     controls, do not press RESUME.
+  KNOWN LIMIT - a vessel OVERTAKING FROM ASTERN that does not give way: after the
+    STOP the boat still COASTS slowly in HOLD (no reverse, no thrusters), and a
+    stopped, coasting boat CANNOT get out of the way of a vessel coming up from
+    astern. The STOP does not protect you here. Look astern before START and keep
+    looking; a vessel closing from astern = TAKE OVER at once and drive clear (sound
+    the horn) - do not wait for the warning.
   A harbour mode that keeps stopping with "UNSURE": do not press RESUME again and
     again - drive by hand.
 

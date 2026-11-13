@@ -9850,10 +9850,10 @@
 "kind": "manual",
 "lines": [
 4755,
-4761
+4760
 ],
 "term": "",
-"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (stop, take the controls); the simulator has no gateway and no sensors, so the real planner is not part of them."
+"text": "KNOWN LIMIT - a vessel OVERTAKING FROM ASTERN that does not give way: after the STOP the boat still COASTS slowly in HOLD (no reverse, no thrusters), and a stopped, coasting boat CANNOT get out of the way of a vessel coming up from astern. The STOP does not protect you here. Look astern before START and keep looking; a vessel closing from astern = TAKE OVER at once and drive clear (sound the horn) - do not wait for the warning."
 },
 {
 "ch": "27",
@@ -9863,7 +9863,20 @@
 "kind": "manual",
 "lines": [
 4761,
-4768
+4767
+],
+"term": "",
+"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (stop, take the controls); the simulator has no gateway and no sensors, so the real planner is not part of them."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:760",
+"kind": "manual",
+"lines": [
+4767,
+4774
 ],
 "term": "",
 "text": "The presentation demo DEMO_HARBOUR.bat shows the whole thing without hardware: a simulated harbour with moored boats, a crossing ferry, a kayak and a buoy; the boat leaves the harbour on a harbour route; a presenter's guide window lists the steps and ticks them as they happen (it only watches - the captain's YES and the CONFIRM are clicked by the presenter). The scenario library tests/harbour (20 situations, run end to end against the simulated AURIX) and the sea plan in FIRST_TEST.md section 7 are for the people who build and test the boat, not for the daily user."
@@ -11924,7 +11937,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "6de3282d2053e25dfdf971675565c767e548f078964c306ba0926505fd8c0e09",
+"MANUAL.txt": "f5bf414b8c441d49fa02671e05b301e4e055ae43afe311884302df7d574c21ed",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },

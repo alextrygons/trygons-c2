@@ -924,6 +924,14 @@ Furuno / Garmin open interfaces beyond Mayara's own list.
   (the owner's M0-4), tuned on the sea plan.
 - R-H5 the lost-link grace (63 s with an idling engine and nobody in control) is a deliberate change of
   a safety rule -> SERIAL review in HX2, the owner's W147.
+- Open (HX7-fix3, owner 2026-11-13): W151 = a DESIGN question, NOT built - a threat from ASTERN / an
+  overtaking vessel (COLREGs rules 13 + 17): keep speed or offset to starboard inside the corridor instead
+  of STOP, a WARNING to the captain, optional 5 short blasts on the loudhailer; it changes M0-4 + the
+  steering = its own later step with a full SERIAL opus review. Until then KNOWN LIMIT S4: a stopped boat
+  coasting in HOLD cannot avoid a vessel overtaking from astern (FIRST_TEST.md 7g2, MANUAL ch. 27 /
+  MANUAL_EL ch. 22). A WIDER corridor (H4r / H8r / H19r: a vessel 24 m off the line needs 27-29 m of
+  separation, a +-10 m corridor gives 29.75 m = an expected safe STOP) is a PER-ROUTE owner decision;
+  the default stays +-10 m (W146).
 - Open: W144 (5 kn), W145 (15 / 8 m), W146 (+-10 m), W147 (grace 60 s + the cut list), W148 (sensors),
   NEW W149 (DP SPOT as the harbour HOLD when thrusters are fitted; never after a lost link).
 - Review of 0491d5d (opus, api_review.py): MED-1..MED-5 + LOW-1/3/4/6 folded into this file
