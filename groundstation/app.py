@@ -3590,8 +3590,7 @@ class App:
                         self.route_dirty = False
                         self.mob_route_stored(d["seq"])
                         hp = getattr(self, "harbour_upload_pending", None)
-                        if hp and hp[0] == d["seq"]:
-                            self.harbour_route = hp[1]          # HX6-r2: the boat's route only once the commit was acknowledged
+                        self.harbour_route = hp[1] if hp and hp[0] == d["seq"] else None   # HX6-r2: only this commit's ACK; any other program replaces it
                     if d["cmd"] == proto.T_PROG_COMMIT:
                         hp = getattr(self, "harbour_upload_pending", None)
                         if hp and hp[0] == d["seq"]:
@@ -6444,6 +6443,7 @@ class App:
         frames = program.upload_frames(prog)
         for t, pl in frames[:-1]:
             self.link.send(t, pl)
+        self.harbour_route = None                            # r2 M-c: the boat's program is being replaced
         self.harbour_upload_arm = route
         self.cmd(frames[-1][0], frames[-1][1], TE("what.harbour_route_upload", n=len(prog["wps"])))
         self.harbour_upload_arm = None

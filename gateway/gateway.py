@@ -363,7 +363,13 @@ class Gateway:
         129 corridor."""
         import math as _m
         hc = self.cfg.get("harbour") if isinstance(self.cfg.get("harbour"), dict) else {}
-        cmax = float(hc.get("corr_m", 10.0))                 # the widest corridor the boat may use (W146: +-10 m; the AURIX clamps to harb_corr_m)
+        try:
+            cmax = float(hc.get("corr_m", 10.0))
+        except (TypeError, ValueError):
+            cmax = float("nan")
+        if not (_m.isfinite(cmax) and 4.0 <= cmax <= 10.0):
+            return 129, "gateway harbour corr_m %s outside 4..10 m (the boat's ceiling)" % cmax      # review HX6-r2 M-b
+        # the widest corridor the boat may use (W146: +-10 m; the AURIX clamps to harb_corr_m)
         corr = float(corr_m if corr_m is not None else cmax)
         if not (_m.isfinite(corr) and 4.0 <= corr <= cmax):
             return 129, "corridor half-width %s m outside 4..%.0f m" % (corr_m, cmax)
@@ -385,20 +391,21 @@ class Gateway:
                 continue
             ox, oy = -dy / n * corr, dx / n * corr         # the left normal x corr (metres)
             # the corridor as lines 0.5 x corr apart (review HX6 M1: a shoal between the centre and an edge)
-            for f, side in ((1.0, "left edge"), (-1.0, "right edge"), (0.5, "left half"), (-0.5, "right half")):
+            for f, side in ((1.0, "left edge"), (-1.0, "right edge"), (0.75, "left 3/4"), (-0.75, "right 3/4"),
+                            (0.5, "left half"), (-0.5, "right half"), (0.25, "left 1/4"), (-0.25, "right 1/4")):   # lines <= corr/4 apart (r2 M-d)
                 la1, lo1 = a[0] + f * oy / ky, a[1] + f * ox / kx
                 la2, lo2 = b[0] + f * oy / ky, b[1] + f * ox / kx
-                bad = ch.check_leg(la1, lo1, la2, lo2, lim, 0.0, step_m=5.0)
+                bad = ch.check_leg(la1, lo1, la2, lo2, lim, 0.0, step_m=2.5)
                 if bad:
                     return 129, "corridor (%s, +-%.0f m) of leg WP%d -> WP%d: %s at %.5f %.5f" % (
                         side, corr, k + 1, k + 2, bad[4], bad[1], bad[2])
         # the wedge outside every bend: spokes from each waypoint to a ring of corr metres
         for k, w in enumerate(wps):
-            for i in range(8):
-                ang = _m.radians(45.0 * i)
+            for i in range(24):
+                ang = _m.radians(15.0 * i)
                 la2 = w[0] + corr * _m.cos(ang) / ky
                 lo2 = w[1] + corr * _m.sin(ang) / (ky * max(0.2, _m.cos(_m.radians(w[0]))))
-                bad = ch.check_leg(w[0], w[1], la2, lo2, lim, 0.0, step_m=5.0)
+                bad = ch.check_leg(w[0], w[1], la2, lo2, lim, 0.0, step_m=2.5)
                 if bad:
                     return 129, "corridor around WP%d (+-%.0f m): %s at %.5f %.5f" % (k + 1, corr, bad[4], bad[1], bad[2])
         why = self.geofence.check(wps)
@@ -451,6 +458,13 @@ class Gateway:
             return self.check_hdg_shore(st, payload)
         if ftype == proto.T_HARBOUR:
             if payload[:1] in (bytes([proto.HARB_START]), bytes([proto.HARB_RESUME])):
+                hc = self.cfg.get("harbour") if isinstance(self.cfg.get("harbour"), dict) else {}
+                try:
+                    cm = float(hc.get("corr_m", 10.0))
+                except (TypeError, ValueError):
+                    cm = 0.0
+                if len(payload) >= 2 and payload[1] / 10.0 > cm + 0.05:     # r2 M-b: never wider than the corridor the commit checked
+                    return 129, "the corridor %.1f m is wider than the checked %.0f m" % (payload[1] / 10.0, cm)
                 self.hplan.note_start()                     # the planner's kind-4 pre-start window (HX5 review MED-2)
             return None
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
@@ -466,8 +480,8 @@ class Gateway:
             if up.get("harbour"):                           # step HX6: a harbour route = the corridor check, no 50 m clearance
                 kns = [k for k in (up.get("kn") or {}).values() if k is not None]
                 hb = None
-                if not 2 <= len(wps) <= 50 or any(not (_st_isfinite(k) and 0.5 <= k <= 8.0) for k in kns):
-                    hb = (129, "a harbour route needs 2..50 waypoints and leg speeds 0.5..8 kn")      # review HX6 M2
+                if not 2 <= len(wps) <= 50 or any(not (_st_isfinite(k) and 0.5 <= k <= 5.0) for k in kns):
+                    hb = (129, "a harbour route needs 2..50 waypoints and leg speeds 0.5..5 kn")      # review HX6 M2
                 if hb is None:
                     hb = self.harbour_route_check(wps, None)
                 if hb:

@@ -139,10 +139,12 @@ def hr1():
     mid = gw_stub(Charts(mid=True)).harbour_route_check(route(0.0, 0.0), 10.0)
     ok_mid = mid is not None and mid[0] == 129                     # review HX6 M1: between the centre line and the edge
     bend = [ll(0, 0), ll(0, 60), ll(-40, 60)]                      # a left-hand bend at (0, 60): the outside corner is near (7, 67)
-    bnd = gw_stub(Charts(spot=(7.0, 67.0))).harbour_route_check(bend, 10.0)
+    bnd = gw_stub(Charts(spot=(7.5, 65.0))).harbour_route_check(bend, 10.0)
     ok_bend = bnd is not None and bnd[0] == 129
     wide = gw_stub(Charts(), cfg={"harbour": {"corr_m": 10.0}}).harbour_route_check(ok_route, 12.0)
     ok_wide = wide is not None and wide[0] == 129 and "4..10" in wide[1]     # review HX6 H1: never wider than the boat's ceiling
+    badcfg = [gw_stub(Charts(), cfg={"harbour": {"corr_m": v}}).harbour_route_check(ok_route, None) for v in (30.0, float("nan"), "x")]
+    ok_cfg = all(b and b[0] == 129 for b in badcfg)
     nochart = gw_stub(None).harbour_route_check(ok_route, 10.0)
     fence = gw_stub(Charts(), fence="leg 1 leaves the fence").harbour_route_check(ok_route, 10.0)
     corr = [g.harbour_route_check(ok_route, v) for v in (2.0, 31.0, float("nan"))]
@@ -152,7 +154,7 @@ def hr1():
            "check would refuse the same route), the corridor edge at the quay = 129, shallow centre = 114, a shoal beside "
            "the line = 129 (a narrower corridor passes), geofence = 120, no charts = 114, a bad corridor = 129",
            clear_zero and ok_q and ok_s and ok_sh and nochart[0] == 114 and fence[0] == 120 and all(x and x[0] == 129 for x in corr)
-           and ok_dflt and ok_mid and ok_bend and ok_wide,
+           and ok_dflt and ok_mid and ok_bend and ok_wide and ok_cfg,
            "clearance 0 %s quay %s shallow %s shoal %s nochart %s fence %s corr %s default %s" % (
                clear_zero, q, s, sh, nochart, fence, corr, dflt))
 
@@ -220,14 +222,15 @@ def hr3():
     # review HX6 M2: a flagged upload is limited to 2..50 waypoints and 0.5..8 kn
     def upload_kn(pts, kn):
         st = St()
-        pb = struct.pack("<BB", len(pts), 0) + b""
+        pb = proto.p_prog_begin(len(pts), 0, 1)             # the 3-byte harbour PROG_BEGIN
         G.Gateway.check_prog(g, st, proto.T_PROG_BEGIN, pb)
         for i, (la, lo) in enumerate(pts):
             G.Gateway.check_prog(g, st, proto.T_PROG_WP, struct.pack("<Biif", i, round(la * 1e7), round(lo * 1e7), kn) + bytes(6))
         return G.Gateway.check_prog(g, st, proto.T_PROG_COMMIT, b"")
     fast = upload_kn(route(-30.0, -30.0), 12.0)
     one = upload_kn(route(-30.0, -30.0)[:1], 3.0)
-    ok_two = ok_two and isinstance(fast, tuple) and fast[0] == 129 and isinstance(one, tuple) and one[0] == 129
+    atlimit = upload_kn(route(-30.0, -30.0), 5.0)
+    ok_two = ok_two and atlimit is None and isinstance(fast, tuple) and fast[0] == 129 and isinstance(one, tuple) and one[0] == 129
     report("HR3 the program upload: PROG_BEGIN's flag byte makes the commit a harbour check (a route 25 m from the quay passes "
            "it, the same points as a plain route are refused), a corridor at the quay = 129 + audit, a plain upload unchanged",
            ok_flag and ok_h and ok_p and ok_q and ok_two, "flag %s harbour %s plain %s quay %s two %s" % (
