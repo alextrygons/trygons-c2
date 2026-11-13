@@ -894,3 +894,10 @@ LIDAR - pick one:
 Why both: radar sees far and through rain but is blind very close; LiDAR sees close and sharp but
 less far and suffers in spray / fog. Until you choose, everything is built and tested with
 SIMULATED radar + LiDAR. Your answer: PROGRESS.md W148.
+
+## Owner decisions 2026-11-13
+
+- W144-W147: the defaults are KEPT - harbour speed cap 5 kn (8 kn firmware ceiling), minimum passing distance 15 m from moving vessels / 8 m from static objects, corridor +-10 m, lost-link grace LINK TIME + 60 s (harb_ll_grace_s 60; every fault that STANDBY cuts today, and the stuck-gear drift cut, still kill at once). The grace mechanism ships at 0 until the firmware step HX8 enables it (compile-time range today 0..0).
+- W149: YES. A harbour HOLD uses DP SPOT when BOTH DP thrusters are fitted AND healthy (dp_ok: modelled idle + gear N, GPS trusted, no thruster HOT / blocked); otherwise idle + neutral as built in HX2. Never after a lost link (idle + neutral + the grace), never in FIRST TEST. This is HX2b / HX8 (firmware, serial review).
+- W150: YES. The board-ID check is part of the flash gate: before any real hardware the gateway config must say 'real' (a 'sim' sensor config with a non-loopback AURIX link is refused - HX5), the gateway checks the board's identity at start-up, then an AURIX identity field makes it provable. HX8.
+- W148: OPEN - the owner chooses the radar and LiDAR after reading section 11.
