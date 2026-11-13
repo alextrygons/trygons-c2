@@ -98,7 +98,7 @@ class HarbourRouteWindow:
 
     def opts(self):
         return {"cut_m": self._num("cut", 0.0, 200.0, harbourroute.DEFAULTS["cut_m"]),
-                "corr_m": self._num("corr", 4.0, 30.0, harbourroute.DEFAULTS["corr_m"]),
+                "corr_m": self._num("corr", 4.0, harbourroute.DEFAULTS["corr_max_m"], harbourroute.DEFAULTS["corr_m"]),
                 "tol_m": self._num("tol", 0.5, 20.0, harbourroute.DEFAULTS["tol_m"])}
 
     # --- the buttons ------------------------------------------------------------------------------------------------
@@ -124,6 +124,7 @@ class HarbourRouteWindow:
 
     def set_route(self, route, tol=None, sample=False):
         self.route, self.checked, self.sample = route, False, sample
+        self.app.harbour_check_seq = getattr(self.app, "harbour_check_seq", 0) + 1     # an older check's ack counts for nothing
         self.app.harbour_preview = route
         text = T("harb.rt_made", n=len(route["wps"]), len="%.0f" % harbourroute.length_m(route),
                  tol="%.1f" % (tol if tol is not None else route.get("tol_m") or 0.0), corr="%.0f" % route["corr_m"])

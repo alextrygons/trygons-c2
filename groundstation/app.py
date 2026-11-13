@@ -6396,7 +6396,7 @@ class App:
         how = harbourview.start_path(crew, self.single_op, m.get("running") and not resume, m.get("entry_ok") or resume)
         if how == "refuse":
             return self.say(T("harb.start_refused"), RED)
-        corr = (self.harbour_route or {}).get("corr_m") or m.get("corr_m") or 10.0
+        corr = min(harbourroute.DEFAULTS["corr_max_m"], (self.harbour_route or {}).get("corr_m") or m.get("corr_m") or 10.0)
         kn = m.get("max_kn") or 5.0
         act = proto.HARB_RESUME if resume else proto.HARB_START
         what = TE("what.harbour_resume" if resume else "what.harbour_start")
@@ -6439,15 +6439,19 @@ class App:
         self.event(T("harb.ev_route", n=len(prog["wps"])))
         return True
 
-    def harbour_check_request(self, route, seq=0):
-        """CHECK: the gateway's read-only route check (shallow, geofence, corridor)."""
+    def harbour_check_request(self, route, seq=None):
+        """CHECK: the gateway's read-only route check (shallow, geofence, corridor). The ack carries the sequence number:
+        only the ack of the CURRENT check counts (review HX6 M2)."""
         if not isinstance(self.link, GatewayLink):
             return False
+        self.harbour_check_seq = seq = (getattr(self, "harbour_check_seq", 0) + 1) if seq is None else seq
         self.link.send_msg({"t": "harbour_route", "op": "check", "seq": seq, "corr_m": route.get("corr_m"),
                             "wps": [{"lat": w["lat"], "lon": w["lon"], "kn": w["kn"]} for w in route["wps"]]})
         return True
 
     def on_harbour_ack(self, d):
+        if d.get("seq") != getattr(self, "harbour_check_seq", None):
+            return                                           # an answer to an older check: never marks the current route
         if self.harbour_win is not None and self.harbour_win.alive():
             self.harbour_win.on_ack(d)
         self.say(T("harb.ack_ok") if d.get("ok") else T("harb.ack_refused", why=i18n.from_en(d.get("why", ""))),

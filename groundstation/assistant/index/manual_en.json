@@ -9684,7 +9684,7 @@
 4692
 ],
 "term": "",
-"text": "THE ROUTE - TEACH AND REPEAT. A harbour route is made from a recording of YOU driving out of (or into) the harbour by hand: record the track as usual (TRACKS). Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the harbour's name, the route's name, the part of the track to use (From / To in per cent), the cut at the ends (15 m: the first and last metres stay manual), the corridor half-width (10 m, 4 to 30 m) and the tolerance (2 m)."
+"text": "THE ROUTE - TEACH AND REPEAT. A harbour route is made from a recording of YOU driving out of (or into) the harbour by hand: record the track as usual (TRACKS). Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the harbour's name, the route's name, the part of the track to use (From / To in per cent), the cut at the ends (15 m: the first and last metres stay manual), the corridor half-width (10 m, 4 to 10 m) and the tolerance (2 m)."
 },
 {
 "ch": "27",
@@ -11781,7 +11781,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "1856e933bd4dcaf3f9735f54c50dee1054db97de3fb7e087cb7cfe160ad3dbb4",
+"MANUAL.txt": "3984d056aa68113071ae0f725eb59b89160096b92c860033c363e2d41240882b",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },

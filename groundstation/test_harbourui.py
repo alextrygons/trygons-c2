@@ -421,6 +421,15 @@ def hu10(env):
         stops = [(t, p) for t, p in cap.frames if t == proto.T_SET_MODE]
         if len(stops) != 1 or stops[0][1][:1] != bytes([proto.MODE_STANDBY]) or cap.asked or len(cap.frames) != 1:
             ok_panel = False
+    # review HX6 M4: STOP is the same ONE STANDBY frame, no question, for a copilot, a single operator and a viewer too
+    for kw in ({"crew": "copilot"}, {"single_op": True}, {"crew": "viewer"}, {"unc": True}):
+        station(env, state="RUN", **kw)
+        cap.clear()
+        ap.harbour_stop()
+        stops = [(t, p) for t, p in cap.frames if t == proto.T_SET_MODE]
+        if len(stops) != 1 or stops[0][1][:1] != bytes([proto.MODE_STANDBY]) or cap.asked or len(cap.frames) != 1 or ap.cconf:
+            ok_panel = False
+    ap.single_op = False
     # HOLD state offers RESUME, not PAUSE
     station(env, state="HOLD")
     o = [x.get("tag") for x in ap.ov.ops]
@@ -593,12 +602,16 @@ def hu12(env):
     cap.clear()
     win.check()
     chk = [m for m in cap.msgs if m.get("t") == "harbour_route" and m.get("op") == "check"]
-    ok_chk = len(chk) == 1 and len(chk[0]["wps"]) == len(r["wps"]) and chk[0]["corr_m"] == r["corr_m"] and cap.frames == []
-    ap.on_harbour_ack({"t": "harbour_ack", "ok": False, "code": 129, "why": "corridor (left edge, +-10 m) of leg WP1 -> WP2: 1.0 m water"})
+    ok_chk = len(chk) == 1 and isinstance(chk[0].get("seq"), int) and len(chk[0]["wps"]) == len(r["wps"]) and chk[0]["corr_m"] == r["corr_m"] and cap.frames == []
+    seq = chk[0]["seq"]
+    ap.on_harbour_ack({"t": "harbour_ack", "ok": True, "code": 0, "why": "OK", "seq": seq - 1})      # an OLD check's ack
+    ok_old = not win.checked
+    ap.on_harbour_ack({"t": "harbour_ack", "ok": False, "code": 129, "seq": seq,
+                       "why": "corridor (left edge, +-10 m) of leg WP1 -> WP2: 1.0 m water"})
     cap.clear()
     win.send()
-    ok_ref = cap.frames == [] and not win.checked and "CHECK" in win.msg.cget("text")
-    ap.on_harbour_ack({"t": "harbour_ack", "ok": True, "code": 0, "why": "OK"})
+    ok_ref = ok_old and cap.frames == [] and not win.checked and "CHECK" in win.msg.cget("text")
+    ap.on_harbour_ack({"t": "harbour_ack", "ok": True, "code": 0, "why": "OK", "seq": seq})
     cap.clear()
     win.send()
     types = [t for t, _p in cap.frames]

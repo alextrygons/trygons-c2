@@ -4689,7 +4689,7 @@ driving out of (or into) the harbour by hand: record the track as usual (TRACKS)
 Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the
 harbour's name, the route's name, the part of the track to use (From / To in per
 cent), the cut at the ends (15 m: the first and last metres stay manual), the
-corridor half-width (10 m, 4 to 30 m) and the tolerance (2 m). MAKE simplifies the
+corridor half-width (10 m, 4 to 10 m) and the tolerance (2 m). MAKE simplifies the
 track to at most 50 waypoints (Douglas-Peucker), keeps every leg at least 12 m,
 gives each leg the speed you drove (at most 5 kn) and draws the result on the map
 as a PREVIEW with its corridor ("PREVIEW - not sent"). If the first or last

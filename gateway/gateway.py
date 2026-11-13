@@ -363,9 +363,10 @@ class Gateway:
         129 corridor."""
         import math as _m
         hc = self.cfg.get("harbour") if isinstance(self.cfg.get("harbour"), dict) else {}
-        corr = float(corr_m if corr_m is not None else hc.get("corr_m", 10.0))
-        if not (_m.isfinite(corr) and 4.0 <= corr <= 30.0):
-            return 129, "corridor half-width %s m outside 4..30 m" % corr_m
+        cmax = float(hc.get("corr_m", 10.0))                 # the widest corridor the boat may use (W146: +-10 m; the AURIX clamps to harb_corr_m)
+        corr = float(corr_m if corr_m is not None else cmax)
+        if not (_m.isfinite(corr) and 4.0 <= corr <= cmax):
+            return 129, "corridor half-width %s m outside 4..%.0f m" % (corr_m, cmax)
         ch = self.shallow.charts
         if not ch:
             return 114, "no depth charts on the gateway (no data = shallow)"
@@ -383,13 +384,23 @@ class Gateway:
             if n < 1e-6:
                 continue
             ox, oy = -dy / n * corr, dx / n * corr         # the left normal x corr (metres)
-            for sgn, side in ((1.0, "left"), (-1.0, "right")):
-                la1, lo1 = a[0] + sgn * oy / ky, a[1] + sgn * ox / kx
-                la2, lo2 = b[0] + sgn * oy / ky, b[1] + sgn * ox / kx
-                bad = ch.check_leg(la1, lo1, la2, lo2, lim, 0.0, step_m=10.0)
+            # the corridor as lines 0.5 x corr apart (review HX6 M1: a shoal between the centre and an edge)
+            for f, side in ((1.0, "left edge"), (-1.0, "right edge"), (0.5, "left half"), (-0.5, "right half")):
+                la1, lo1 = a[0] + f * oy / ky, a[1] + f * ox / kx
+                la2, lo2 = b[0] + f * oy / ky, b[1] + f * ox / kx
+                bad = ch.check_leg(la1, lo1, la2, lo2, lim, 0.0, step_m=5.0)
                 if bad:
-                    return 129, "corridor (%s edge, +-%.0f m) of leg WP%d -> WP%d: %s at %.5f %.5f" % (
+                    return 129, "corridor (%s, +-%.0f m) of leg WP%d -> WP%d: %s at %.5f %.5f" % (
                         side, corr, k + 1, k + 2, bad[4], bad[1], bad[2])
+        # the wedge outside every bend: spokes from each waypoint to a ring of corr metres
+        for k, w in enumerate(wps):
+            for i in range(8):
+                ang = _m.radians(45.0 * i)
+                la2 = w[0] + corr * _m.cos(ang) / ky
+                lo2 = w[1] + corr * _m.sin(ang) / (ky * max(0.2, _m.cos(_m.radians(w[0]))))
+                bad = ch.check_leg(w[0], w[1], la2, lo2, lim, 0.0, step_m=5.0)
+                if bad:
+                    return 129, "corridor around WP%d (+-%.0f m): %s at %.5f %.5f" % (k + 1, corr, bad[4], bad[1], bad[2])
         why = self.geofence.check(wps)
         if why:
             return 120, why
@@ -435,6 +446,7 @@ class Gateway:
         """Program upload / AUTO start / AUTO return / DP TRIP start through the gateway: refused across shallow
         water (114) or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
         import struct as _st
+        from math import isfinite as _st_isfinite
         if ftype == proto.T_SET_MODE:
             return self.check_hdg_shore(st, payload)
         if ftype == proto.T_HARBOUR:
@@ -452,7 +464,12 @@ class Gateway:
             up = st.prog_up
             wps = [up["wps"][k] for k in sorted(up["wps"])]
             if up.get("harbour"):                           # step HX6: a harbour route = the corridor check, no 50 m clearance
-                hb = self.harbour_route_check(wps, None)
+                kns = [k for k in (up.get("kn") or {}).values() if k is not None]
+                hb = None
+                if not 2 <= len(wps) <= 50 or any(not (_st_isfinite(k) and 0.5 <= k <= 8.0) for k in kns):
+                    hb = (129, "a harbour route needs 2..50 waypoints and leg speeds 0.5..8 kn")      # review HX6 M2
+                if hb is None:
+                    hb = self.harbour_route_check(wps, None)
                 if hb:
                     self.audit("program_refused", station=st.id, user=st.user, why=hb[1], harbour=True)
                     return hb

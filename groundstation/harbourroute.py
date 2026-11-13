@@ -18,6 +18,7 @@ ROUTES_DIR = os.path.join(HERE, "routes", "harbour")        # <harbour>/<name>.j
 SAMPLES_DIR = os.path.join(ROUTES_DIR, "_samples")           # committed TEST samples (not_for_navigation, placeholder)
 MAX_WP = 50                                                  # app/program.h PROG_MAX_WP
 DEFAULTS = {"corr_m": 10.0,          # W146: +-10 m around the route (the AURIX clamps to harb_corr_m)
+            "corr_max_m": 10.0,      # the widest corridor offered (= harb_corr_m default; the gateway checks up to its corr_m)
             "tol_m": 2.0,            # Douglas-Peucker tolerance (design 8.2)
             "cut_m": 15.0,           # M0-8: the first / last 15 m from the quay stay manual
             "quay_m": 15.0,          # warn when the first / last waypoint is nearer than this to the shore
@@ -169,7 +170,7 @@ def local_check(route, opts=None):
     if len(w) > MAX_WP:
         out.append(("many", {"n": len(w), "max": MAX_WP}))
     corr = route.get("corr_m")
-    if not (isinstance(corr, (int, float)) and math.isfinite(corr) and 4.0 <= corr <= 30.0):
+    if not (isinstance(corr, (int, float)) and math.isfinite(corr) and 4.0 <= corr <= o["corr_max_m"]):
         out.append(("corr", {"m": corr}))
     for i, x in enumerate(w):
         try:

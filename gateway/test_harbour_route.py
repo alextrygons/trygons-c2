@@ -43,8 +43,10 @@ def ll(x, y):
 class Charts:
     """Deep everywhere except east of x = 60 m (a quay) and a shoal band 8..12 m WEST of the line x = 0..  (when shoal)."""
 
-    def __init__(self, shoal=False):
+    def __init__(self, shoal=False, mid=False, spot=None):
         self.shoal = shoal
+        self.mid = mid                                   # a shoal 3..7 m east of x = 0, between the centre line and the +10 m edge
+        self.spot = spot                                 # (x, y) of a small shoal (the outside of a bend)
         self.calls = []
 
     def check_leg(self, lat1, lon1, lat2, lon2, limit, clearance, step_m=50.0):
@@ -56,6 +58,11 @@ class Charts:
             x = (lo - LON) * KY * math.cos(math.radians(LAT))
             if x > 60.0:
                 return (i * 5.0, la, lo, 1.0, "1.0 m water (limit %.1f m)" % limit)
+            y = (la - LAT) * KY
+            if self.mid and 3.0 < x < 7.0:
+                return (i * 5.0, la, lo, 1.5, "1.5 m water (limit %.1f m)" % limit)
+            if self.spot and abs(x - self.spot[0]) < 2.0 and abs(y - self.spot[1]) < 2.0:
+                return (i * 5.0, la, lo, 1.5, "1.5 m water (limit %.1f m)" % limit)
             if self.shoal and -12.0 < x < -8.0:
                 return (i * 5.0, la, lo, 1.5, "1.5 m water (limit %.1f m)" % limit)
             if clearance > 0 and x > 10.0:                                  # the 50 m clearance of a plain route
@@ -129,6 +136,13 @@ def hr1():
     gs = gw_stub(Charts(shoal=True))
     sh = gs.harbour_route_check(route(0.0, 0.0), 10.0)
     ok_sh = sh is not None and sh[0] == 129 and "left edge" in sh[1] and gs.harbour_route_check(route(0.0, 0.0), 4.0) is None
+    mid = gw_stub(Charts(mid=True)).harbour_route_check(route(0.0, 0.0), 10.0)
+    ok_mid = mid is not None and mid[0] == 129                     # review HX6 M1: between the centre line and the edge
+    bend = [ll(0, 0), ll(0, 60), ll(-40, 60)]                      # a left-hand bend at (0, 60): the outside corner is near (7, 67)
+    bnd = gw_stub(Charts(spot=(7.0, 67.0))).harbour_route_check(bend, 10.0)
+    ok_bend = bnd is not None and bnd[0] == 129
+    wide = gw_stub(Charts(), cfg={"harbour": {"corr_m": 10.0}}).harbour_route_check(ok_route, 12.0)
+    ok_wide = wide is not None and wide[0] == 129 and "4..10" in wide[1]     # review HX6 H1: never wider than the boat's ceiling
     nochart = gw_stub(None).harbour_route_check(ok_route, 10.0)
     fence = gw_stub(Charts(), fence="leg 1 leaves the fence").harbour_route_check(ok_route, 10.0)
     corr = [g.harbour_route_check(ok_route, v) for v in (2.0, 31.0, float("nan"))]
@@ -138,7 +152,7 @@ def hr1():
            "check would refuse the same route), the corridor edge at the quay = 129, shallow centre = 114, a shoal beside "
            "the line = 129 (a narrower corridor passes), geofence = 120, no charts = 114, a bad corridor = 129",
            clear_zero and ok_q and ok_s and ok_sh and nochart[0] == 114 and fence[0] == 120 and all(x and x[0] == 129 for x in corr)
-           and ok_dflt,
+           and ok_dflt and ok_mid and ok_bend and ok_wide,
            "clearance 0 %s quay %s shallow %s shoal %s nochart %s fence %s corr %s default %s" % (
                clear_zero, q, s, sh, nochart, fence, corr, dflt))
 
@@ -203,6 +217,17 @@ def hr3():
         g.audits[-1].get("harbour") is True
     # the 2-byte PROG_BEGIN (every older station) is a plain upload
     ok_two = upload(near, False)[0].prog_up["harbour"] is False
+    # review HX6 M2: a flagged upload is limited to 2..50 waypoints and 0.5..8 kn
+    def upload_kn(pts, kn):
+        st = St()
+        pb = struct.pack("<BB", len(pts), 0) + b""
+        G.Gateway.check_prog(g, st, proto.T_PROG_BEGIN, pb)
+        for i, (la, lo) in enumerate(pts):
+            G.Gateway.check_prog(g, st, proto.T_PROG_WP, struct.pack("<Biif", i, round(la * 1e7), round(lo * 1e7), kn) + bytes(6))
+        return G.Gateway.check_prog(g, st, proto.T_PROG_COMMIT, b"")
+    fast = upload_kn(route(-30.0, -30.0), 12.0)
+    one = upload_kn(route(-30.0, -30.0)[:1], 3.0)
+    ok_two = ok_two and isinstance(fast, tuple) and fast[0] == 129 and isinstance(one, tuple) and one[0] == 129
     report("HR3 the program upload: PROG_BEGIN's flag byte makes the commit a harbour check (a route 25 m from the quay passes "
            "it, the same points as a plain route are refused), a corridor at the quay = 129 + audit, a plain upload unchanged",
            ok_flag and ok_h and ok_p and ok_q and ok_two, "flag %s harbour %s plain %s quay %s two %s" % (
