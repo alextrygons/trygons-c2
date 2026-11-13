@@ -34,12 +34,29 @@ RESULTS = os.path.join(REPO, "test_results", "harbour")
 # the XFAILs. The criterion itself is unchanged.
 KNOWN_LIMITS = {
     "S4": {"checks": ("C1 never touches while the boat moves",),
+           # review M1: the limit is narrow - every contact while moving is with THIS overtaker, in HOLD, after the
+           # U13 not-yielding STOP, and the world is still the one judged (a changed storm_spec(4) = FAIL)
+           "object": "fast", "fingerprint": "d98d99a638ae7cf6",
            "reason": "KNOWN LIMIT S4 (owner 2026-11-13, NOT 'unavoidable'): an overtaking vessel that does not give way "
                      "hits the boat ~12 s after the not-yielding STOP while it still coasts at ~0.5 kn in HOLD - a "
                      "stopped boat coasting in HOLD cannot avoid a vessel overtaking from astern; the captain takes over "
                      "(FIRST_TEST.md 7, MANUAL ch. 27). The design answer (COLREGs 13 / 17: keep speed or offset to "
                      "starboard instead of STOP) is the owner's open design question in PROGRESS.md WAITING FOR OWNER"},
 }
+
+
+def known_limit_evidence(name, spec, ep):
+    """review M1: is a failure of a KNOWN_LIMITS episode exactly the documented limit? -> (ok, detail)."""
+    import hashlib
+    kl = KNOWN_LIMITS[name]
+    fp = hashlib.sha256(json.dumps(spec["objects"], sort_keys=True).encode()).hexdigest()[:16]
+    S_ = ep.samples
+    u13 = [q[0] for q in S_ if len(q) > 19 and q[19] and "NOT GIVING WAY - STOP" in (q[14] or "")]
+    cont = [(q[0], o, q[5], round(q[4], 2)) for q in S_ if q[4] >= 0.5 for o, g, _m in q[17] if g < 0.5]
+    bad = [c for c in cont if c[1] != kl["object"] or c[2] != "HOLD" or not u13 or c[0] < u13[0]]
+    ok = fp == kl["fingerprint"] and bool(cont) and not bad
+    return ok, "world %s (want %s); U13 at %s; contacts while moving %s; NOT the limit %s" % (
+        fp, kl["fingerprint"], u13[0] if u13 else None, cont[:2], bad[:2])
 
 
 def storm_spec(seed):
@@ -112,6 +129,8 @@ def run_one(name, out_path):
         res["xfail"] = spec.get("xfail")
         res["class"] = out.get("class")
         res["stops"] = getattr(ep, "stops", [])[:60]
+        if name in KNOWN_LIMITS and not out.get("tb"):
+            res["kl_evidence"] = known_limit_evidence(name, spec, ep)
     finally:
         ep.close()
     res["secs"] = round(time.time() - t_start, 1)
@@ -185,11 +204,13 @@ def report(done, order, known=None):
             if ok:
                 tag, ok = "FAIL", False         # XPASS: the known limit no longer shows - re-judge it, never silent
                 xf = "XPASS - the KNOWN LIMIT no longer shows (passed by chance? or fixed): re-judge KNOWN_LIMITS"
-            elif bad and all(any(b.startswith(k) for k in kl["checks"]) for b in bad):
-                tag, xf = "KNOWN LIMIT", kl["reason"]
+            elif (bad and all(any(b.startswith(k) for k in kl["checks"]) for b in bad)
+                  and (r.get("kl_evidence") or [False])[0]):
+                tag, xf = "KNOWN LIMIT", kl["reason"] + " | evidence: " + str(r["kl_evidence"][1])
             else:
                 tag = "FAIL"                    # another check failed too: a real failure
-                xf = kl["reason"] + " - BUT other checks failed too"
+                xf = kl["reason"] + " - BUT other checks failed too or the evidence is not the limit: %s" % (
+                    (r.get("kl_evidence") or [None, "none"])[1],)
         elif xf and not ok:                     # a documented FINDING (reported to the owner): shown, not counted
             tag = "XFAIL"
         elif xf and ok:

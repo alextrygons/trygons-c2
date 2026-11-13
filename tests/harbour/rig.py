@@ -452,27 +452,29 @@ class Episode:
             rs = (dd.get("reasons") or [""])[0] if dd.get("stop") else ""
             if rs and rs != getattr(self, "_last_stop", None) and len(self.events) < 200:
                 trk = {str(q.get("id")): q for q in (self.g.harbour.tracks() or [])}
-                bl = [(b, (trk.get(b) or {}).get("src"), (trk.get(b) or {}).get("steer_ok"),
-                       round((trk.get(b) or {}).get("speed") or 0.0, 2)) for b in dd.get("blockers") or []]
+                bl = [(b, (trk.get(str(b)) or {}).get("src"), (trk.get(str(b)) or {}).get("steer_ok"),
+                       round((trk.get(str(b)) or {}).get("speed") or 0.0, 2)) for b in dd.get("blockers") or []]
                 self.events.append((round(t, 1), "planner STOP: %s | blockers %s" % (rs[:90], bl[:4])))
                 # HX7-fix3 (owner answer 3): the STOP's evidence - every blocker TRACK matched against the world truth
                 # (the nearest real object to the track's position, centre to centre, and that object's hull gap)
                 tr0 = tr
                 bx, by = (tr0[0], tr0[1]) if tr0 else (x, y)
                 ev = {"t": round(t, 2), "reason": rs[:120], "x": round(bx, 1), "true_pos": tr0 is not None,
-                      "blockers": []}
-                for b in dd.get("blockers") or []:
+                      "blockers": [], "not_yielding": []}
+
+                def _match(b):
                     q = trk.get(str(b))
                     if not q or q.get("lat") is None:
-                        ev["blockers"].append({"id": str(b), "track": False})
-                        continue
+                        return {"id": str(b), "track": False}
                     qx, qy = xy(q["lat"], q["lon"])
                     near = min(((math.hypot(qx - o.get("x", 0.0), qy - o.get("y", 0.0)), o) for o in truth
                                 if o["kind"] != "pier"), default=(999.0, None), key=lambda a: a[0])
-                    ev["blockers"].append({"id": str(b), "track": True, "src": q.get("src"),
-                                           "steer_ok": bool(q.get("steer_ok")), "tx": round(qx, 1), "ty": round(qy, 1),
-                                           "match": near[1]["id"] if near[1] else None, "match_d": round(near[0], 1),
-                                           "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None})
+                    return {"id": str(b), "track": True, "src": q.get("src"), "steer_ok": bool(q.get("steer_ok")),
+                            "tx": round(qx, 1), "ty": round(qy, 1), "match": near[1]["id"] if near[1] else None,
+                            "match_d": round(near[0], 1),
+                            "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None}
+                ev["blockers"] = [_match(b) for b in dd.get("blockers") or []]
+                ev["not_yielding"] = [_match(b) for b in dd.get("not_yielding") or []]     # (U13 names them here)
                 self.stops.append(ev)
             self._last_stop = rs
             if (self.g.hplan.dec or {}).get("not_yielding") and "NOT GIVING WAY - STOP" in (
