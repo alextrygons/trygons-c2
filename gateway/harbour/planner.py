@@ -406,6 +406,9 @@ class Planner:
         # boat even if the boat STOPS - standing still is no refuge from it; with one, never a speed increase (review
         # M5: no candidate faster than the boat goes now / the last command)
         threats = self._threats(now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end)
+        # round 2 MED-1: while the not-yielding state is LATCHED (ny_hold_s after its last detection: a re-ID / the
+        # history rebuilding) the planner acts exactly as with a threat present: no creep, no speed increase, U13
+        held = bool(threats) or (self.ny_t is not None and 0.0 <= now - self.ny_t <= float(c["ny_hold_s"]))
         v_lim = max(v0 / KN, self.prev[1] if self.prev is not None else 0.0)
         cand = []
         straight_block = set()
@@ -436,7 +439,7 @@ class Planner:
         for o, v_kn, ok, clear, blk in cand:
             if not ok:
                 continue
-            if threats and v_kn > v_lim + 1e-6:
+            if held and v_kn > v_lim + 1e-6:
                 continue                                # (review M5) never faster with a vessel not giving way
             if is_turn(o) and not turns_ok:
                 continue
@@ -448,20 +451,20 @@ class Planner:
             if best is None or cost < best[0]:
                 best = (cost, o, v_kn, blk)
         dec["blockers"] = sorted(str(x) for x in straight_block)
-        dec["not_yielding"] = sorted(str(t.get("id")) for t in threats)
-        if threats:
+        dec["not_yielding"] = sorted(str(t.get("id")) for t in threats) or (list(self.ny_ids) if held else [])
+        if held:
             dec["alarm"] |= ALM_COLLISION
         esc = None
-        if best is None and threats and not amb and turns_ok:
+        if best is None and held and not amb and turns_ok:
             # steer clear FIRST: a path inside the corridor that keeps the minimum distances from every moving track
             # until the threat has passed (and from every static object over the full horizon), starboard first (a
             # port turn only where COLREGs allows one: no_port), at the highest speed that keeps it feasible (never
             # above the cap: the speeds are the cap's fractions)
-            esc = self._escape(threats, speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c,
+            esc = self._escape(speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c,
                                ax, ay, ux, uy, nx, ny, s_end)
             if esc is not None:
                 best = (0.0, esc[0], esc[1], set())
-        if best is None and not amb and not threats:
+        if best is None and not amb and not held:
             # slow, then STOP (design 7.4): nothing is feasible over the full horizon - the slowest STRAIGHT candidate
             # (no turn: M0-3 holds for any obstacle) judged over slow_horizon_s keeps the boat creeping on while the
             # danger is still far; once that fails too = STOP (the HOLD is latched on the AURIX: only when needed)
@@ -471,7 +474,7 @@ class Planner:
             if ok and not is_turn(round(e_straight, 2)):
                 best = (0.0, round(e_straight, 2), v_min, blk)
                 dec["slow"].append("nothing free over %.0f s: creeping straight" % float(c["horizon_s"]))
-        if best is None and threats:
+        if best is None and held:
             # ... STOP second: no path keeps the minimum distances - STOP at once (never a creep towards it) and the
             # loud state: the existing navreq COLLISION RISK + DRIVER DECISION advisories + the station's WARNING
             # «ΣΚΑΦΟΣ ΔΕΝ ΔΙΝΕΙ ΔΡΟΜΟ – ΠΑΡΤΕ ΤΟΝ ΕΛΕΓΧΟ» (the captain takes over: a stopped boat is NOT safe from it)
@@ -507,7 +510,7 @@ class Planner:
             if k in kinds and not amb:
                 why = w
                 break
-        if threats and (esc is not None or dec["turn"]):
+        if held and (esc is not None or dec["turn"]):
             why = "harb.why_ny_avoid"                       # steering clear of a vessel that does not give way
         dec["why"] = why
         dec["detail"] = detail or ("%.1f kn" % v_kn)
@@ -531,18 +534,13 @@ class Planner:
                 out.append(t)
         return out
 
-    def _escape(self, threats, speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c, ax, ay,
+    def _escape(self, speeds, offs, no_port, e0, tol, s0, psi, usable, hdg, v0, movers, sidx, own_c, ax, ay,
                 ux, uy, nx, ny, s_end):
-        """HX7-fix: the escape path -> (offset, speed kn) or None. Judged against EVERY moving track at the full
-        minimum distance until the threats have passed (their TCPA + 5 s, at least slow_horizon_s, at most the
-        horizon) and against every static object over the full horizon; inside the usable corridor; starboard (or
-        straight) first, a port offset only when COLREGs allows one; then the highest speed."""
+        """HX7-fix: the escape path -> (offset, speed kn) or None. Judged against EVERY track that moves (camera /
+        AIS-only included) at the full minimum distance and every static object / static track, both over the FULL
+        horizon (round 2 LOW-1); inside the usable corridor; starboard (or straight) first, a port offset only when
+        COLREGs allows one; then the highest speed not above the boat's speed now / the last command."""
         c = self.c
-        tc = 0.0
-        for t in threats:
-            _d, tt = colregs.cpa(float(t["x"]) - own_c["x"], float(t["y"]) - own_c["y"],
-                                 float(t["vx"]) - own_c["vx"], float(t["vy"]) - own_c["vy"])
-            tc = max(tc, tt)
         # review M4: every mover over the FULL horizon (a slower escape meets the threat later than the TCPA from the
         # current velocity); review M5: never faster than the boat goes now / the last command (never a speed increase)
         H = float(c["horizon_s"])

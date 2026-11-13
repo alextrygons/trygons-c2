@@ -795,6 +795,10 @@ def hp17_cases(planner_mod=P):
     out["camera"] = ny_run(lambda dt: [trk(1, -22.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=6.0, beam=2.5, steer=False,
                                            src="C")], planner_mod, corr=20.0)
     # (e) head-on 9 m to STARBOARD in a +-20 m corridor: the only way out would be a PORT turn (not allowed head-on)
+    # round 2 MED-1: the tracker re-IDs the vessel in mid-approach (a new id, no history): the latch keeps the STOP +
+    # the loud state (never a creep / a faster candidate in the gap)
+    out["reid"] = ny_run(lambda dt: [trk(1 if dt < 2.2 else 77, 0.5, 100.0 - 2.5 * dt, 0.0, -2.5)], planner_mod,
+                         times=tuple(10.0 + 0.2 * k for k in range(18)))
     out["room_slow"] = ny_run(lambda dt: [trk(1, -22.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=6.0, beam=2.5)], planner_mod,
                               corr=20.0, kn=1.6)
     out["stbd_only"] = ny_run(lambda dt: [trk(1, 9.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=4.0, beam=2.0)], planner_mod,
@@ -812,6 +816,9 @@ def hp17_ok(o):
             or abs(b.get("offset") or 0.0) > 20.0 - 0.5 * P.DEFAULTS["own_beam_m"] - 1.0 - P.DEFAULTS["edge_margin_m"]:
         bad.append("room: stop %s heading %s ny %s alarm %s cap %s" % (b["stop"], b["heading"], b["not_yielding"],
                                                                        b["alarm"], b["cap_kn"]))
+    r = o["reid"]
+    if not (r["stop"] and r["alarm"] & 3 == 3 and r["why"] == "harb.why_not_yielding"):
+        bad.append("re-ID: stop %s why %s alarm %s" % (r["stop"], r["why"], r["alarm"]))
     for k in ("room", "room_slow"):                     # review M5: never faster than the boat goes / was told
         if o[k].get("ny_raised"):
             bad.append("%s: the speed raised with a vessel not giving way (to %.1f)" % (k, o[k]["ny_top"]))

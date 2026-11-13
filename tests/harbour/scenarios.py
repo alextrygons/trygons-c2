@@ -84,7 +84,7 @@ def build():
                 [moored("m1", 40.0, 17.0), moored("m2", 65.0, 17.0), moored("m3", 50.0, -17.0),
                  moored("m4", 80.0, -17.0)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H4", "head-on vessel (AIS) on the line",
-                [vessel("headon", (70.0, 1.0), 38.0, 270.0, 2.0, ais=237000004)], expect={"safe_pass_or_hold": 1, "unavoidable": ("headon",)}))
+                [vessel("headon", (70.0, 1.0), 38.0, 270.0, 2.0, ais=237000004)], expect={"safe_pass_or_hold": 1, "unavoidable": ("headon",), "min_x": 10.0}))
     sc.append(S("H4r", "head-on vessel that does NOT give way, passing 24 m to port of the line (room: steer clear, keep 15 m)",
                 [vessel("headon", (70.0, 24.0), 38.0, 270.0, 2.0, ln=6.0, beam=2.5, ais=237000014)],
                 xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
@@ -95,7 +95,7 @@ def build():
     sc.append(S("H7", "overtaking a slow boat on the line",
                 [vessel("slow", (70.0, 1.0), 38.0, 90.0, 0.5, ln=6.0, beam=2.5)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H8", "being overtaken by a fast vessel from astern",
-                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",)}))
+                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0}))
     sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
                 [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
                 xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
@@ -124,7 +124,7 @@ def build():
                 [], faults=[{"t": 8.0, "what": "ais_ghost"}], expect={"ais_only": 8.0}))
     sc.append(S("H19", "a vessel that does not give way (fast, head-on, on the line)",
                 [vessel("rogue", (70.0, 0.0), 38.0, 270.0, 3.5, ais=237000019)],
-                expect={"safe_pass_or_hold": 1, "unavoidable": ("rogue",)}))
+                expect={"safe_pass_or_hold": 1, "unavoidable": ("rogue",), "min_x": 10.0}))
     sc.append(S("H19r", "a fast vessel that does NOT give way, head-on 24 m to port (room: steer clear, keep 15 m)",
                 [vessel("rogue", (70.0, 24.0), 38.0, 270.0, 3.5, ln=6.0, beam=2.5, ais=237000029)],
                 xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
@@ -160,7 +160,7 @@ def evaluate(spec, ep, out):
     ran = any(q[5] in ("RUN", "SLOW") for q in S_)
     # (an "unavoidable" scenario may stop at once for the vessel that does not give way - by design, far away; H8's
     # overtaker is a threat from the start: there P1 = RUN / SLOW seen + P3 the encounter; every other scenario >= 25 m)
-    need_x = 0.0 if ex.get("unavoidable") else 25.0    # (H8: the overtaker is already a threat at the start)
+    need_x = float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
     r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
               "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
     fired = {e[1] for e in ep.events}

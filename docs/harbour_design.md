@@ -578,14 +578,17 @@ the AURIX holds; the alarm HARBOUR STOP; the captain resumes (U13: the captain T
   the boat simulated STOPPING now (the coast-down) - standing still is no refuge from it. Such a track sets the
   COLLISION RISK navreq advisory while the boat runs (alarm bit 1).
 - Steer clear first: when the normal candidates find nothing, Planner._escape searches the same offsets x speeds
-  (never above the cap, inside the usable corridor), judged against EVERY mover at the full min_moving_m until the
-  threats' TCPA + 5 s (>= slow_horizon_s, <= the horizon) and against every static object over the full horizon;
+  (never above the cap, inside the usable corridor), judged against EVERY track that moves (camera / AIS-only included) at the full min_moving_m and every static
+  object over the FULL horizon (review M4 / round 2), never faster than the boat goes now / the last command (M5);
   straight or STARBOARD first, a port offset only where COLREGs allows one (no NO_PORT encounter), then the highest
   speed; only when every straight-line blocker is steer_ok (M0-3). Explanation harb.why_ny_avoid.
 - Stop second: nothing keeps the distances = U13 STOP (harb.why_not_yielding) + COLLISION RISK + DRIVER DECISION
   (the existing AURIX advisories, alarm bits 1 | 2 in the kind-4 frame) + the station-local WARNING with its voice
   callout (groundstation app.harbour_alarm_sync, MasterLamps.set_local "harb_notyield"; never an AURIX alarm of its
-  own). The creeping-straight fallback is never used with such a threat.
+  own). The creeping-straight fallback is never used with such a threat. The state is LATCHED ny_hold_s 10 s after its
+  last detection (review M3 / round 2 MED-1): a re-ID or a rebuilding history never re-opens the creep, a speed
+  increase or clears the loud state on a STOP. Limit: a vessel that slows only gently (above 85 % of its top speed
+  over 4 s) is not flagged until the history shows it - the normal 15 m rules still apply to it.
 - LIMIT (stated, not solvable inside the rules): harbour autonomy cannot make a STOPPED boat safe from a vessel that
   ignores it - it never reverses, never raises the speed above the route's, never leaves the corridor / the AURIX's
   60 deg / 8 deg/s limits. In a +-10 m corridor a vessel ON the line leaves no path that keeps 15 m: the boat stops
