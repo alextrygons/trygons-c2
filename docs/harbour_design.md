@@ -669,11 +669,14 @@ No app / hal / AURIX change (HX2's firmware covers everything the planner needs 
   the pre-start kind-4 window only in STANDBY with fresh telemetry (MANUAL / HDG LOCK keep their kind 1 / 2); the
   tentative rule = a REPEATED return (>= 2 range hits) from the bow to 30 m ahead within the corridor (single spray
   returns and the near field made the boat crawl at 2 kn for ever in the storm's passable harbour); a "static-map"
-  blocker (chart cells + LiDAR cells laid only by steer_ok LiDAR tracks) may justify a turn. Storm: three scenario
+  blocker (chart cells + LiDAR cells laid only by steer_ok LiDAR tracks) may justify a turn; any non-vessel track
+  faster than 0.25 m/s = MOVING (15 m: the 200-episode storm found a kayak at 0.5-1 m/s, estimated slower, kept only
+  8 m - I88 fails 45 / 82508 checks before, seed 59). Storm: three scenario
   families - "mixed" (as before), "pass" (a passable harbour, 90 s: an off-line buoy or a slow boat to overtake at >= 15 m in a +-20 m
   corridor, moored boats clear, no fault: >= half of them must MAKE WAY past y 80 m - the original reach counter, met by the scenarios, not
   loosened), "ghost" (an AIS-only ghost report ON the line in a wide corridor: only the steer_ok gate stops a turn);
-  I87 = the cause only (turn_for non-empty, each steer_ok + fresh range hit + within 200 m; the "any track nearby"
+  I87 = the cause only (turn_for non-empty, each steer_ok + fresh range hit + within 400 m = the 40 s reach: a
+  head-on vessel 260 m away is a legitimate cause, seed 132; the "any track nearby"
   shortcut removed); I88 during a HOLD for every object we close on ourselves; I86h also from the injected health;
   the mutation check requires each mutant's OWN invariant to fail (steer_ok -> I87, unsure -> I90, distance -> I88,
   degraded cap -> I86h). Notes (not fixed, LOOP RULE 7): the line is extended past a corner (a crosser on the next

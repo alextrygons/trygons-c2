@@ -58,7 +58,9 @@ DEFAULTS = {
                                                          # station's START / RESUME (ACCEPT + the CONFIRM window)
     "tentative_ahead_m": 30.0,                           # review MED-1: a tentative range track this close ahead
     "tentative_hits": 2,                                 # ... with at least this many range hits (its window)
-    "vessel_moving_mps": 0.2,                            # a vessel-class track faster than this = MOVING (15 m)                                # U12: the own position / heading older than this = STOP                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
+    "vessel_moving_mps": 0.2,                            # a vessel-class track faster than this = MOVING (15 m)
+    "obstacle_moving_mps": 0.25,                         # HX5-r2 storm: any other track faster than this = MOVING
+                                                         # (a kayak at 0.5-1 m/s estimated slower kept only 8 m)                                # U12: the own position / heading older than this = STOP                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
 }                                                        # judged over this shorter time = slow on; else STOP
 
 # The explanation line (design 7.5): key -> (el, en); the same keys in groundstation/lang el.txt / en.txt (HP test).
@@ -287,7 +289,7 @@ class Planner:
                                    corr + float(c["min_static_m"]) + 2.0, now)
         movers = []
         for t in tracks:
-            mv = float(c["vessel_moving_mps"] if t.get("cls") == "vessel" else c["moving_mps"])
+            mv = float(c["vessel_moving_mps"] if t.get("cls") == "vessel" else c["obstacle_moving_mps"])
             if t.get("static") or float(t.get("speed") or 0.0) <= mv:
                 hs = 0.5 * max(t.get("len_m") or 0.0, t.get("beam_m") or 0.0)
                 stat.append(((t["x"] - ax) * ux + (t["y"] - ay) * uy, (t["x"] - ax) * nx + (t["y"] - ay) * ny,

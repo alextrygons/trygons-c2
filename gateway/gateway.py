@@ -651,7 +651,8 @@ class Gateway:
             req["alarm"] |= ALM_FENCE
         self.nav_state = dict(self.avoider.status(), shallow=sh, fence_out=fence)
         # harbour autonomy (step HX5): every cap above folds into the ONE kind-4 request while the AURIX runs it
-        return self.hplan.fold(req, o)
+        hp = getattr(self, "hplan", None)                  # (a test stub has no harbour planner)
+        return hp.fold(req, o) if hp is not None else req
 
     # --- camera obstacle detection (Part 2) -------------------------------------------
     async def vision_loop(self):

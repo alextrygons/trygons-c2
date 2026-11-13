@@ -228,7 +228,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
                 STATS["turns"] += 1
                 # round 2 S-MED-2: the CAUSE only (no "any track nearby" shortcut): a turn away from the line names
                 # what it turned for (turn_for non-empty), and every listed track is steer_ok in the tracker's output
-                # with a FRESH range hit (radar <= 2 s, LiDAR <= 0.5 s on the tracker clock) within 200 m; the
+                # with a FRESH range hit (radar <= 2 s, LiDAR <= 0.5 s on the tracker clock) within 400 m (40 s x closing); the
                 # static map only while it holds LiDAR / chart cells
                 ok = bool(dec.get("turn_for"))
                 trk = {str(x["id"]): x for x in tracks}
@@ -241,7 +241,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
                     last = (x or {}).get("last") or {}
                     fresh = x is not None and ((last.get("R") is not None and sim.tr.T - last["R"] <= 2.0) or
                                                (last.get("L") is not None and sim.tr.T - last["L"] <= 0.5))
-                    near = x is not None and math.hypot(x["x"] - boat.x, x["y"] - boat.y) <= 200.0
+                    near = x is not None and math.hypot(x["x"] - boat.x, x["y"] - boat.y) <= 400.0   # the 40 s reach
                     if not (x is not None and x.get("steer_ok") and fresh and near):
                         ok = False
                 if ok:
