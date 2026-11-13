@@ -96,6 +96,7 @@ def run_one(name, out_path):
         res["trace"] = [tuple(round(v, 1) if isinstance(v, float) else v for v in s) for s in ep.samples[::10]]
         res["ok"] = bool(res["checks"]) and all(c[1] for c in res["checks"])
         res["xfail"] = spec.get("xfail")
+        res["class"] = out.get("class")
     finally:
         ep.close()
     res["secs"] = round(time.time() - t_start, 1)
@@ -210,6 +211,11 @@ def main():
     t = time.time()
     done = run_parallel(names, max(1, a.jobs))
     fails = report(done, names)
+    cls = {}
+    for n in names:
+        k = (done.get(n) or {}).get("class") or "-"
+        cls[k] = cls.get(k, 0) + 1
+    print("classes (HX7-fix2): %s" % ", ".join("%s %d" % kv for kv in sorted(cls.items())), flush=True)
     print("harbour scenarios: %d run, %d failed, %.0f s" % (len(names), fails, time.time() - t), flush=True)
     return 1 if fails else 0
 

@@ -255,6 +255,8 @@ class Episode:
         self.first_start = None
         if not self.entry_before:
             dec = self.g.hplan.dec or {}
+            self.refusal = {"stop": bool(dec.get("stop")), "reasons": list(dec.get("reasons") or [])[:3],
+                            "why": dec.get("why"), "not_yielding": list(dec.get("not_yielding") or [])}
             return {"result": 6 if dec.get("stop") else -1, "why": "the START button never became enabled"}
         old = ynbox.ask
         ynbox.ask = lambda *a, **k: True                     # the captain's own YES
@@ -298,6 +300,7 @@ class Episode:
             # the kind-4 planner window + START
             ts = self.start_harbour()
             out["start"] = None if ts is None else ts.get("result")
+            out["refusal"] = getattr(self, "refusal", None)
             self.t0 = time.time()
             self.watch(s.get("secs", 90.0), out)
             out["ok"] = True
@@ -345,8 +348,11 @@ class Episode:
         la, lo = ll(120.0, 0.0)
         tg = {"mmsi": 999000001, "lat": la, "lon": lo, "sog": 0.0, "cog": 0.0, "length": 10.0, "beam": 3.0,
               "stale": False}
-        import types
-        self.g.ais = types.SimpleNamespace(list=lambda: [dict(tg)])
+        # HX7-fix2: only the target LIST is replaced - the earlier SimpleNamespace had no tick() / silent_for() /
+        # status(): the gateway's status loop died on it, GW_STATUS stopped and the AURIX did its lost-link STANDBY
+        # (H18 "left harbour mode at 11 s" = this rig defect, not the planner)
+        real = self.g.ais.list
+        self.g.ais.list = lambda: [dict(t) for t in real()] + [dict(tg)]
 
     def fault_planner_crash(self, f):
         self.g.hplan.planner = None                  # the next decide() raises: the lease lapses
@@ -383,10 +389,19 @@ class Episode:
                                  g, (self.g.hplan.dec or {}).get("cap_kn"), moving, go["id"] if go else None,
                                  st.get("harb_kn"), st.get("harb_why"), ((self.g.hplan.dec or {}).get("text_en") or "")[:70],
                                  tel.get("ll_state"), tel.get("throttle"), allg, int(tel.get("alarm_bits") or 0),
-                                 list((self.g.hplan.dec or {}).get("not_yielding") or [])))
+                                 list((self.g.hplan.dec or {}).get("not_yielding") or []),
+                                 bool((self.g.hplan.dec or {}).get("turn"))))
             # a HOLD in the first 25 m from a HOST-LOAD transient ("planner cycle late" U4 / the tracker overload / the lease
             # lapsed while episodes share the PC) is the captain's RESUME once the planner says clear (what a person does);
             # counted + reported as an event, only before 25 m of progress, at most 6 times
+            dd = self.g.hplan.dec or {}
+            rs = (dd.get("reasons") or [""])[0] if dd.get("stop") else ""
+            if rs and rs != getattr(self, "_last_stop", None) and len(self.events) < 200:
+                trk = {str(q.get("id")): q for q in (self.g.harbour.tracks() or [])}
+                bl = [(b, (trk.get(b) or {}).get("src"), (trk.get(b) or {}).get("steer_ok"),
+                       round((trk.get(b) or {}).get("speed") or 0.0, 2)) for b in dd.get("blockers") or []]
+                self.events.append((round(t, 1), "planner STOP: %s | blockers %s" % (rs[:90], bl[:4])))
+            self._last_stop = rs
             if (self.g.hplan.dec or {}).get("not_yielding") and "NOT GIVING WAY - STOP" in (
                     (self.g.hplan.dec or {}).get("text_en") or ""):
                 self.ny_stop_seen = True                 # HX7-fix: a real stop for a vessel not giving way: never resumed
