@@ -67,7 +67,18 @@ DEFAULTS = {
     # refuge): then the planner steers clear inside the corridor if a path keeps the minimum distances, else STOP +
     # the "vessel not giving way - TAKE OVER" alarm (never a creep towards it)
     "ny_window_s": 4.0, "ny_min_obs_s": 2.0, "ny_slow_frac": 0.85, "ny_turn_deg": 15.0,
-    "ny_hold_s": 10.0,                                   # review M3: the not-yielding state LATCHED this long after
+    "ny_hold_s": 10.0,
+    # HX7-fix2 (finding HX7-3): DECISION PERSISTENCE. A cycle whose candidate search alone finds nothing (U5 / U13: a
+    # noisy track sigma, an AIS twin for one cycle) right after a moving decision may KEEP that previous command for at
+    # most keep_max_s (< the 1 s lease; the command was judged against the full 15 m one cycle before) - only if the
+    # previous path, judged again NOW with the noisy data, stays inside the corridor, clear of every static object at
+    # the full 8 m and never predicts a moving track closer than min_moving - keep_margin_m (= 3 m hull to hull: no
+    # predicted contact even with the noisy sigma); any unsure of the list (U1-U12, U8 ambiguous, a stale input ...)
+    # still STOPs in the same cycle (it never reaches this point); a failure that lasts STOPs after keep_max_s
+    "keep_max_s": 0.8, "keep_margin_m": 12.0,
+    # ... and a turn chosen for a vessel that does not give way keeps its side: the other side / straight costs more
+    # for turn_persist_s
+    "turn_persist_s": 3.0,                                   # review M3: the not-yielding state LATCHED this long after
                                                          # its last detection (a re-ID / U7 never clears it)
     # HX7-fix (finding HX7-1): the READY lease before the captain's START (STANDBY only): heading = the leg track,
     # cap = the most restrictive of the planner's cap, the route leg and ready_kn
@@ -130,6 +141,9 @@ class Planner:
         self.hist = {}                  # HX7-fix: track id -> [(t, speed m/s, course deg)] (the not-yielding judgement)
         self.ny_t = None                # review M3: the last time a vessel was judged not yielding
         self.ny_ids = []
+        self.keep_t0 = None             # HX7-fix2: when the current run of kept (persisted) decisions began
+        self.turn_t = None              # HX7-fix2: the last escape / avoid turn for a vessel not giving way
+        self.kept = 0
 
     def reset(self):
         self.prev = None
@@ -138,6 +152,8 @@ class Planner:
         self.hist = {}
         self.ny_t = None
         self.ny_ids = []
+        self.keep_t0 = None
+        self.turn_t = None
 
     # --- HX7-fix: the not-yielding judgement ------------------------------------------------------------------
     def _observe(self, now, tracks):
@@ -227,6 +243,8 @@ class Planner:
         """Review M3: the not-yielding state stays raised for ny_hold_s after its last detection, whatever the cycle's
         own reason (U7 inside 8 m, a re-ID, the history rebuilding): on a STOP the loud state (why, alarm COLLISION |
         DECISION, the vessel named) stays; while steering clear COLLISION stays. Only ever ADDS a state / an alarm."""
+        if dec.get("stop"):
+            self.keep_t0 = None                         # (HX7-fix2: a STOP ends any run of kept decisions)
         if dec.get("not_yielding"):
             self.ny_t, self.ny_ids = now, list(dec["not_yielding"])
         elif self.ny_t is not None and 0.0 <= now - self.ny_t <= float(self.c["ny_hold_s"]):
@@ -321,6 +339,10 @@ class Planner:
         own = inp["own"]
         (ax, ay), (bx, by) = inp["leg"]
         L = math.hypot(bx - ax, by - ay)
+        # HX7-fix2 (H2): on the route's LAST leg the AURIX ends harbour autonomy at the final waypoint (arrival = DONE
+        # / HOLD ARRIVED: idle + neutral) - the simulated boat coasts down from the waypoint itself (no early start of
+        # the stop: conservative) instead of driving on along the extended line into the quay beyond it
+        self._end_s = L if inp.get("last_leg") else None
         psi = math.degrees(math.atan2(bx - ax, by - ay)) % 360.0
         ux, uy = math.sin(math.radians(psi)), math.cos(math.radians(psi))
         nx, ny = uy, -ux                                 # starboard normal: xte + = starboard of the line
@@ -448,6 +470,8 @@ class Planner:
             if self.prev is not None:
                 cost += 0.5 * abs(o - self.prev[0]) / step + (0.5 if abs(v_kn - self.prev[1]) > 1e-6 else 0.0)
             cost -= 0.05 * min(clear, 10.0)
+            if held and self.prev is not None and self.turn_t is not None and                     now - self.turn_t <= float(c["turn_persist_s"]) and (o - e0) * (self.prev[0] - e0) <= 0.0:
+                cost += 6.0                             # HX7-fix2: keep the side of a turn for a vessel not giving way
             if best is None or cost < best[0]:
                 best = (cost, o, v_kn, blk)
         dec["blockers"] = sorted(str(x) for x in straight_block)
@@ -474,6 +498,14 @@ class Planner:
             if ok and not is_turn(round(e_straight, 2)):
                 best = (0.0, round(e_straight, 2), v_min, blk)
                 dec["slow"].append("nothing free over %.0f s: creeping straight" % float(c["horizon_s"]))
+        kept = False
+        if best is None and not amb:
+            kept = self._keep_prev(now, held, v_lim, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny,
+                                   s_end)
+            if kept:
+                best = (0.0, self.prev[0], self.prev[1], set())
+                dec["slow"].append("one cycle without a free path: the previous path kept (<= %.1f s)" %
+                                   float(c["keep_max_s"]))
         if best is None and held:
             # ... STOP second: no path keeps the minimum distances - STOP at once (never a creep towards it) and the
             # loud state: the existing navreq COLLISION RISK + DRIVER DECISION advisories + the station's WARNING
@@ -515,8 +547,37 @@ class Planner:
         dec["why"] = why
         dec["detail"] = detail or ("%.1f kn" % v_kn)
         dec["ms"] = round((time.perf_counter() - t_start) * 1000.0, 1)
+        dec["kept"] = kept
+        if not kept:
+            self.keep_t0 = None
+        else:
+            self.kept += 1
+        if held and dec["turn"]:
+            self.turn_t = now
         self.prev = (o, v_kn)
         return dec
+
+    def _keep_prev(self, now, held, v_lim, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny, s_end):
+        """HX7-fix2: may the previous moving command be kept for this ONE search failure? Only within keep_max_s of
+        the first failure of the run, never faster (held: v_lim), and only if that path judged NOW stays inside the
+        corridor, clears every static object at the full 8 m and comes no closer than min_moving - keep_margin_m (3 m
+        hull to hull) to any moving track. Else None -> the STOP of the caller."""
+        c = self.c
+        if self.prev is None:
+            return False
+        if self.keep_t0 is None:
+            self.keep_t0 = now
+        if now - self.keep_t0 > float(c["keep_max_s"]):
+            return False
+        o, v_kn = self.prev
+        if held and v_kn > v_lim + 1e-6:
+            return False
+        ok_s, _c1, _b1 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, [], sidx, ax, ay, ux, uy, nx, ny, s_end)
+        if not ok_s:
+            return False
+        _ok, cl, _b2 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, movers, {"big": []}, ax, ay, ux, uy, nx, ny,
+                                 s_end)
+        return cl >= -float(c["keep_margin_m"])
 
     def _threats(self, now, movers, s0, e0, psi, usable, hdg, v0, ax, ay, ux, uy, nx, ny, s_end):
         """HX7-fix: the movers that do NOT give way: range-confirmed (steer_ok), not slowing / turning (_not_slowing),
@@ -628,8 +689,11 @@ class Planner:
         clear = 1e9
         t = 0.0
         e_prev = e0
+        end_s = getattr(self, "_end_s", None)
         while t < H - 1e-9:
             t += dt
+            if end_s is not None and (x - ax) * ux + (y - ay) * uy >= end_s:
+                vt = 0.0                                # (HX7-fix2) the last waypoint reached: the AURIX stops there
             v = vt + (v - vt) * math.exp(-dt / tau)
             s = (x - ax) * ux + (y - ay) * uy
             e = (x - ax) * nx + (y - ay) * ny
@@ -808,7 +872,8 @@ class HarbourPlanner:
                 block.append("the leg has no speed")
                 leg = None
         corr = st.get("harb_corr_m") if st.get("harb_state") in RUNNING and st.get("harb_corr_m") else None
-        return {"own": own, "leg": leg, "corr_m": corr, "route_kn": route_kn, "tracks": hs.tracks(),
+        last = leg is not None and k == len(wps) - 1
+        return {"own": own, "leg": leg, "last_leg": last, "corr_m": corr, "route_kn": route_kn, "tracks": hs.tracks(),
                 "flags": hs.tracker_flags(), "static": hs.static,
                 "health": {k: hs.health(k)[0] if hs.procs[k].c.get("enabled") else "OFF" for k in ("radar", "lidar")},
                 "block": block}

@@ -594,6 +594,16 @@ the AURIX holds; the alarm HARBOUR STOP; the captain resumes (U13: the captain T
   60 deg / 8 deg/s limits. In a +-10 m corridor a vessel ON the line leaves no path that keeps 15 m: the boat stops
   far away (H4: at ~110 m) and the captain must TAKE OVER (MANUAL ch. 27 / MANUAL_EL ch. 22 checklist).
 
+### 7.8 Decision persistence (HX7-fix2, finding HX7-3)
+One planner cycle whose candidate search ALONE finds nothing (U5 / U13 - a noisy track sigma, an AIS twin for one
+cycle) right after a moving decision may keep that previous command for at most keep_max_s 0.8 s (below the 1 s
+lease; the command passed the full 15 m / 8 m check one cycle before), only if that path, judged again NOW with the
+noisy data, stays inside the usable corridor, clears every static object at the full 8 m and predicts no moving track
+closer than 3 m hull to hull (min_moving - keep_margin_m 12), never faster (with a vessel not giving way). Every
+unsure of the list (U1-U12, U8, a stale input, a late cycle) never reaches this point: it STOPs in that same cycle;
+a failure that lasts STOPs after keep_max_s. A turn chosen for a vessel that does not give way keeps its side for
+turn_persist_s 3 s (the other side costs more). HP19 (+ the no-time-limit mutation).
+
 ### 7.7 The READY lease (HX7-fix, finding HX7-1)
 HarbourPlanner.active() before the START (HARBOUR_STAT state OFF) = a checked harbour route on the boat (harb_route
 + the gateway's own copy) + the boat in STANDBY, not stopping, fresh telemetry + a gateway station holding HELM

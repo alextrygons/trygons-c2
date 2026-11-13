@@ -39,6 +39,10 @@ proposals the way the AURIX validates them (slew 8 deg/s, the 60 deg check, the 
        (never the planner's offset heading), cap <= min(planner, leg, 5 kn, other caps), lease 1000, no own alarm;
        no HELM / stopping / stale telemetry / not STANDBY / no route / a stale HARBOUR_STAT = the request untouched
        at once; once RUN the planner's own frame; mutation: the planner's heading in the READY frame -> caught
+  HP19 (HX7-fix2, HX7-3) decision persistence: ONE noisy cycle without a free path right after a steer-clear keeps
+       the previous path (never a STOP for it); a failure that lasts STOPs within keep_max_s (+ one cycle); a REAL
+       unsure (U1 / a stale tracker / no pose) in that same cycle STOPs at once; never faster while kept; mutation:
+       the time limit removed -> the lasting failure never stops -> caught
 """
 import asyncio
 import math
@@ -932,10 +936,62 @@ def hp18_report():
            "%s; mutant (an offset solution offered as READY) passes: %s" % ("; ".join(det), mok))
 
 
+def hp19_run(planner_mod=P, noisy=(), unsure_at=None):
+    """The room geometry of HP17; cycles in `noisy` have the vessel's sigma blown up (no free path that cycle)."""
+    pl = planner_mod.Planner()
+    out = []
+    for k in range(30):
+        t = 10.0 + 0.2 * k
+        dt = t - 10.0
+        tr = trk(1, -22.0, 100.0 - 2.5 * dt, 0.0, -2.5, ln=6.0, beam=2.5, sd=7.0 if k in noisy else 0.5)
+        flags = {"unsure": ["U1 radar and LiDAR lost"] if k == unsure_at else [], "cycle_age_s": 0.1}
+        d = pl.plan(t, inp([tr], corr=20.0, flags=flags))
+        out.append(d)
+    return out
+
+
+def hp19(planner_mod=P):
+    base = hp19_run(planner_mod)
+    k0 = next((i for i, d in enumerate(base) if d.get("why") == "harb.why_ny_avoid" and not d["stop"]), None)
+    det, bad = [], []
+    if k0 is None:
+        return ["no steer-clear decision in the base run"], det
+    one = hp19_run(planner_mod, noisy=(k0 + 1,))
+    if one[k0 + 1]["stop"] or not one[k0 + 1].get("kept"):
+        bad.append("one noisy cycle: stop %s kept %s" % (one[k0 + 1]["stop"], one[k0 + 1].get("kept")))
+    if any(d["cap_kn"] > one[k0]["cap_kn"] + 1e-6 for d in one[k0 + 1:k0 + 2]):
+        bad.append("faster while kept")
+    last = hp19_run(planner_mod, noisy=tuple(range(k0 + 1, k0 + 12)))
+    first_stop = next((i for i in range(k0 + 1, k0 + 12) if last[i]["stop"]), None)
+    lim = int(round(P.DEFAULTS["keep_max_s"] / 0.2)) + 1
+    if first_stop is None or first_stop - (k0 + 1) > lim:
+        bad.append("lasting failure: first STOP at cycle %s (limit %d after %d)" % (first_stop, lim, k0 + 1))
+    real = hp19_run(planner_mod, unsure_at=k0 + 1)
+    if not real[k0 + 1]["stop"]:
+        bad.append("a real unsure right after a steer-clear did not STOP at once")
+    det.append("steer-clear from cycle %d; one noisy kept %s; lasting stop after %s cycles; real unsure stop %s" % (
+        k0, one[k0 + 1].get("kept"), None if first_stop is None else first_stop - k0 - 1, real[k0 + 1]["stop"]))
+    return bad, det
+
+
+def hp19_report():
+    import types
+    bad, det = hp19()
+    src = open(os.path.join(HERE, "harbour", "planner.py"), encoding="utf-8").read()
+    old = '        if now - self.keep_t0 > float(c["keep_max_s"]):'
+    assert old in src
+    m = types.ModuleType("harbour.planner_mut19")
+    m.__package__ = "harbour"
+    exec(compile(src.replace(old, '        if False:'), "planner_mut19", "exec"), m.__dict__)
+    mbad, _d = hp19(m)
+    report("HP19 decision persistence: one noisy cycle kept, a lasting failure STOPs in time, a real unsure at once",
+           not bad and bool(mbad), "%s; %s; mutant (no time limit) caught %s" % (bad, "; ".join(det), mbad[:1]))
+
+
 def main():
     t0 = time.time()
     for fn in (hp1, hp2, hp3, hp4, hp5, hp6_report, hp7, hp8_report, hp9, hp10_report, hp11, hp12, hp13, hp14, hp15,
-               hp16, hp17, hp18_report):
+               hp16, hp17, hp18_report, hp19_report):
         try:
             fn()
         except Exception as e:
