@@ -1132,3 +1132,26 @@ started", two rafted boats 3 m apart = 2 tracks.
 Round 2 (review of 858168e): 17 / 17; HT17 adds the AIS report kept at its position (U6) after a jump, a coasting AIS
 ferry not handed to a moored boat 20 m away, a 5 s clock step refused + U11 "clock". UA22 (UAV battery landing) failed
 in both gateway-misc runs AND alone AND on the pre-HX4 commit 693fcfd (worktree) - environmental, not this step.
+
+
+## HX7 - harbour scenario library END TO END on the real simulator (2026-11-13)
+tests/harbour/run_scenarios.py: every episode = the real autopilot_sim (UNCREWED, speed 1) + the real gateway modules
+(simulated radar + LiDAR, tracker, planner, route check) + the captain's station (HELM, route upload with the harbour flag,
+START, the shore stick's CONFIRM); one process per episode in a kill-on-close job; 4 episodes in parallel (6 in parallel
+stalled the machine: a 300 s episode limit killed the whole batch twice - use --jobs 4).
+Library `all` (H1-H20 + H3n, 21 episodes, 624 s wall): 18 PASS, 3 XFAIL. H1 empty exit, H2 arrival at a quay, H3 wide
+channel, H3n narrow channel (the planner holds ~30 m before +-17 m moorings, 11-14 m hull gap), H5 / H6 crossing from
+starboard / port, H7 overtaking a slow boat, H9 kayak, H10 swimmer, H11 buoy, H12 / H13 one sensor lost (<= 2.5 kn),
+H14 both lost / H16 GPS spoofed / H20 planner crash = HOLD in time, H15 link lost = STANDBY then stopped (the kill after
+the grace is NOT waited for: the run is 131 s), H17 camera-only / H18 AIS-only ghost = slows, never a turn.
+XFAIL (documented FINDING HX7-2, shown on every run, a fix turns them into a "remove the xfail mark" FAIL): H4 head-on,
+H8 fast overtaker from astern, H19 a vessel that does not give way - the planner HOLDs (SOG 0) 25-30 m before / in front
+of the vessel (U7 / U5) and a vessel that ignores the boat runs through the standing boat (hull overlap -4.2 / -6.3 /
+-6.0 m). The boat never moved into them; it stops in their path (no sidestep to the corridor edge, no reverse).
+FINDING HX7-1: before any START the AURIX's entry_ok is False (needs the planner lease; the gateway opens the planner's
+pre-start window only when a START passes it), the station's START button is enabled only on entry_ok -> the real button
+can never be pressed first (the rig sends a first START: NACK 6, then True).
+Storm `storm --episodes 30 --seed 1` (seeded random worlds, 75 s each, the common criteria; 668 s wall): first run 24 PASS,
+6 FAIL = 4 starts refused by the planner's STOP at the start (the boat never moved: now the explicit correct outcome "E
+START refused...") + 2 unfinished routes at the time limit (C6 now accepts RUN / SLOW at the limit); the 6 re-run: see PROGRESS.
+Not run: the demo rehearsal (desktop), the full check.sh gate, an independent review.

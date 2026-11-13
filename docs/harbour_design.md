@@ -758,6 +758,13 @@ for the gateway planner against the simulated world; next free numbers)
   MANUAL_EL chapter, tour stops, FIRST_TEST.md sea plan (empty harbour first, then one known boat,
   then traffic; the captain on board with the onboard joystick for every first run), the demo.
 
+### 9.3 As built (HX7): the end-to-end rig
+tests/harbour/ runs 9.1's scenarios against the REAL autopilot_sim (UNCREWED, speed 1 = real time: the gateway lease / the planner's 5 Hz / the sensors' clocks are wall time) and the real gateway modules in-process; the rig only builds worlds, sends
+the captain's station frames (route upload with the harbour flag, T_HARBOUR START, the shore stick's CONFIRM) and watches. Deviation from 9.1: H1-H20 + H3n (a narrow channel the planner may refuse). Pass criteria C1-C6 + the scenario's own: scenarios.py docstring.
+FINDING HX7-1 (not fixed here): the station's START is greyed until HARBOUR_STAT entry_ok, which needs the planner lease, which exists only after a START passed the gateway (planner.note_start) - the real button cannot be pressed first. Fix options: the
+gateway opens the pre-start window when a checked harbour route is stored + the station is HELM (no START needed), or the station sends a first START without the entry_ok gate. The rig sends a first START (NACK 6) to open the window.
+The AURIX-side checks stay the C storm's (I85-I92); the planner's I86h-I90 stay in storm_harbour.py.
+
 ## 10. Failure analysis (what happens when ...)
 
 | Failure | Detected by | Result |
