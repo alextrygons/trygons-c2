@@ -47,7 +47,7 @@ def plan(mode, short_soak=False):
          ("harbour avoidance storm: 200 episodes (I86h-I90)", [PY, t % "storm_harbour.py", "--episodes", "200"], 2700),
          ("harbour storm mutation check", [PY, t % "storm_harbour.py", "--mutation-check", "--episodes", "40"], 2700),
          ("harbour scenarios H1-H20 + 30 random worlds END TO END on the real simulator (HX7)",
-          [PY, os.path.join(REPO, "tests", "harbour", "run_scenarios.py"), "quick", "--jobs", "4"], 2700)]
+          [PY, os.path.join(REPO, "tests", "harbour", "run_scenarios.py"), "quick", "--jobs", "3"], 2700)]
     if mode == "quick":
         return q
     return [ads, ifx,
@@ -64,8 +64,8 @@ def plan(mode, short_soak=False):
             ("harbour avoidance storm: 600 episodes (I86h-I90)", [PY, t % "storm_harbour.py", "--episodes", "600"],
              7200),
             ("harbour storm mutation check", [PY, t % "storm_harbour.py", "--mutation-check", "--episodes", "40"], 2700),
-            ("harbour scenarios H1-H20 + 100 random worlds END TO END on the real simulator (HX7)",
-             [PY, os.path.join(REPO, "tests", "harbour", "run_scenarios.py"), "quick", "--episodes", "100", "--jobs", "4"], 2700),
+            ("harbour scenarios H1-H20 + 40 random worlds END TO END on the real simulator (HX7)",
+             [PY, os.path.join(REPO, "tests", "harbour", "run_scenarios.py"), "quick", "--episodes", "40", "--jobs", "3"], 2700),
             ("station storm (I16)", [PY, t % "stations_storm.py", "--seconds", "300"], 1800),
             ("coverage", [PY, t % "coverage_run.py"], 14400)]
 

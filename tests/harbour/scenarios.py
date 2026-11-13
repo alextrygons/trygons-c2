@@ -95,8 +95,8 @@ def build():
     sc.append(S("H14", "radar AND LiDAR lost at 20 s", [], faults=[{"t": 20.0, "what": "radar_off"},
                                                                    {"t": 20.0, "what": "lidar_off"}],
                 expect={"hold_within": (20.0, 6.0)}))
-    sc.append(S("H15", "the shore link lost at 20 s (harbour lost-link: STANDBY first, kill after the grace)", [],
-                faults=[{"t": 20.0, "what": "link_lost"}], secs=110.0, stop_on_standby=False, stop_on_done=False,
+    sc.append(S("H15", "the shore link lost at 20 s (harbour lost-link: STANDBY first, then the kill; harb_ll_grace_s = 0 today)", [],
+                faults=[{"t": 20.0, "what": "link_lost"}], secs=125.0, stop_on_standby=False, stop_on_done=False,
                 expect={"link_lost": 20.0}))
     sc.append(S("H16", "GPS spoofed (position jump) at 25 s", [], faults=[{"t": 25.0, "what": "gps_spoof"}],
                 expect={"hold_within": (25.0, 8.0)}))
@@ -133,6 +133,22 @@ def evaluate(spec, ep, out):
                  moved < 0.5, "max SOG %.2f kn" % moved)]
     if out.get("upload") != 0 or out.get("start") != 0:
         r.append(("RIG-START", False, "route upload %r, START %r (0 = ok)" % (out.get("upload"), out.get("start"))))
+    # PRECONDITIONS (review HIGH): a boat that never left, a fault that never fired or an object that never came near
+    # must not pass anything
+    xmax = max(q[1] for q in S_)
+    ran = any(q[5] in ("RUN", "SLOW") for q in S_)
+    r.append(("P1 the boat drove: RUN / SLOW seen and >= 25 m covered", ran and xmax >= 25.0,
+              "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
+    fired = {e[1] for e in ep.events}
+    miss = [f["what"] for f in spec.get("faults", []) if "fault " + f["what"] not in fired]
+    if spec.get("faults"):
+        r.append(("P2 every injected fault fired", not miss, "not fired: %s" % miss if miss else "all fired"))
+    objs = [o["id"] for o in spec.get("objects", []) if o["kind"] != "pier"]
+    if ex.get("safe_pass_or_hold") and objs:
+        mg0 = out.get("min_gap", {})
+        close = min((v[0] for k, v in mg0.items() if k in objs), default=999.0)
+        r.append(("P3 the encounter happened (the object came within 40 m hull to hull)", close < 40.0,
+                  "closest approach to %s: %.1f m" % (objs, close)))
     # C1 / C2 from the per-object minima + the samples
     mg = out.get("min_gap", {})
     worst = min(((v[0], k) for k, v in mg.items()), default=(999.0, None))
@@ -147,11 +163,12 @@ def evaluate(spec, ep, out):
     else:
         r.append(("C1 never touches (gap >= 0.5 m)", worst[0] >= 0.5, "min hull gap %.1f m to %s" % worst))
     viol = []
-    for t, x, y, hdg, sog, state, xte, mode, gap, cap, moving, oid, kcap, why, txt in S_:
-        if state in ("RUN", "SLOW") and oid is not None:
-            lim = (15.0 if moving else 8.0) - 0.5
-            if gap < lim and oid not in ex.get("excused", ()):
-                viol.append((round(t, 1), oid, round(gap, 1), state))
+    for t, x, y, hdg, sog, state, xte, mode, gap, cap, moving, oid, kcap, why, txt, ll_s, thr, allg in S_:
+        if state in ("RUN", "SLOW"):
+            for oid2, g2, mv2 in allg:                  # EVERY object against its own limit (review)
+                lim = (15.0 if mv2 else 8.0) - 0.5
+                if g2 < lim and oid2 not in ex.get("excused", ()):
+                    viol.append((round(t, 1), oid2, round(g2, 1), state))
     r.append(("C2 distance kept while RUN / SLOW (15 m moving / 8 m static)", not viol,
               "first violations %s" % (viol[:3],) if viol else "none"))
     hold_gaps = [(round(s[0], 1), s[11], round(s[8], 1)) for s in S_ if s[5] == "HOLD" and s[4] < 0.3 and s[8] < 999
@@ -175,7 +192,8 @@ def evaluate(spec, ep, out):
     # own expectations
     if ex.get("end") == "DONE":
         reached = any(s[5] == "DONE" or (s[5] == "HOLD" and s[13] == ARRIVED) for s in S_) or last[7] == "STANDBY"
-        r.append(("E arrives (DONE, final STOP)", reached, "states %s" % sorted({s[5] for s in S_})))
+        reached = reached and xmax >= spec["route"][-1][0] - 25.0           # (and it really got to the end)
+        r.append(("E arrives (DONE, final STOP) at the route's end", reached, "states %s" % sorted({s[5] for s in S_})))
     if ex.get("safe_pass_or_hold"):
         seen_hold = any(s[5] == "HOLD" for s in S_)
         done = any(s[5] == "DONE" or (s[5] == "HOLD" and s[13] == ARRIVED) for s in S_) or last[7] == "STANDBY"
@@ -191,7 +209,8 @@ def evaluate(spec, ep, out):
     if "hold_within" in ex:
         t_f, win = ex["hold_within"]
         h = [s[0] for s in S_ if s[0] >= t_f and s[5] in ("HOLD", "OFF") or (s[0] >= t_f and s[7] == "STANDBY")]
-        ok = bool(h) and (h[0] - t_f) <= win
+        pre = any(q[5] in ("RUN", "SLOW") for q in S_ if q[0] < t_f)         # it was under way when the fault hit
+        ok = bool(h) and (h[0] - t_f) <= win and pre
         slow_after = [s for s in S_ if s[0] > t_f + win + 12.0 and s[4] > 0.8]
         r.append(("E STOP within %.0f s of the fault, then standing" % win, ok and not slow_after,
                   "HOLD / STANDBY after %s s; still moving later %s" % (None if not h else round(h[0] - t_f, 1),
@@ -204,10 +223,18 @@ def evaluate(spec, ep, out):
         moving_late = [s for s in S_ if sb_t and s[0] > sb_t[0] + 15.0 and s[4] > 0.8]
         r.append(("E link lost: the boat is stopped 15 s after STANDBY", not moving_late and bool(sb_t),
                   "moving later %s" % (moving_late[:1],)))
-        t = ep.g.telem or {}
-        r.append(("E link lost: no ENGINE KILL before detection + grace (kill state read at the end)",
-                  True, "ll_state %s (2 = killed; the grace is LINK TIME + 60 s: the run is shorter on purpose)"
-                  % t.get("ll_state")))
+        kills = [q[0] for q in S_ if q[15] == 2]
+        first_kill = kills[0] if kills else None
+        # harb_ll_grace_s is 0 in today's firmware (W147: the owner's grace is the HX8 firmware step): a lost link in
+        # harbour = the usual near-shore procedure: detection 3 s, then idle + neutral, then the kill
+        r.append(("E link lost: no ENGINE KILL before the detection time (>= 3 s after the loss)",
+                  first_kill is None or first_kill - t_f >= 3.0,
+                  "first kill %s s after the loss" % (None if first_kill is None else round(first_kill - t_f, 1))))
+        r.append(("E link lost: ... and the engine IS stopped by the end of the run (UNCREWED)",
+                  first_kill is not None, "ll_state 2 seen: %s" % (first_kill is not None)))
+        idle = [q for q in S_ if sb_t and q[0] >= sb_t[0] + 8.0 and (q[16] is None or q[16] > 1.0)]
+        r.append(("E link lost: idle (throttle <= 1 %) 8 s after STANDBY", bool(sb_t) and not idle,
+                  "throttle above 1 %%: %s" % ([(q[0], q[16]) for q in idle[:1]],)))
     if "camera_only" in ex or "ais_only" in ex:
         t_f = ex.get("camera_only", ex.get("ais_only"))
         turned = [s for s in S_ if s[0] > t_f + 3.0 and abs(s[2]) > 2.5 and s[5] in ("RUN", "SLOW")]

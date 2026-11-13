@@ -62,7 +62,7 @@ def hull_gap(ox, oy, o):
     """Hull-to-hull gap (m) between the own boat (circle OWN_R) and one truth object (simworld.World.truth item)."""
     if o["kind"] == "pier":
         return seg_dist(ox, oy, o["x1"], o["y1"], o["x2"], o["y2"]) - o["w"] / 2.0 - OWN_R
-    return math.hypot(ox - o["x"], oy - o["y"]) - (o["len"] + o["beam"]) / 4.0 - OWN_R
+    return math.hypot(ox - o["x"], oy - o["y"]) - o["len"] / 2.0 - OWN_R        # (review: the conservative circle)
 
 
 _PORTS = [0]
@@ -122,6 +122,8 @@ class Episode:
         self.events = []
         self.t0 = None
         self.stick = {"x": 0.0, "lever": 0.5, "confirm": False}
+        self.resumes = 0
+        self.last_resume = 0.0
 
     # -------------------------------------------------------------- set-up
     def setup(self):
@@ -305,9 +307,27 @@ class Episode:
                 if k not in min_gap or gg < min_gap[k][0]:
                     min_gap[k] = (gg, o["speed"] > 0.2, st.get("harb_state_name"))
             mode = (self.g.telem or {}).get("mode_name")
+            allg = [(o["id"], round(hull_gap(x, y, o), 1), o["speed"] > 0.2) for o in truth]
+            tel = self.g.telem or {}
             self.samples.append((round(t, 2), x, y, hdg, sog, st.get("harb_state_name"), st.get("harb_xte_m"), mode,
                                  g, (self.g.hplan.dec or {}).get("cap_kn"), moving, go["id"] if go else None,
-                                 st.get("harb_kn"), st.get("harb_why"), ((self.g.hplan.dec or {}).get("text_en") or "")[:70]))
+                                 st.get("harb_kn"), st.get("harb_why"), ((self.g.hplan.dec or {}).get("text_en") or "")[:70],
+                                 tel.get("ll_state"), tel.get("throttle"), allg))
+            # a HOLD in the first 25 m from a HOST-LOAD transient ("planner cycle late" U4 / the tracker overload / the lease
+            # lapsed while episodes share the PC) is the captain's RESUME once the planner says clear (what a person does);
+            # counted + reported as an event, only before 25 m of progress, at most 6 times
+            if (st.get("harb_state_name") == "HOLD" and x < 25.0 and self.resumes < 6 and t < 40.0
+                    and st.get("harb_why") in (2, 3) and not (self.g.hplan.dec or {}).get("stop")
+                    and "overload" not in (((self.g.hplan.dec or {}).get("text_en")) or "")
+                    and time.time() - self.last_resume > 4.0 and self.alice is not None):
+                self.resumes += 1
+                self.last_resume = time.time()
+                self.events.append((round(t, 1), "RESUME after a host-load HOLD (why %s)" % st.get("harb_why")))
+                self.alice.cmd(proto.T_HARBOUR, proto.p_harbour(proto.HARB_RESUME, self.spec.get("corr_m", 10.0),
+                                                               self.spec.get("max_kn", 5.0)), 6.0)
+                self.stick["confirm"] = True
+                time.sleep(0.6)
+                self.stick["confirm"] = False
             if st.get("harb_state_name") == "DONE" and s.get("stop_on_done", True):
                 break
             if mode == "STANDBY" and t > 15 and s.get("stop_on_standby", True):

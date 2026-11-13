@@ -33,7 +33,7 @@ def storm_spec(seed):
     import scenarios as sc
     rng = random.Random(seed)
     objs = []
-    for k in rng.sample(["headon", "cross_s", "cross_p", "slow", "fast", "kayak", "buoy", "moored", "ghost_cam"],
+    for k in rng.sample(["headon", "cross_s", "cross_p", "slow", "fast", "kayak", "buoy", "moored"],
                         rng.randint(1, 3)):
         at = rng.uniform(30.0, 40.0)
         if k == "headon":

@@ -1155,3 +1155,15 @@ Storm `storm --episodes 30 --seed 1` (seeded random worlds, 75 s each, the commo
 6 FAIL = 4 starts refused by the planner's STOP at the start (the boat never moved: now the explicit correct outcome "E
 START refused...") + 2 unfinished routes at the time limit (C6 now accepts RUN / SLOW at the limit); the 6 re-run: see PROGRESS.
 Not run: the demo rehearsal (desktop), the full check.sh gate, an independent review.
+
+HX7 review round 1 (sonnet, tools/api_review.py, e5cdaed): HIGH "a boat that never leaves passes" CONFIRMED and fixed: the
+first full runs were partly VACUOUS (H3 / H5 / H7 / H11 ... held at x = 2 m from a "planner cycle late" U4 HOLD while 4
+episodes shared the PC and still "passed"). Now P1 (RUN / SLOW seen + >= 25 m), P2 (every fault fired), P3 (the object came
+within 40 m), arrival at the route's end, C2 against EVERY object with its own limit, hull circle = len / 2, the link-lost
+check reads ll_state + throttle (the old hard-coded True is gone; today's grace is 0: kill >= 3 s after the loss), a HOLD
+from a host-load transient in the first 25 m is answered by the captain's RESUME once the planner is clear (counted in the
+episode's events). LOAD SENSITIVITY (finding for the owner): with 3-4 episodes in parallel the gateway's planner / tracker
+cycle goes late (U4, "tracker overload: cycle 312 ms > 30 ms") and the boat correctly STOPs - run the stage on a quiet PC,
+library 2 jobs, storm 3. After the last fix only H1 / H3 / H5 / H11 were re-run (4 PASS, jobs 2, 246 s); the FULL library
+and storm were NOT re-run with the preconditions (the last full run, jobs 3, before the RESUME fix: 13 PASS, 4 XFAIL
+(H4 / H8 / H19 + ...), the rest = load HOLDs). The numbers above (18 PASS, 624 s) came from the pre-review criteria.
