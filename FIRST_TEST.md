@@ -509,3 +509,46 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
 - [ ] Mission Planner / QGroundControl are used ONLY on the bench, over the drone's own USB cable with the drone
       NOT in the magazine slot and NOT under the gateway / router (firmware, calibration, parameters, logs); they
       are never connected to the gateway, the router or the ELRS link during an operation ____ .
+
+
+## 7. Harbour autonomy: bench + sea plan (step HX7; the owner, step by step, EMPTY HARBOUR FIRST)
+Read section 5b first. Nothing here is done before the owner has chosen the radar and the LiDAR (PROGRESS W148: "sensor
+choice pending"; PARTS.md / WIRING.md only point here). The AURIX and the gateway never leave the dock / the water
+until every step above is written down. Record for EVERY run: the commit tag (`git describe --tags --exact-match`), the
+`.elf` sha256, gateway.json (harbour part), the gateway log, the HARBOUR_STAT stream, the black box, the screen
+recording (SCR) and the weather.
+
+7a. GATEWAY CONFIG BEFORE ANY REAL HARDWARE (W150, FLASH-GATE item): the gateway's "harbour" part must say the REAL
+    drivers (radar / lidar driver = the chosen one, `"sim": false`, no world file). A config with `"sim": true` is
+    for the simulator ONLY: the planner refuses a non-localhost AURIX link, but a real board behind a local TCP relay
+    would pass that test - so: (1) read gateway.json by eye and write down `sim` = false, (2) at start-up check the
+    welcome boat id of the real boat (a boats/ boat = real: simulated sensors refused - the planned start-up check of
+    W150; until it exists this is a MANUAL step), (3) the stations show "SIMULATED" nowhere on the harbour panel.
+7b. BENCH (engine OFF, boat on the trailer, the real AURIX, the SIMULATED sensors on a LOOPBACK link only = the
+    simulator, never the real board): run `python tests/harbour/run_scenarios.py all` on the PC (the 20 scenarios H1-H20)
+    and the `quick` set once; every line PASS. Then the real AURIX WITHOUT sensors: START refused (no planner), the
+    STANDBY button wins, the lease HOLD (section 5b b), the lost-link wait (harb_ll_grace_s) as section 5b c.
+7c. DOCK-SIDE (boat tied up, engine in NEUTRAL, the real radar + LiDAR fitted and OK on the panel): look at the tracks
+    for 10 minutes: every moored boat and the pier are seen (filled diamonds), nothing flickers, the static map fills;
+    walk a person along the quay at 20 m and at 10 m (the LiDAR blind zone: write down where he is first seen); a
+    kayak passing; the camera alone (cover the radar: "SENSOR DEGRADED", 2 kn; cover both: STOP). NO START.
+7d. FIRST RUN: an EMPTY harbour (no other boat, a safety boat alongside or the e-stop in the captain's hand, CREWED, the
+    captain on board with the ONBOARD joystick), a checked harbour route (teach and repeat from a manual drive), the
+    corridor 10 m, speed 2 kn. The captain: YES, then CONFIRM. Watch: the cross-track error (never beyond the corridor),
+    the panel state RUN, the corridor lines. Abort criteria (ANY of them = STANDBY at once, then write it down): the
+    boat leaves the corridor, the heading hunts, the panel shows no fresh picture for 2 s, a sensor lost without the
+    panel saying so, any HARBOUR STOP alarm that nobody understands, the captain is not sure.
+7e. SPEED: the same route at 3 kn, then 5 kn, one run each, only when the run before was clean. Record the stopping
+    distance of a STANDBY press at each speed (GPS track).
+7f. ONE MOVING TARGET: a known boat (a cooperating crew with a VHF contact on a separate boat, NOT the radio of the
+    autonomy) crosses ahead at 15 m+ and at 2 kn, then comes head-on. Expect: slow / HOLD / a turn to starboard; the
+    captain RESUMEs or takes over. Abort as in 7d, and ALSO when the gap to the other boat is under 8 m hull to hull.
+7g. TRAFFIC: only after 7d-7f were clean three times and the owner has written the go in the bench log: moored boats
+    both sides, a ferry, a kayak (no AIS). The captain on board, the safety boat out. Never with a swimmer in the
+    water (the LiDAR's blind zone: residual risk, MANUAL chapter 27).
+7h. UNCREWED harbour runs, link-lost tests and the engine-kill timing in harbour are NOT part of this plan: they need
+    the owner's answer to W147 (the grace time) and their own plan after the CREWED runs.
+What to record after every run: whether the boat ever came closer than 15 m (moving) / 8 m (fixed) hull to hull (GPS +
+radar tracks), the planner's STOP / SLOW reasons list, the time from the captain's STANDBY press to the standstill, the
+number of HOLDs, every notice (sensor health), and what surprised you. A run with a surprise = no further step until the
+cause is found.

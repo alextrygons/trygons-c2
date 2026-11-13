@@ -9726,6 +9726,123 @@
 "text": "A route is a recording of a manual drive, not a chart and not a guarantee: the planner and the boat keep to the corridor, they do not make a place safe."
 },
 {
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:749",
+"kind": "manual",
+"lines": [
+4710,
+4715
+],
+"term": "",
+"text": "THE CAPTAIN'S CHECKLIST (step HX7). Before every harbour run: (1) the FIRST run in a new harbour is ALWAYS in an EMPTY harbour at low speed (2 kn), with a safety boat or the e-stop in hand; add speed and one moving vessel only after that; (2) read the panel: the radar and the LiDAR both OK, the route checked, the corridor as expected, GPS and compass fine; (3) the start is YOURS: the one YES, then the CONFIRM; (4) keep your hand on STOP / the joystick the whole time."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:750",
+"kind": "manual",
+"lines": [
+4715,
+4717
+],
+"term": "",
+"text": "The numbers on this page - 5 kn, 15 m from a moving vessel, 8 m from a fixed object, +-10 m corridor - are PARAMETERS of the boat; the boat's own limits are the ceiling."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:751",
+"kind": "manual",
+"lines": [
+4719,
+4726
+],
+"term": "",
+"text": "STOP OR TAKE OVER? STOP (or the boat's STANDBY button) when you want everything to stand still NOW: you do not ask, you do not wait. TAKE OVER when you want to drive the boat yourself: the onboard joystick (a CREWED boat) or the REMOTE request (UNCREWED, with the licence). A HOLD (the boat stopped itself, \"I am not sure\") is not a fault: look at the reason, then decide - RESUME when it is clear, or TAKE OVER. A boat that is not sure never guesses: it stops. An object the boat cannot see is YOURS to watch: a small craft, a swimmer very close (inside the LiDAR's blind zone), anything in the water that gives no return."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:752",
+"kind": "manual",
+"lines": [
+4728,
+4731
+],
+"term": "",
+"text": "WHAT TO DO WHEN ... A sensor is lost (radar or LiDAR): the boat slows to 2 kn and turns only for what the other sensor confirms; both lost: it stops at once. Look at the panel, then take over or wait."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:753",
+"kind": "manual",
+"lines": [
+4732,
+4735
+],
+"term": "",
+"text": "The link to the shore is lost (UNCREWED): the boat stops (idle and neutral, then the steering holds), waits the lost-link time and then the engine is stopped; near the shore the engine is stopped at once. A CREWED boat: only an alarm, the crew drives."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:754",
+"kind": "manual",
+"lines": [
+4736,
+4739
+],
+"term": "",
+"text": "The GPS is lost or suspect: the harbour mode never uses dead reckoning - the boat stops (HOLD) and you decide. A camera shows an obstacle that the radar and the LiDAR do not confirm: the boat slows and may stop, it never turns for a camera alone. Look yourself."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:755",
+"kind": "manual",
+"lines": [
+4740,
+4742
+],
+"term": "",
+"text": "A vessel does not give way: the boat stops in time inside its corridor; a corridor of +-10 m rarely lets it pass a moving vessel at 15 m, so expect a HOLD and wait for the other vessel to pass, then RESUME."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:756",
+"kind": "manual",
+"lines": [
+4743,
+4749
+],
+"term": "",
+"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - take over and drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (STANDBY, TAKE OVER); the simulator has no gateway and no sensors, so the real planner is not part of them."
+},
+{
+"ch": "27",
+"chapter": "HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)",
+"heading": "LiDAR; \"SENSOR DEGRADED - slow\"; \"GIVING WAY (COLREGs)\"; and, when the link to",
+"id": "en:757",
+"kind": "manual",
+"lines": [
+4749,
+4756
+],
+"term": "",
+"text": "The presentation demo DEMO_HARBOUR.bat shows the whole thing without hardware: a simulated harbour with moored boats, a crossing ferry, a kayak and a buoy; the boat leaves the harbour on a harbour route; a presenter's guide window lists the steps and ticks them as they happen (it only watches - the captain's YES and the CONFIRM are clicked by the presenter). The scenario library tests/harbour (20 situations, run end to end against the simulated AURIX) and the sea plan in FIRST_TEST.md section 7 are for the people who build and test the boat, not for the daily user."
+},
+{
 "ch": "tour",
 "chapter": "Welcome",
 "heading": "The guided tour",
@@ -11781,7 +11898,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "3984d056aa68113071ae0f725eb59b89160096b92c860033c363e2d41240882b",
+"MANUAL.txt": "2c3490d8189a439f34348a1250cc53026797d0afe0896b28c5ba0cd919afaad4",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },
