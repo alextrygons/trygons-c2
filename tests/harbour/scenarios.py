@@ -98,7 +98,11 @@ def build():
                 [vessel("slow", (70.0, 1.0), 38.0, 90.0, 0.5, ln=6.0, beam=2.5)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H8", "being overtaken by a fast vessel from astern",
                 [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0,
-                                                                     "start_may_be_refused": 1}))
+                                                                     "start_may_be_refused": 1, "refused_for": "not_yielding"}))
+    sc.append(S("H8c", "being overtaken by a fast vessel that does NOT give way, the start CLEAR (it is far astern at "
+                "the start): START passes, then the not-yielding STOP well before it",
+                [vessel("fast", (95.0, 4.0), 60.0, 90.0, 3.5, ln=9.0)],
+                expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 10.0}))
     sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
                 [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
                 xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
@@ -153,8 +157,16 @@ def evaluate(spec, ep, out):
         # a random world with a vessel already in sight at the start: the planner's STOP flag keeps the AURIX from
         # entering (NO_LEASE / planner STOP): correct and safe - the boat never moved
         moved = max(s[4] for s in S_) if S_ else 0.0
-        return [("E START refused (NACK 6) while the planner says STOP at the start, the boat never moves",
-                 moved < 0.5, "max SOG %.2f kn" % moved)]
+        rf = out.get("refusal") or {}
+        out["class"] = "start_refused"
+        r0 = [("E START refused (NACK 6) while the planner says STOP at the start, the boat never moves",
+               moved < 0.5, "max SOG %.2f kn; the planner's reason %s" % (moved, rf.get("reasons")))]
+        if ex.get("refused_for") == "not_yielding":
+            # HX7-fix2 (3): the refusal is acceptable ONLY because of the vessel that does not give way
+            r0.append(("E ... and the reason is the vessel not giving way (U13, the vessel named)",
+                       bool(rf.get("stop")) and rf.get("why") == "harb.why_not_yielding" and bool(rf.get("not_yielding")),
+                       "refusal %s" % rf))
+        return r0
     if out.get("upload") != 0 or out.get("start") != 0:
         r.append(("RIG-START", False, "route upload %r, START %r (0 = ok)" % (out.get("upload"), out.get("start"))))
     # PRECONDITIONS (review HIGH): a boat that never left, a fault that never fired or an object that never came near
@@ -163,7 +175,23 @@ def evaluate(spec, ep, out):
     ran = any(q[5] in ("RUN", "SLOW") for q in S_)
     # (an "unavoidable" scenario may stop at once for the vessel that does not give way - by design, far away; H8's
     # overtaker is a threat from the start: there P1 = RUN / SLOW seen + P3 the encounter; every other scenario >= 25 m)
-    need_x = float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
+    storm0 = str(spec.get("name", "")).startswith("S") and str(spec.get("name", ""))[1:].isdigit()
+    if storm0:
+        # HX7-fix2 (4): a random world whose boat stopped for a vessel that does NOT give way is the explicit class
+        # "unavoidable": evidenced by the planner's U13 STOP + the AURIX's DRIVER DECISION alarm + a standstill in HOLD;
+        # its precondition is RUN / SLOW seen + that evidence (never silently dropped: the class is reported)
+        u13 = [q[0] for q in S_ if len(q) > 19 and q[19] and "NOT GIVING WAY - STOP" in (q[14] or "")]
+        dd = [q[0] for q in S_ if len(q) > 18 and q[18] & 0x1000000]
+        hold = [q[0] for q in S_ if q[5] == "HOLD" and q[4] < 0.5]
+        if u13 and xmax < 25.0:
+            out["class"] = "unavoidable"
+            r.append(("P1u class UNAVOIDABLE: U13 STOP + DRIVER DECISION + standstill (the boat stopped for a vessel "
+                      "not giving way before 25 m)", ran and bool(dd) and bool(hold),
+                      "U13 at %s s, DRIVER DECISION at %s s, standing at %s s" % (u13[0], dd[0] if dd else None,
+                                                                                 hold[0] if hold else None)))
+        else:
+            out["class"] = "normal"
+    need_x = 0.0 if out.get("class") == "unavoidable" else float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
     r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
               "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
     fired = {e[1] for e in ep.events}
@@ -290,9 +318,15 @@ def evaluate(spec, ep, out):
                   "throttle above 1 %%: %s" % ([(q[0], q[16]) for q in idle[:1]],)))
     if "camera_only" in ex or "ais_only" in ex:
         t_f = ex.get("camera_only", ex.get("ais_only"))
-        turned = [s for s in S_ if s[0] > t_f + 3.0 and abs(s[2]) > 2.5 and s[5] in ("RUN", "SLOW")]
+        def ymed(i):
+            # the boat's position here is the simulated AURIX's 1 Hz GPS estimate: one fix may jump 3 m sideways
+            # (H17: 0.8 -> 3.1 -> -0.6 m in 1.2 s at 2.8 kn - no boat moves so); a TURN = the mean over 3 s
+            w = [q[2] for q in S_ if abs(q[0] - S_[i][0]) <= 1.5]
+            return abs(sum(w) / len(w))
+        turned = [S_[i][:8] for i, s in enumerate(S_) if s[0] > t_f + 3.0 and s[5] in ("RUN", "SLOW") and
+                  ((len(s) > 20 and s[20]) or ymed(i) > 2.5)]
         slowed = any(s[5] in ("SLOW", "HOLD") and s[0] > t_f for s in S_)
-        r.append(("E never a turn for a camera / AIS-only object (lateral offset < 2.5 m)", not turned,
+        r.append(("E never a turn for a camera / AIS-only object (no planner turn, |3 s mean offset| < 2.5 m)", not turned,
                   "turned %s" % (turned[:1],) if turned else "straight"))
         r.append(("E ... but it slows / stops", slowed, "slow or hold seen: %s" % slowed))
     return r
