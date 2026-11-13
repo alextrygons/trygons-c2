@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.." || exit 1
 PY=${PYTHON:-/c/msys64/ucrt64/bin/python.exe}
 [ -x "$PY" ] || PY=python
 fail=0
-STAGES="docs firmware station academy gateway-misc gateway"
+STAGES="docs firmware station academy gateway-misc gateway harbour"
 STAGE_LIMIT_S=${TRYGONS_STAGE_LIMIT_S:-2700}
 
 # CL3 (W10 / W11): no stray process. tools/strays.py knows THIS project's processes (python / pythonw, autopilot_sim,
@@ -463,6 +463,21 @@ echo "== gateway tests"
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named
 strays_check "test_gateway"
     stage_end gateway
+}
+
+# ---- stage harbour (HX7): the harbour scenario library H1-H20 + a randomized storm, END TO END against the real
+# autopilot_sim + the real gateway modules (tests/harbour/; ~12 + ~14 min with 4 parallel episodes, each in a kill-on-close job)
+stage_harbour() {
+    stage_begin harbour
+echo "== harbour scenarios (HX7): H1-H20 (+ H3n) end to end, the common criteria C1-C6 + each scenario's own"
+( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py all --jobs 4 > "$TEMP/harbour_scen.txt" 2>&1 ) || { echo "HARBOUR SCENARIOS FAILED (see $TEMP/harbour_scen.txt)"; fail=1; }
+grep -E "^\[FAIL\]|^       FAIL|harbour scenarios:" "$TEMP/harbour_scen.txt"
+strays_check "harbour_scenarios"
+echo "== harbour end-to-end storm (HX7): 30 seeded random worlds against the real simulator"
+( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py storm --episodes 30 --seed 1 --jobs 4 > "$TEMP/harbour_e2e_storm.txt" 2>&1 ) || { echo "HARBOUR E2E STORM FAILED (see $TEMP/harbour_e2e_storm.txt)"; fail=1; }
+grep -E "^\[FAIL\]|^       FAIL|harbour scenarios:" "$TEMP/harbour_e2e_storm.txt"
+strays_check "harbour_e2e_storm"
+    stage_end harbour
 }
 
 # ---- driver
