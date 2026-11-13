@@ -91,6 +91,50 @@ def free_port():
 TG.free_port = free_port
 
 
+class Truth:
+    """HX7-fix3 (owner answer 1): the simulator's TRUE boat position (sim_server.c TRYGONS_SIM_TRUTH, a line every
+    100 ms of simulated time: t_ms lat lon heading kn). latest() = (x, y, hdg, kn) or None when no line arrived in the
+    last TRUTH_STALE_S of wall time (never an old value as the truth)."""
+    TRUTH_STALE_S = 1.0
+
+    def __init__(self, path):
+        self.path = path
+        self.f = None
+        self.buf = ""
+        self.last = None
+        self.t_rx = 0.0
+
+    def latest(self):
+        if self.f is None:
+            try:
+                self.f = open(self.path, "r", encoding="ascii")
+            except OSError:
+                return None
+        chunk = self.f.read()
+        if chunk:
+            self.buf += chunk
+            lines = self.buf.split("\n")
+            self.buf = lines.pop()
+            for ln in reversed(lines):
+                p = ln.split()
+                if len(p) == 5:
+                    try:
+                        x, y = xy(float(p[1]), float(p[2]))
+                        self.last = (x, y, float(p[3]), float(p[4]))
+                        self.t_rx = time.time()
+                        break
+                    except ValueError:
+                        continue
+        if self.last is None or time.time() - self.t_rx > self.TRUTH_STALE_S:
+            return None
+        return self.last
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
+
 class RigSim(Sim):
     """autopilot_sim in its OWN working folder (the nv / sd files of parallel episodes never meet)."""
 
@@ -98,8 +142,12 @@ class RigSim(Sim):
         self.port = free_port()
         self.speed = speed
         self.out = open(os.path.join(cwd, "sim.log"), "w")
+        # HX7-fix3 (owner answer 1): the simulator writes its world's TRUE boat position (100 ms) to this file
+        self.truth_path = os.path.join(cwd, "truth.txt")
+        env = dict(os.environ, TRYGONS_SIM_TRUTH=self.truth_path)
         self.p = TG.subprocess.Popen([TG.EXE, "server", str(self.port), str(speed)] + list(args), cwd=cwd,
-                                     stdout=self.out, stderr=TG.subprocess.STDOUT, stdin=TG.subprocess.DEVNULL)
+                                     stdout=self.out, stderr=TG.subprocess.STDOUT, stdin=TG.subprocess.DEVNULL,
+                                     env=env)
         TG._SIMS.append(self)
         for _ in range(100):
             try:
@@ -179,6 +227,8 @@ class Episode:
         self.stick = {"x": 0.0, "lever": 0.5, "confirm": False}
         self.resumes = 0
         self.last_resume = 0.0
+        self.truth = None               # HX7-fix3: the simulator's true position (Truth)
+        self.stops = []                 # HX7-fix3: every planner STOP with its blockers matched to the world truth
 
     # -------------------------------------------------------------- set-up
     def setup(self):
@@ -190,6 +240,7 @@ class Episode:
         self.world = simworld.World.load(wf)
         os.makedirs(os.path.join(self.tmp, "simcwd"))
         self.sim = RigSim(os.path.join(self.tmp, "simcwd"), 1.0, "nojoy")
+        self.truth = Truth(self.sim.truth_path)
         self.link, self.w = self.sim.station()
         root = os.path.join(self.tmp, "ssd")
         os.makedirs(root)
@@ -383,6 +434,7 @@ class Episode:
                 if k not in min_gap or gg < min_gap[k][0]:
                     min_gap[k] = (gg, o["speed"] > 0.2, st.get("harb_state_name"))
             mode = (self.g.telem or {}).get("mode_name")
+            tr = self.truth.latest() if self.truth is not None else None      # HX7-fix3: the TRUE position
             allg = [(o["id"], round(hull_gap(x, y, o), 1), o["speed"] > 0.2) for o in truth]
             tel = self.g.telem or {}
             self.samples.append((round(t, 2), x, y, hdg, sog, st.get("harb_state_name"), st.get("harb_xte_m"), mode,
@@ -390,7 +442,9 @@ class Episode:
                                  st.get("harb_kn"), st.get("harb_why"), ((self.g.hplan.dec or {}).get("text_en") or "")[:70],
                                  tel.get("ll_state"), tel.get("throttle"), allg, int(tel.get("alarm_bits") or 0),
                                  list((self.g.hplan.dec or {}).get("not_yielding") or []),
-                                 bool((self.g.hplan.dec or {}).get("turn"))))
+                                 bool((self.g.hplan.dec or {}).get("turn")),
+                                 tr,                                                       # [21] TRUE (x, y, hdg, kn)
+                                 [(o["id"], round(hull_gap(tr[0], tr[1], o), 1)) for o in truth] if tr else None))  # [22]
             # a HOLD in the first 25 m from a HOST-LOAD transient ("planner cycle late" U4 / the tracker overload / the lease
             # lapsed while episodes share the PC) is the captain's RESUME once the planner says clear (what a person does);
             # counted + reported as an event, only before 25 m of progress, at most 6 times
@@ -401,6 +455,25 @@ class Episode:
                 bl = [(b, (trk.get(b) or {}).get("src"), (trk.get(b) or {}).get("steer_ok"),
                        round((trk.get(b) or {}).get("speed") or 0.0, 2)) for b in dd.get("blockers") or []]
                 self.events.append((round(t, 1), "planner STOP: %s | blockers %s" % (rs[:90], bl[:4])))
+                # HX7-fix3 (owner answer 3): the STOP's evidence - every blocker TRACK matched against the world truth
+                # (the nearest real object to the track's position, centre to centre, and that object's hull gap)
+                tr0 = tr
+                bx, by = (tr0[0], tr0[1]) if tr0 else (x, y)
+                ev = {"t": round(t, 2), "reason": rs[:120], "x": round(bx, 1), "true_pos": tr0 is not None,
+                      "blockers": []}
+                for b in dd.get("blockers") or []:
+                    q = trk.get(str(b))
+                    if not q or q.get("lat") is None:
+                        ev["blockers"].append({"id": str(b), "track": False})
+                        continue
+                    qx, qy = xy(q["lat"], q["lon"])
+                    near = min(((math.hypot(qx - o.get("x", 0.0), qy - o.get("y", 0.0)), o) for o in truth
+                                if o["kind"] != "pier"), default=(999.0, None), key=lambda a: a[0])
+                    ev["blockers"].append({"id": str(b), "track": True, "src": q.get("src"),
+                                           "steer_ok": bool(q.get("steer_ok")), "tx": round(qx, 1), "ty": round(qy, 1),
+                                           "match": near[1]["id"] if near[1] else None, "match_d": round(near[0], 1),
+                                           "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None})
+                self.stops.append(ev)
             self._last_stop = rs
             if (self.g.hplan.dec or {}).get("not_yielding") and "NOT GIVING WAY - STOP" in (
                     (self.g.hplan.dec or {}).get("text_en") or ""):
@@ -445,7 +518,8 @@ class Episode:
                    lambda: self.alice and self.alice.close(),
                    lambda: self.link and self.link.stop(),
                    lambda: self.gw and self.gw.stop(),
-                   lambda: self.sim and self.sim.stop()):
+                   lambda: self.sim and self.sim.stop(),
+                   lambda: self.truth and self.truth.close()):
             try:
                 fn()
             except Exception:

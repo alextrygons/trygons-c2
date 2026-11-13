@@ -441,6 +441,15 @@ int sim_server(int port, double speed, bool usb, uint32_t gw_baud)
 
     double t0 = wall_s();
     uint32_t next_print = 0u;
+    /* HX7-fix3 (test harness only): TRYGONS_SIM_TRUTH=<file> = the simulated world's TRUE boat position every
+     * 100 ms of simulated time (sim time ms, lat, lon, heading, speed kn), for the harbour scenario rig's
+     * criteria (never the 1 Hz GPS estimate). Not set = nothing written; the boat's code never sees it. */
+    FILE *truth = NULL;
+    uint32_t next_truth = 0u;
+    {
+        const char *tp = getenv("TRYGONS_SIM_TRUTH");
+        if (tp && tp[0]) truth = fopen(tp, "w");
+    }
     for (;;) {
         ep_poll_in(&gs, x);
         ep_poll_in(&gw, x);
@@ -453,6 +462,13 @@ int sim_server(int port, double speed, bool usb, uint32_t gw_baud)
         ep_flush_out(&gs);
         ep_flush_out(&gw);
 
+        if (truth && x->t >= next_truth) {
+            double la, lo;
+            next_truth = x->t + 100u;
+            world_latlon(&x->w, &la, &lo);
+            fprintf(truth, "%lu %.9f %.9f %.2f %.3f\n", (unsigned long)x->t, la, lo, x->w.heading_deg, x->w.speed_kn);
+            fflush(truth);
+        }
         if (x->t >= next_print) {
             next_print = x->t + 10000u;
             sb_status_t st = sb_status(&x->sb);
