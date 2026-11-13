@@ -198,6 +198,9 @@ class Gateway:
             self.stations.ext[k] = fn
         # U4: telemetry to the stations, the flight logs, the UAV video (MediaMTX uav_1..6 + the ring tracks UAV-n in
         # every SAVE / KEEP; a station pulls only the UAV streams open on its screens)
+        self.hview_subs = set()                              # step HX6: stations that asked for harbour_view
+        self.stations.ext["harbour_route"] = self.harbour_route_msg
+        self.stations.ext["harbour_view_on"] = self.harbour_view_msg
         for k, fn in (("uav_telem_on", self.uav.telem_msg), ("uav_logs", self.uav.logs_msg),
                       ("uav_log", self.uav.logs_msg), ("uav_view", self.cams.uav_view_request)):
             self.stations.ext[k] = fn
@@ -352,6 +355,82 @@ class Gateway:
         """The navigation request applies like in AUTO: AUTO, or a DP TRIP (CLAUDE.md P; the AURIX's nav_applies)."""
         return o.get("mode") == proto.MODE_AUTO or (o.get("mode") == proto.MODE_DP and o.get("dp_sub") == proto.DP_TRIP)
 
+    def harbour_route_check(self, wps, corr_m):
+        """A harbour route (CLAUDE.md Z, step HX6): the centre line AND both corridor edges (+-corr_m, default the
+        gateway's harbour "corr_m" 10 m) must be deep enough on the charts - NO 50 m clearance (a harbour route
+        runs close to the quay by nature; the planner / the AURIX keep the boat in the corridor) - and inside the
+        geofence. No charts = refused (no data = shallow). -> None or (code, English text): 114 shallow, 120 fence,
+        129 corridor."""
+        import math as _m
+        hc = self.cfg.get("harbour") if isinstance(self.cfg.get("harbour"), dict) else {}
+        corr = float(corr_m if corr_m is not None else hc.get("corr_m", 10.0))
+        if not (_m.isfinite(corr) and 4.0 <= corr <= 30.0):
+            return 129, "corridor half-width %s m outside 4..30 m" % corr_m
+        ch = self.shallow.charts
+        if not ch:
+            return 114, "no depth charts on the gateway (no data = shallow)"
+        lim = self.shallow.limit()
+        for k in range(len(wps) - 1):
+            a, b = wps[k], wps[k + 1]
+            bad = ch.check_leg(a[0], a[1], b[0], b[1], lim, 0.0, step_m=10.0)
+            if bad:
+                return 114, "leg WP%d -> WP%d: %s at %.5f %.5f (%.0f m along the leg)" % (k + 1, k + 2, bad[4], bad[1],
+                                                                                          bad[2], bad[0])
+            ky = 111320.0
+            kx = ky * _m.cos(_m.radians((a[0] + b[0]) / 2.0))
+            dx, dy = (b[1] - a[1]) * kx, (b[0] - a[0]) * ky
+            n = _m.hypot(dx, dy)
+            if n < 1e-6:
+                continue
+            ox, oy = -dy / n * corr, dx / n * corr         # the left normal x corr (metres)
+            for sgn, side in ((1.0, "left"), (-1.0, "right")):
+                la1, lo1 = a[0] + sgn * oy / ky, a[1] + sgn * ox / kx
+                la2, lo2 = b[0] + sgn * oy / ky, b[1] + sgn * ox / kx
+                bad = ch.check_leg(la1, lo1, la2, lo2, lim, 0.0, step_m=10.0)
+                if bad:
+                    return 129, "corridor (%s edge, +-%.0f m) of leg WP%d -> WP%d: %s at %.5f %.5f" % (
+                        side, corr, k + 1, k + 2, bad[4], bad[1], bad[2])
+        why = self.geofence.check(wps)
+        if why:
+            return 120, why
+        return None
+
+    def harbour_route_msg(self, st, m):
+        """{"t": "harbour_route", "op": "check", "wps": [{lat, lon, kn}], "corr_m"} -> {"t": "harbour_ack", "ok", "code",
+        "why"} (HX6). READ ONLY: it stores nothing and sends nothing to the AURIX."""
+        import math as _m
+        ok, code, why = False, 129, "bad request"
+        try:
+            wl = m.get("wps")
+            pts = [(float(w["lat"]), float(w["lon"])) for w in wl] if isinstance(wl, list) else []
+            if not 2 <= len(pts) <= 50:
+                why = "2..50 waypoints needed (have %d)" % len(pts)
+            elif not all(_m.isfinite(la) and _m.isfinite(lo) and abs(la) <= 90 and abs(lo) <= 180 for la, lo in pts):
+                why = "bad coordinates"
+            else:
+                r = self.harbour_route_check(pts, m.get("corr_m"))
+                ok, code, why = (True, 0, "OK") if r is None else (False, r[0], r[1])
+        except (TypeError, ValueError, KeyError):
+            pass
+        st.send({"t": "harbour_ack", "ok": ok, "code": code, "why": why, "op": m.get("op"), "seq": m.get("seq")})
+
+    def harbour_view_msg(self, st, m):
+        (self.hview_subs.add if m.get("on", True) else self.hview_subs.discard)(st.id)
+
+    def harbour_view_push(self):
+        """harbour_view (2.5 Hz) to the stations that asked: the fused tracks (compact) + the planner's decision. A
+        read-only copy of what the gateway already holds; nothing in it is ever sent to the AURIX."""
+        if not self.hview_subs or not getattr(self.harbour, "enabled", False):
+            return
+        msg = {"t": "harbour_view", "t_s": round(time.time(), 2), "tracks": self.harbour.view_tracks(),
+               "plan": self.hplan.view()}
+        for sid in list(self.hview_subs):
+            st = self.stations.stations.get(sid)
+            if st is None:
+                self.hview_subs.discard(sid)
+                continue
+            st.send(msg)
+
     def check_prog(self, st, ftype, payload):
         """Program upload / AUTO start / AUTO return / DP TRIP start through the gateway: refused across shallow
         water (114) or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
@@ -363,7 +442,8 @@ class Gateway:
                 self.hplan.note_start()                     # the planner's kind-4 pre-start window (HX5 review MED-2)
             return None
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
-            st.prog_up = {"n": payload[0], "wps": {}}
+            st.prog_up = {"n": payload[0], "wps": {},
+                          "harbour": len(payload) >= 3 and bool(payload[2] & 1)}     # HX2 flag byte (HX6: a harbour route)
         elif ftype == proto.T_PROG_WP and len(payload) >= 18 and getattr(st, "prog_up", None):
             i, la, lo, kn = _st.unpack_from("<Biif", payload)
             st.prog_up["wps"][i] = (la / 1e7, lo / 1e7)
@@ -371,7 +451,14 @@ class Gateway:
         elif ftype == proto.T_PROG_COMMIT and getattr(st, "prog_up", None):
             up = st.prog_up
             wps = [up["wps"][k] for k in sorted(up["wps"])]
-            bad = self.shallow.check_program(wps)
+            if up.get("harbour"):                           # step HX6: a harbour route = the corridor check, no 50 m clearance
+                hb = self.harbour_route_check(wps, None)
+                if hb:
+                    self.audit("program_refused", station=st.id, user=st.user, why=hb[1], harbour=True)
+                    return hb
+                bad = None
+            else:
+                bad = self.shallow.check_program(wps)
             if bad:
                 self.audit("program_refused", station=st.id, user=st.user, why=bad[0])
                 return bad[0]
@@ -851,6 +938,13 @@ class Gateway:
                     self.nav_tick()                         # step HX5: the kind-4 request at 5 Hz (lease 1 s)
             except Exception:
                 log.exception("harbour planner")
+            try:
+                n = getattr(self, "_hview_n", 0) + 1
+                self._hview_n = n
+                if n % 2 == 0:
+                    self.harbour_view_push()                # step HX6: 2.5 Hz display copy (read only)
+            except Exception:
+                log.exception("harbour view")
             await asyncio.sleep(0.2)
 
     async def uav_loop(self):

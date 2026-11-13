@@ -707,6 +707,21 @@ class HarbourPlanner:
                 "alarm": int(req.get("alarm") or 0), "hflags": hf, "nearest_m": dec["nearest_m"],
                 "n_tracks": dec["n_tracks"], "lease_ms": int(self.planner.c["lease_ms"])}
 
+    def view(self):
+        """The decision as the stations draw it (HX6, read only): the AURIX state, the planner's heading / cap /
+        explanation keys (harb.why_*), the unsure list - nothing the planner decides changes."""
+        d = self.dec or {}
+        st = self.stat or {}
+        return {"state": st.get("harb_state"), "state_name": st.get("harb_state_name"), "why": st.get("harb_why"),
+                "why_text": st.get("harb_why_text"), "kn": st.get("harb_kn"), "corr_m": st.get("harb_corr_m"),
+                "xte_m": st.get("harb_xte_m"), "route": st.get("harb_route"), "entry_ok": st.get("harb_entry_ok"),
+                "lease": st.get("harb_lease"), "grace": st.get("harb_grace"),
+                "grace_left_s": st.get("harb_grace_left_s"), "max_kn": st.get("harb_max_kn"),
+                "stat_fresh": self.stat_fresh(), "stop": d.get("stop"), "heading": d.get("heading"),
+                "cap_kn": d.get("cap_kn"), "why_key": d.get("why"), "text_el": d.get("text_el"),
+                "text_en": d.get("text_en"), "colregs": d.get("colregs"), "turn": d.get("turn"),
+                "unsure": list(d.get("reasons") or [])[:6], "hflags": d.get("hflags")}
+
     def status(self):
         d = self.dec or {}
         return {"active": self.dec is not None, "stat": {k: (self.stat or {}).get(k) for k in

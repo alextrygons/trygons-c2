@@ -275,6 +275,9 @@ class MapView:
             self.draw_points(c, P, th, f_small)
             self.draw_pattern(c, P, th, f_small)
         self.draw_asked_routes(c, P, th, f_small)
+        if getattr(a, "harbour_model", None) is not None or getattr(a, "harbour_preview", None):
+            import harbourmap                                # HX6: corridor / tracks / planned path (display only)
+            harbourmap.draw(c, P, a, th, f_small, w, h, k=max(1.0, theme.unit(w, h)))
         pk = getattr(a, "track_pick", None)
         if pk:
             x, y = P(pk["lat"], pk["lon"])

@@ -428,6 +428,23 @@ class HarbourSensors:
         """The fused tracks (tracker.py) - the planner's (HX5) input."""
         return self.tracker.tracks_out()
 
+    def view_tracks(self, limit=60):
+        """The fused tracks as the stations draw them (HX6, read only): position, motion, class, confidence, the
+        sources that saw it, steer_ok (= range_ok), static - nearest to the boat first, at most `limit`."""
+        out = []
+        for t in self.tracker.tracks_out():
+            if t.get("lat") is None:
+                continue
+            out.append({"id": t["id"], "lat": round(t["lat"], 6), "lon": round(t["lon"], 6), "speed": t["speed"],
+                        "course": t["course"], "cls": t["cls"], "conf": t["conf"], "src": t["src"],
+                        "steer_ok": bool(t["steer_ok"]), "static": bool(t["static"]),
+                        "confirmed": bool(t["confirmed"]), "len_m": t["len_m"], "sd_m": t["sd_m"],
+                        "mmsi": t["mmsi"], "_d": t["x"] * t["x"] + t["y"] * t["y"]})
+        out.sort(key=lambda t: t["_d"])
+        for t in out:
+            del t["_d"]
+        return out[:limit]
+
     def tracker_flags(self):
         """The planner's unsure inputs (design 7.4): explicit flags, never hidden."""
         f = dict(self.tracker.flags() or {})

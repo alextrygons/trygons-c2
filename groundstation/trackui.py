@@ -51,6 +51,7 @@ class TracksWindow:
         for key, fn, kind in (("show", self.show, "ok"), ("hide", self.hide, "normal"),
                               ("remove", self.remove, "normal"), ("export", self.export, "normal"),
                               ("export_live", self.export_live, "normal"), ("import", self.import_gpx, "normal"),
+                              ("harbour", self.harbour_route, "normal"),
                               ("close", self.close, "normal")):
             bt = tk.Button(b, text=T("track.btn_" + key), command=fn, **theme.button_opts(kind))
             bt.pack(side="left", padx=(0, 6), pady=4)
@@ -90,6 +91,13 @@ class TracksWindow:
             return list(self.tree.selection())
         except tk.TclError:
             return []
+
+    def harbour_route(self):
+        """HARBOUR ROUTE (HX6): the selected saved track -> a checked harbour route (teach and repeat)."""
+        sel = self.selected()
+        win = self.app.harbour_route_window()
+        if sel:
+            win.set_track(sel[0])
 
     def say(self, text, bad=False):
         self.msg.configure(text=text, fg=C["bad_txt"] if bad else C["fg"])

@@ -35,7 +35,7 @@ def check(prog, max_kn=25.0):
 
 def upload_frames(prog):
     """(type, payload) list to send, in order."""
-    out = [(proto.T_PROG_BEGIN, proto.p_prog_begin(len(prog["wps"]), prog["final"]))]
+    out = [(proto.T_PROG_BEGIN, proto.p_prog_begin(len(prog["wps"]), prog["final"], prog.get("flags", 0)))]
     for i, w in enumerate(prog["wps"]):
         out.append((proto.T_PROG_WP, proto.p_prog_wp(i, w["lat"], w["lon"], w["kn"], w["radius"], w["action"])))
     out.append((proto.T_PROG_COMMIT, b""))

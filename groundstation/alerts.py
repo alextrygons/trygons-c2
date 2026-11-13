@@ -67,6 +67,7 @@ ALARM_LEVELS = {
     0x10 << 32: ("dp_overpower", CAUTION),
     0x20 << 32: ("can_node", WARNING),          # DroneCAN: a required node lost -> STANDBY (step 11d)
     0x40 << 32: ("can_bus", WARNING),           # DroneCAN: bus fault / our node ID 10 on the bus -> STANDBY
+    0x100 << 32: ("harbour_stop", WARNING),     # step HX6: the harbour autonomy stopped itself (unplanned): driver decision
     0x80 << 32: ("geofence", WARNING),          # step 13q2c: UNCREWED HDG LOCK left the geofence -> STANDBY
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
@@ -131,6 +132,18 @@ def override_texts(d):
         to = "%.0f %%" % (tgt / 10.0) if tgt is not None and tgt != 0xFFFF else "-"
         out.append(("sovr_lever", i18n.T("sovr.lever_wait", to=to), "caution"))
     return out
+
+
+def harbour_banner(m):
+    """The harbour autonomy banner for both screens (step HX6), DISPLAY ONLY: (tag, text, level) or None. m =
+    harbourview.model(); shown while the AURIX runs the harbour mode (RUN / SLOW / HOLD) - never red (the alarm HARBOUR STOP
+    is the alarm), HOLD = caution."""
+    if not m or not m.get("running"):
+        return None
+    st = i18n.T("harb.st_" + m["state"].lower())
+    why = (m.get("why") or "").strip()
+    text = i18n.T("harb.banner", state=st, why=why) if why else i18n.T("harb.banner_nowhy", state=st)
+    return ("harbour", text, "caution" if m["state"] == "HOLD" else "harbour")
 
 
 # W79 (owner 2026-11-05): the AURIX's joystick centre tolerance (app/joystick.c center_tol default 0.10; the shore

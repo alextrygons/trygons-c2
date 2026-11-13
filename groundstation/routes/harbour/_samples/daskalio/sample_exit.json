@@ -1,0 +1,59 @@
+{
+ "format": 1,
+ "harbour": "daskalio",
+ "name": "sample_exit",
+ "corr_m": 10.0,
+ "flags": 1,
+ "final": 0,
+ "cut_start_m": 15.0,
+ "cut_end_m": 15.0,
+ "tol_m": 2.0,
+ "source": "invented test geometry",
+ "not_for_navigation": true,
+ "placeholder": true,
+ "note": "TEST SAMPLE for the station tool + tests: invented points near the demo origin, NOT surveyed, NOT a chart, never sent to a boat.",
+ "wps": [
+  {
+   "lat": 37.82,
+   "lon": 23.6,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 0
+  },
+  {
+   "lat": 37.8202,
+   "lon": 23.6004,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 0
+  },
+  {
+   "lat": 37.8206,
+   "lon": 23.6008,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 0
+  },
+  {
+   "lat": 37.8211,
+   "lon": 23.601,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 0
+  },
+  {
+   "lat": 37.8217,
+   "lon": 23.6013,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 0
+  },
+  {
+   "lat": 37.8224,
+   "lon": 23.6018,
+   "kn": 3.0,
+   "radius": 6.0,
+   "action": 2
+  }
+ ]
+}

@@ -53,3 +53,7 @@ voice_raw/
 groundstation/assistant/log/
 groundstation/sar/
 groundstation/trends/log/
+
+# the user's harbour routes of this PC (teach and repeat, HX6); the committed TEST samples live in _samples/
+groundstation/routes/harbour/*
+!groundstation/routes/harbour/_samples/

@@ -671,7 +671,10 @@ def p_joy_cal(action):
     return struct.pack("<B", action)
 
 
-def p_prog_begin(n, final_action=0):
+def p_prog_begin(n, final_action=0, flags=0):
+    """PROG_BEGIN: n, final action [, flags (step HX2/HX6: b0 = PROG_F_HARBOUR; the 3rd byte only when set)]."""
+    if flags:
+        return struct.pack("<BBB", n, final_action, flags & 0xFF)
     return struct.pack("<BB", n, final_action)
 
 

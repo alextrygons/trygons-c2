@@ -529,6 +529,40 @@ def force_trends(se):
     return undo
 
 
+def force_harbour(se):
+    """The harbour panel in the TOUR picture (step HX6): it appears only while a harbour route / mode exists - here a canned
+    picture (the committed Daskalio TEST sample route, a fixed RUN state with two tracks), display only, nothing is sent
+    (the model is replaced in this process only). Returns the undo."""
+    import time as _t
+    import harbourroute
+    import harbourview
+    ap = se.ap
+    orig = ap.harbour_state
+    route = harbourroute.load(os.path.join(harbourroute.SAMPLES_DIR, "daskalio", "sample_exit.json"))
+    gwh = {"enabled": True, "sensors": {"radar": {"state": "OK"}, "lidar": {"state": "OK"}}, "tracker": {"unsure": []},
+           "planner": {"stat_fresh": True}}
+
+    def tr(i, src, steer):
+        return {"id": i, "lat": 37.8201 + 0.0001 * i, "lon": 23.6004, "speed": 1.2, "course": 80.0, "cls": "vessel",
+                "conf": 0.8, "src": src, "steer_ok": steer, "static": False}
+
+    def fake():
+        v = {"t": "harbour_view", "_rx": _t.time() + 1e6, "tracks": [tr(1, "R", True), tr(2, "C", False)],
+             "plan": {"state_name": "RUN", "stat_fresh": True, "kn": 3.0, "corr_m": 10.0, "xte_m": 1.2, "route": True,
+                      "entry_ok": True, "max_kn": 5.0, "stop": False, "heading": 60.0, "cap_kn": 3.0,
+                      "text_el": "ΔΙΑΔΡΟΜΟΣ ΕΛΕΥΘΕΡΟΣ", "text_en": "ROUTE CLEAR", "unsure": [], "hflags": 0}}
+        ap.harbour_view = v
+        ap.harbour_model = harbourview.model(gwh, v, _t.time(), se.i18n.lang())
+        return ap.harbour_model
+    ap.harbour_state = fake
+    ap.harbour_route = route
+
+    def undo():
+        ap.harbour_state = orig
+        ap.harbour_route = ap.harbour_view = ap.harbour_model = None
+    return undo
+
+
 def trend_shots(se):
     """docs/screens/trends/: screen 2's open panel (acceleration graph) and screen 1's edge strip, el + en (PrintWindow
     pictures of the station's own windows). Called inside tour_shots (the panel is forced open there)."""
@@ -630,6 +664,7 @@ def tour_shots(se):
            "made": time.strftime("%Y-%m-%d %H:%M"), "signature": tourshots.signature(tour), "shots": {}}
     undo_hud, undo_ban, undo_asst = force_hud(se), force_banner(se), force_assistant(se)
     undo_trends = force_trends(se)
+    undo_harbour = force_harbour(se)
     try:
         trend_shots(se)
         for lang in ("el", "en"):
@@ -643,6 +678,7 @@ def tour_shots(se):
         undo_ban()
         undo_asst()
         undo_trends()
+        undo_harbour()
         se.i18n.set_lang("el")
     with open(os.path.join(TOUR_OUT, "shots.json"), "w", encoding="utf-8") as f:
         json.dump(man, f, indent=1, ensure_ascii=False)

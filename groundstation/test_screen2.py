@@ -710,7 +710,8 @@ def s9_look(rig):
     ap = rig.ap
     found = []
     for fn in ("app.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "overlay.py", "crewui.py", "soundtest.py",
-               "splash.py", "about.py", "trackui.py", "track.py"):
+               "splash.py", "about.py", "trackui.py", "track.py", "harbourview.py", "harbourmap.py", "harbourpanel.py",
+               "harbourroute.py"):
         for n, line in enumerate(open(os.path.join(HERE, fn), encoding="utf-8"), 1):
             if LITERAL.search(line):
                 found.append("%s:%d" % (fn, n))
@@ -793,7 +794,7 @@ ALLOWED = {"STANDBY", "AUTO", "ADS-B", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG"
            "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN",  # (13n3 GPX)
            "Windows", "Stefanos", "Microsoft",
            "ArduPilot", "MAVLink", "sysid", "UAV-", "mAh", "Mission", "Planner",   # X1: the product name "Mission Planner" in the .tlog button
-           "JOYSTICK", "GUIDED"}  # (U5: the owner's banner «JOYSTICK → UAV n»; GUIDED = an ArduPilot mode name)
+           "JOYSTICK", "GUIDED", "COLREGs", "LiDAR", "REMOTE", "STOP"}   # (HX6: the collision rules, the sensor, the mode name, the button)  # (U5: the owner's banner «JOYSTICK → UAV n»; GUIDED = an ArduPilot mode name)
            #  # (U2: the drones' autopilot / protocol / id, a drone's default name  # (13o: the Windows voice, a product + voice name)
 
 

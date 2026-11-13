@@ -38,6 +38,7 @@ CONTENTS
   24. Aircraft near the UAVs (ADS-B) - receive only
   25. The SAR demo - a scripted search-and-rescue show (DEMO_SAR.bat)
   26. Trends - the boat's values as graphs over time (screen 2 panel, screen 1 strip)
+  27. Harbour autonomous driving - what the screen shows and what you do
 
 
 -------------------------------------------------------------------------------
@@ -4611,4 +4612,98 @@ academy. They read files only and send nothing.
 REMEMBER. The graphs keep the last 60 minutes in the PC's memory. A new
 connection or a restart of the boat starts them empty. Nothing is written to a
 file for the graphs themselves.
+===============================================================================
+
+===============================================================================
+27. HARBOUR AUTONOMOUS DRIVING - what the screen shows and what you do (step HX6)
+-------------------------------------------------------------------------------
+What it is: in a harbour the boat can follow a CHECKED harbour route by itself,
+inside a corridor around the route, slowly (5 kn at most), and it slows or stops
+for anything it is not sure about. YOU supervise it. Berthing, and the first
+metres away from the quay, are always done by hand: the route never starts or
+ends at the quay (see "THE ROUTE" below). This chapter is about what the station
+SHOWS and the buttons you press; the planner and the safety rules are in the
+design notes. The station only displays and sends requests: STOP, PAUSE, START and
+TAKE OVER use the same request paths as every other mode.
+
+DEFAULTS (parameters, not promises). Speed at most 5 kn. The route's corridor is
++-10 m around it. The planner keeps at least 15 m from a moving vessel and 8 m
+from a fixed object, hull to hull. These are the starting values of the boat's
+parameters; the boat's own limits (the AURIX) are the ceiling and can be lower.
+
+THE PANEL «HARBOUR» (screen 2). A corner panel that appears while the boat holds a
+harbour route or the harbour mode runs. It shows: the state - RUN (following the
+route), SLOW (a cap below the route speed), HOLD (stopped: idle and neutral, the
+heading held), DONE (arrived) -; the speed cap; the corridor and your offset from
+the route's line; ONE LINE with the planner's reason ("ROUTE CLEAR", "AVOIDING AN
+OBSTACLE", "NARROW PASSAGE - slowing", "HEAD-ON - TURNING TO STARBOARD",
+"UNSURE - STOP" ...); what it is unsure about; the state of the radar and the
+LiDAR; "SENSOR DEGRADED - slow"; "GIVING WAY (COLREGs)"; and, when the link to
+the shore is lost, the seconds of the waiting time. Old data is never drawn:
+without a fresh picture from the gateway the panel says so.
+
+ON THE MAP. The route is the dashed line with the corridor as two thin lines on both
+sides. Every object the boat has detected is a symbol: the COLOUR tells which
+sensor saw it (radar, LiDAR, camera, AIS: the legend is in the panel) and the SHAPE
+tells what the boat may do about it. A filled DIAMOND = confirmed by range (radar
+or LiDAR): the boat may plan a turn around it. A hollow CIRCLE = camera, AIS or not
+confirmed yet: the boat only slows down or stops, it never turns for it. Next to
+the symbol: the sensor, the confidence in per cent and "confirmed" or "slow-only".
+A square around it = a fixed object. The dashed arrow from the boat is the planned
+path for the next 40 s; "STOP - nothing planned" means the planner holds. The two
+dotted circles around the boat are the minimum distances (8 m and 15 m). AIS does
+not show small craft: a kayak or a swimmer is only seen by the radar, the LiDAR
+and the camera - watch the water yourself.
+
+THE BUTTONS.
+  STOP (big, framed): the STANDBY request. It always works, asks nothing, and
+    ends the harbour mode: idle and neutral first, then the steering holds. The
+    STANDBY button on the boat's panel does the same and always wins.
+  PAUSE / RESUME: PAUSE stops the boat (HOLD) and keeps the route; RESUME
+    continues. PAUSE needs no approval; RESUME asks like START.
+  START: only the captain (or a single operator) starts it, with the one vertical
+    YES / NO question; a copilot's START goes to the captain's screen 1 as an
+    ACCEPT. After the YES you CONFIRM on the joystick, as for AUTO: on board when
+    the boat is CREWED, the shore joystick when it is UNCREWED. It is greyed while the
+    boat says it is not ready (no checked harbour route on the boat, the boat not
+    in a state that allows it, outside the first corridor, GPS not trusted ...).
+  TAKE OVER: CREWED: move the onboard joystick - it always wins over the
+    autopilot. UNCREWED: this sends the normal REMOTE request (the captain with the
+    manual licence; the shore joystick centred). It is not a way around any
+    rule.
+On screen 1 a line shows the state and the reason; STOP is on screen 2 and, always,
+the STANDBY button on the boat.
+
+IF SOMETHING GOES WRONG. The alarm HARBOUR STOP means the harbour mode stopped
+ITSELF for a reason that was not planned (the planner is unsure, the corridor was
+left, a sensor or the GPS or the compass was lost, the data from the shore ran out):
+the boat holds, idle and neutral, and a person must decide - read the reason in the
+panel, then TAKE OVER or RESUME. It is a red alarm like the other driver-decision
+alarms and is silenced on this PC with ACK ALARM. A planned stop (a route end, PAUSE)
+raises no alarm. If the link to the shore is lost on an UNCREWED boat the usual
+lost-link procedure runs: the boat stops, waits the grace time and, near the shore,
+or when the wait is over, the engine is stopped.
+
+THE ROUTE - TEACH AND REPEAT. A harbour route is made from a recording of YOU
+driving out of (or into) the harbour by hand: record the track as usual (TRACKS).
+Open TRACKS, select the saved track and press HARBOUR ROUTE. In the window: the
+harbour's name, the route's name, the part of the track to use (From / To in per
+cent), the cut at the ends (15 m: the first and last metres stay manual), the
+corridor half-width (10 m, 4 to 30 m) and the tolerance (2 m). MAKE simplifies the
+track to at most 50 waypoints (Douglas-Peucker), keeps every leg at least 12 m,
+gives each leg the speed you drove (at most 5 kn) and draws the result on the map
+as a PREVIEW with its corridor ("PREVIEW - not sent"). If the first or last
+waypoint is closer than 15 m to the shore, or the chart does not know, you get a
+WARNING: those metres stay manual. CHECK asks the gateway: it refuses a route
+whose centre line OR corridor edge reaches shallow water (114) or no chart data
+(also 114), that leaves the geofence (120) or whose corridor is not clear (129),
+with the reason and the place. SAVE keeps the route per harbour on this PC
+(groundstation/routes/harbour/<harbour>/<name>.json; your routes are not in git),
+LOAD brings one back. SEND works only after CHECK says OK: it is the normal route
+upload with the harbour flag (a copilot's goes to the captain's ACCEPT like every
+route) and it only STORES the route on the boat. It never starts the boat: START is
+a separate step with its own YES. The committed file for Daskalio is a TEST SAMPLE
+with invented points: it is marked "not for navigation" and can never be sent.
+A route is a recording of a manual drive, not a chart and not a guarantee: the
+planner and the boat keep to the corridor, they do not make a place safe.
 ===============================================================================

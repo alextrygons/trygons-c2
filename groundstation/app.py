@@ -89,6 +89,9 @@ import uavroute
 import trends as trendsmod                   # TR2: the trend panel «ΤΑΣΕΙΣ» - data (pure) + panel; read-only
 import trendpanel
 import trenddetect
+import harbourview                              # HX6: harbour autonomy display (pure, read-only)
+import harbourroute                             # HX6: teach and repeat (pure)
+import harbourpanel                             # HX6: the route window
 import trendlog
 import uavpics
 import ynbox
@@ -429,6 +432,12 @@ class App:
         self.camview_last = "FRONT-1"
         self.uav_store = uavmap.Store()  # U4: the drones on the map (gw_status "uav" drones + uav_telem)
         self.uav_telem_asked = False
+        self.harbour_view = None        # HX6: the newest harbour_view message (tracks + the planner's decision) + "_rx"
+        self.harbour_model = None       # HX6: harbourview.model() of the last render
+        self.harbour_route = None       # HX6: the harbour route sent / loaded (corridor drawn on the map)
+        self.harbour_preview = None     # HX6: the route being made in the HARBOUR ROUTE window (CAUTION, not sent)
+        self.harbour_asked = False
+        self.harbour_win = None
         self.uav_log_save = {}          # (name, file, fmt) -> the path chosen for an export (U4 flight logs)
         self.uav_fly = uavfly.UavFly()   # U5: which UAV this station's joystick flies (None = the boat's)
         self.uav_sender = None           # the 10 Hz uav_ctl sender while flying
@@ -845,6 +854,8 @@ class App:
         self.adsb_asked = set()
         self.uav_store.clear()                  # U4: the drones on the map belong to that boat
         self.uav_telem_asked = False
+        self.harbour_view, self.harbour_model, self.harbour_asked = None, None, False   # HX6: that boat's picture
+        self.harbour_route = self.harbour_preview = None
         self.uav_fly_stop()                     # U5: the joystick is back on (no) boat
         if self.sound:
             self.sound.reset()
@@ -3616,6 +3627,7 @@ class App:
                     self.on_can(d)
                 elif kind == "gw_status":
                     self.gw_status = d
+                    self.harbour_sync(d)
                     me = [s for s in d.get("stations", []) if s.get("id") == d.get("you")]
                     self.on_single_op(bool(me and me[0].get("single_op")))
                     self.draw_network()
@@ -3647,6 +3659,11 @@ class App:
                     self.on_sar_ack(d)
                 elif kind in ("hail_floor", "ptt_ack", "hail", "hail_signal_ack", "hail_volume_ack"):
                     self.hail.on_msg(kind, d)           # the loudhailer (step 13r)
+                elif kind == "harbour_view":
+                    d["_rx"] = time.time()
+                    self.harbour_view = d                       # HX6: 2.5 Hz display copy (read only)
+                elif kind == "harbour_ack":
+                    self.on_harbour_ack(d)
                 elif kind == "uav_ack":
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.on_ack(d)
@@ -5202,6 +5219,9 @@ class App:
                 out.append(("linktime", lt) + B["pickup"] + (None,))
             for tag, txt, lvl in override_texts(d):     # the shore stick override (step 13q3), DISPLAY ONLY
                 out.append((tag, txt) + ((theme.WHITE, theme.WARN) if lvl == "warn" else B["pickup"]) + (None,))
+        hb = alerts.harbour_banner(self.harbour_state())      # HX6: harbour autonomy RUN / SLOW / HOLD, DISPLAY ONLY
+        if hb is not None:
+            out.append((hb[0], hb[1]) + (B["harbour"] if hb[2] == "harbour" else B["pickup"]) + (None,))
         av = (self.gw_status or {}).get("avoid") or {}
         sh = av.get("shallow")
         if sh:
@@ -5265,6 +5285,7 @@ class App:
         self.panel_traffic(H)
         self.panel_relays()                 # placed by the fit test (CLAUDE.md O)
         self.panel_assistant()              # the talking manual's answer (AM5), placed by the fit test
+        self.panel_harbour()                # harbour autonomy (HX6): only while a harbour route / mode exists
         self.panel_trends()                 # the trend panel «ΤΑΣΕΙΣ» (TR2), collapsed until opened
         self.panel_sub()                    # ROUTE / MAX SPEED / GEOFENCE above bar 1, only while used (13n1)
 
@@ -6267,6 +6288,187 @@ class App:
             return self.captain_confirm(what, lambda m=msg: (m.__setitem__("confirm", "self"), send(m)),
                                         on_close=closed)
         send()
+
+    # --- harbour autonomy (step HX6, CLAUDE.md Z): supervision + the buttons; requests only -----------------------------
+    def harbour_sync(self, st):
+        """gw_status arrived: ask the gateway for the 2.5 Hz harbour picture once per connection (display copy, read only)."""
+        h = (st or {}).get("harbour") or {}
+        if h.get("enabled") and not self.harbour_asked and isinstance(self.link, GatewayLink):
+            self.harbour_asked = True
+            self.link.send_msg({"t": "harbour_view_on", "on": True})
+
+    def harbour_state(self):
+        """The model of the harbour display from the gateway's status + the newest picture (None = no harbour
+        autonomy on this gateway). Pure data (harbourview.model); cheap enough for every render."""
+        h = (self.gw_status or {}).get("harbour")
+        if not isinstance(h, dict) or not h.get("enabled"):
+            self.harbour_model = None
+            return None
+        self.harbour_model = harbourview.model(h, self.harbour_view, time.time(), i18n.lang())
+        return self.harbour_model
+
+    def harbour_relevant(self, m):
+        """Show the panel only while there is something to supervise: the mode runs / finished, the AURIX holds a
+        harbour route, or a route is loaded / being made here."""
+        return bool(m and (m["running"] or m["state"] == "DONE" or m["route"] or self.harbour_route or
+                           self.harbour_preview))
+
+    def panel_harbour(self):
+        """Screen 2's panel «ΛΙΜΕΝΑΣ» (the 13n1 look: draggable, collapsible, 3 text sizes; placed by the fit test, never
+        over the boat): the state, the speed cap, the corridor offset, the planner's one-line reason, unsure flags,
+        the sensors, the legend and the buttons: a big framed STOP (= the STANDBY request, always), PAUSE / RESUME,
+        START (the captain's YES) and TAKE OVER. DISPLAY + requests only: every button uses the existing senders."""
+        m = self.harbour_state()
+        if not self.harbour_relevant(m):
+            return
+        p = self.ov.panel("harbour", T("ov.harbour"), ("sw", "se", "nw", "ne"))
+        title = "harb.title_active" if m["running"] else "harb.title_done" if m["state"] == "DONE" else "harb.title_ready"
+        fg, fill = theme.BANNERS["harbour"]
+        p.badge(T(title), fill, fg=fg, level="small", tag="harb_title", wrap=0.24)
+        p.br()
+        st = T("harb.st_" + m["state"].lower())
+        if m["cap_kn"] is not None and m["running"]:
+            p.text(T("harb.line_state", state=st, kn="%.1f" % m["cap_kn"]), "small", tag="harb_state", wrap=0.24)
+        else:
+            p.text(T("harb.line_state_nocap", state=st), "small", tag="harb_state", wrap=0.24)
+        p.br()
+        if m["running"]:
+            corr = m["corr_m"] if m["corr_m"] is not None else 10.0
+            p.text(T("harb.line_corr", corr="%.0f" % corr, xte="%.1f" % (m["xte_m"] or 0.0)), "small", tag="harb_corr",
+                   wrap=0.24)
+            p.br()
+            p.text(T("harb.line_why", why=m["why"]) if m["why"] else T("harb.line_why_none"), "small", tag="harb_why",
+                   wrap=0.24)
+            p.br()
+            for flag, key in (("degraded", "harb.line_degraded"), ("giveway", "harb.line_giveway")):
+                if m[flag]:
+                    p.text(T(key), "small", colour=C["note_txt"], tag="harb_" + flag, wrap=0.24)
+                    p.br()
+            if m["unsure"]:
+                p.text(T("harb.line_unsure", list="; ".join(m["unsure"][:3])), "small", colour=C["note_txt"],
+                       tag="harb_unsure", wrap=0.24)
+                p.br()
+            if m["grace"]:
+                p.text(T("harb.line_grace", s="%.0f" % m["grace_left_s"]), "small", colour=C["note_txt"],
+                       tag="harb_grace", wrap=0.24)
+                p.br()
+        if not m["view_ok"]:
+            p.text(T("harb.line_nodata"), "small", colour=C["note_txt"], tag="harb_nodata", wrap=0.24)
+            p.br()
+        p.text(T("harb.line_sensors", radar=m["sensors"].get("radar") or "-", lidar=m["sensors"].get("lidar") or "-"),
+               "small", colour=C["dim"], tag="harb_sensors", wrap=0.24)
+        p.br()
+        p.text(T("harb.legend"), "small", colour=C["dim"], tag="harb_legend", wrap=0.24)
+        p.br()
+        live = bool(self.link)
+        p.button(T("harb.btn_stop"), self.harbour_stop, "standby", level="button", tag="harb_stop", enabled=live)
+        if m["running"]:
+            if m["state"] == "HOLD":
+                p.button(T("harb.btn_resume"), lambda: self.harbour_start(resume=True), "ok", level="small",
+                         tag="harb_resume", enabled=live)
+            else:
+                p.button(T("harb.btn_hold"), self.harbour_hold, "normal", level="small", tag="harb_hold", enabled=live)
+            p.button(T("harb.btn_take"), self.harbour_take_over, "info", level="small", tag="harb_take", enabled=live)
+        else:
+            p.button(T("harb.btn_start"), lambda: self.harbour_start(), "ok", level="small", tag="harb_start",
+                     enabled=live and m["entry_ok"])
+        p.br()
+
+    def harbour_stop(self):
+        """STOP = the STANDBY request through the existing path (it always wins; the AURIX ends the harbour mode, idle +
+        neutral first). Never refused here, never asks a question."""
+        self.mode(proto.MODE_STANDBY)
+        self.say(T("harb.stop_sent"), ORANGE)
+
+    def harbour_hold(self):
+        self.cmd(proto.T_HARBOUR, proto.p_harbour(proto.HARB_HOLD), TE("what.harbour_hold"))
+
+    def harbour_start(self, resume=False):
+        """START / RESUME: the captain's own YES in the vertical layout, then the request (+ the CONFIRM on the
+        joystick as for AUTO); a single operator gets the existing single-operator question inside cmd(); a copilot's
+        request goes to the captain's ACCEPT through the gateway. Never starts by itself."""
+        m = self.harbour_state() or {}
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("harb.start_refused"), RED)
+        if not m.get("entry_ok") and not resume:
+            return self.say(T("harb.not_ready_none"), RED)
+        crew = crewui.crew_of(self)[0]
+        how = harbourview.start_path(crew, self.single_op, m.get("running") and not resume, m.get("entry_ok") or resume)
+        if how == "refuse":
+            return self.say(T("harb.start_refused"), RED)
+        corr = (self.harbour_route or {}).get("corr_m") or m.get("corr_m") or 10.0
+        kn = m.get("max_kn") or 5.0
+        act = proto.HARB_RESUME if resume else proto.HARB_START
+        what = TE("what.harbour_resume" if resume else "what.harbour_start")
+        if how == "captain_yes" and not ynbox.ask(self.root, T("harb.start_title"), T("harb.start_q")):
+            return None
+        self.event(T("harb.ev_start"))
+        self.cmd(proto.T_HARBOUR, proto.p_harbour(act, corr, kn), what)
+        self.say(T("harb.confirm_hint"), ORANGE)
+        return None
+
+    def harbour_take_over(self):
+        """TAKE OVER: CREWED = the onboard joystick (nothing is sent: it wins by itself); UNCREWED = the existing REMOTE
+        request of the HELM station (captain with the manual licence)."""
+        d = self.t or {}
+        how = harbourview.take_over_how(d.get("profile") == proto.PROFILE_UNCREWED)
+        if how == "joystick":
+            return self.say(T("harb.take_crewed"), ORANGE)
+        if not self.manual_allowed():
+            return self.say(T("harb.take_no_licence"), RED)
+        self.remote_request()
+        return None
+
+    def harbour_upload(self, route):
+        """SEND the checked route: the NORMAL program upload frames with the PROG_F_HARBOUR flag (the gateway checks it
+        again at the commit: 114 / 120 / 129; a copilot's commit asks the captain's ACCEPT as every route). It only
+        STORES the route - starting is the separate START with the captain's YES."""
+        if not isinstance(self.link, GatewayLink):
+            self.say(T("harb.start_refused"), RED)
+            return False
+        prog = harbourroute.to_program(route)
+        problems = program.check(prog, max_kn=8.0)
+        if problems:
+            self.say(T("cap.pg_problems", list="; ".join(i18n.from_en(x) for x in problems[:3])), RED)
+            return False
+        frames = program.upload_frames(prog)
+        for t, pl in frames[:-1]:
+            self.link.send(t, pl)
+        self.cmd(frames[-1][0], frames[-1][1], TE("what.harbour_route_upload", n=len(prog["wps"])))
+        self.harbour_route = route
+        self.event(T("harb.ev_route", n=len(prog["wps"])))
+        return True
+
+    def harbour_check_request(self, route, seq=0):
+        """CHECK: the gateway's read-only route check (shallow, geofence, corridor)."""
+        if not isinstance(self.link, GatewayLink):
+            return False
+        self.link.send_msg({"t": "harbour_route", "op": "check", "seq": seq, "corr_m": route.get("corr_m"),
+                            "wps": [{"lat": w["lat"], "lon": w["lon"], "kn": w["kn"]} for w in route["wps"]]})
+        return True
+
+    def on_harbour_ack(self, d):
+        if self.harbour_win is not None and self.harbour_win.alive():
+            self.harbour_win.on_ack(d)
+        self.say(T("harb.ack_ok") if d.get("ok") else T("harb.ack_refused", why=i18n.from_en(d.get("why", ""))),
+                 GREEN if d.get("ok") else RED)
+
+    def harbour_route_window(self):
+        if self.harbour_win is not None and self.harbour_win.alive():
+            self.harbour_win.w.lift()
+        else:
+            self.harbour_win = harbourpanel.HarbourRouteWindow(self)
+        return self.harbour_win
+
+    def harbour_shore_dist(self, lat, lon):
+        """Metres from a point to shallow water / the shore on the loaded charts (None = no data): the quay warning."""
+        ch = getattr(self, "charts", None)
+        if not ch:
+            return None
+        try:
+            return ch.nearest_shallow_m(lat, lon, 3.0, 200.0)
+        except Exception:
+            return None
 
     def uav_notices(self, uav):
         """The gateway's UAV notices (U3) -> this station's event log once; a HATCH FAULT / a drone left in the hatch

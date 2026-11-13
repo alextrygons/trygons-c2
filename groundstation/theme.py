@@ -166,18 +166,22 @@ BANNERS = {"alarm": ("#ffffff", WARN), "joystick": ("#000000", "#ff8c00"), "conf
            "remote": ("#ffffff", "#0033cc"), "pickup": ("#000000", "#ffd000"), "starlink": ("#ffffff", "#b00060"),
            "single_op": ("#ffffff", "#7000a0"), "first_test": ("#ffffff", "#c000c0"),
            "uncrewed": ("#ffffff", "#004080"), "lost": ("#ffffff", WARN), "boat": ("#000000", "#ffe080"),
-           "maneuver": ("#ffffff", MODE_COLOURS["MANEUVER"])}
+           "maneuver": ("#ffffff", MODE_COLOURS["MANEUVER"]), "harbour": ("#000000", "#30d0b0")}
 HUD_MAIN = {"green": GOOD, "white": "#ffffff"}             # the HUD's main colour (setting hud_colour)
 HUD_DIM = {"green": "#b8c8b8", "white": "#c8c8c8"}
 HUD_GREY = "#a0a0a0"
 HUD_YELLOW = "#ffe000"
 HUD_LIGHT = {"panel": "#e8eef4", "dim": "#2c3e50", "grey": "#5a6b7b"}     # light theme: light panels on the video
-NOTICE = {"single_op": "#e080ff", "uncrewed": "#60a0ff", "first_test": MAGENTA}   # screen 1 notice lines
+NOTICE = {"single_op": "#e080ff", "uncrewed": "#60a0ff", "first_test": MAGENTA, "harbour": "#30d0b0"}   # screen 1 notice lines
 AR = {"route": "#ff50ff", "route_text": "#ff70ff", "shallow": "#ff2020"}         # AR overlays on the video
 VISION = {"obstacle": "#f7c325", "water": "#29a7e0"}        # the obstacle-detection mask (eWaSR classes)
 REC = "#ff2020"             # the recording dot
 SCR_ON = "#ffffff"          # "●SCR": this PC records its screens (step 13n4, owner 2026-10-31 E4: white)
 FROZEN = "#c00000"          # VIDEO FROZEN box
+# harbour autonomy (step HX6): the fused tracks by the sensor that saw them (never red / amber: those are the meaning
+# colours; the SHAPE says steer_ok), the corridor + the planned path
+HARB_SRC = {"radar": "#c8a0ff", "lidar": "#00e0c0", "camera": "#d8b080", "ais": "#9aa8ff"}
+HARB_CORRIDOR = ADVISORY    # blue: the corridor edges (a planning frame, like the edit frames)
 
 # --- colours: the two themes (every value distinct inside a theme: retint() maps them 1:1) --------------
 THEMES = {

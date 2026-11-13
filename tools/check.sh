@@ -364,6 +364,10 @@ echo "== ADS-B on the station (PF5): map, notices, voice, the proposal asked onc
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_adsbui.py > "$TEMP/adsbui_tests.txt" 2>&1 ) || { echo "ADS-B STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ADS-B STATION TESTS" "$TEMP/adsbui_tests.txt"
 strays_check "test_adsbui"
+echo "== Harbour autonomy on the station (HX6): symbols (colour by source, shape by steer_ok), status panel, STOP = STANDBY always, TAKE OVER, the captain's YES to start, teach and repeat (Douglas-Peucker <= 50, corridor, quay warning, files), alarm table, read-only proof, layout"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_harbourui.py > "$TEMP/harbourui_tests.txt" 2>&1 ) || { echo "HARBOUR STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR STATION TESTS" "$TEMP/harbourui_tests.txt"
+strays_check "test_harbourui"
     stage_end station
 }
 
@@ -428,6 +432,10 @@ echo "== harbour sensors (HX3): the interface, simulated radar + LiDAR vs the wo
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_sensors.py > "$TEMP/harbour_sensor_tests.txt" 2>&1 ) || { echo "HARBOUR SENSOR TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|HARBOUR SENSOR TESTS" "$TEMP/harbour_sensor_tests.txt"
 strays_check "test_harbour_sensors"
+echo "== harbour routes (HX6, gateway): the route check (corridor, no 50 m clearance, 114 / 120 / 129), harbour_route ack, the flagged program upload, the read-only harbour_view"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_route.py > "$TEMP/harbour_route_tests.txt" 2>&1 ) || { echo "HARBOUR ROUTE TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|HARBOUR ROUTE TESTS" "$TEMP/harbour_route_tests.txt"
+strays_check "test_harbour_route"
 echo "== harbour perception (HX4): the fusion tracker (radar + LiDAR + camera + AIS) + the static map with the simulated sensors: association, crossing, static map, small craft / person-like, clutter / ghosts, camera / AIS-only never steer_ok, unsure flags, lifetime, timing, determinism, read only, mutations"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_harbour_tracker.py > "$TEMP/harbour_tracker_tests.txt" 2>&1 ) || { echo "HARBOUR TRACKER TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|HARBOUR TRACKER TESTS|passed" "$TEMP/harbour_tracker_tests.txt"

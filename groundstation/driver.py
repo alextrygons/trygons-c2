@@ -948,6 +948,9 @@ class DriverScreen:
             if lt:
                 out.append(("linktime", lt, "caution"))
             out.extend(override_texts(d))               # the shore stick override (step 13q3), DISPLAY ONLY
+            hb = alerts.harbour_banner(a.harbour_state() if hasattr(a, "harbour_state") else None)   # HX6, DISPLAY ONLY
+            if hb is not None:
+                out.append((hb[0], hb[1], theme.NOTICE["harbour"] if hb[2] == "harbour" else hb[2]))
             if d["mode"] == proto.MODE_MANEUVER:
                 out.append(("maneuver", T("drv.maneuver"), "caution"))
             if d.get("confirm_kind"):
