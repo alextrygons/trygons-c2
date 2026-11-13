@@ -471,11 +471,11 @@ stage_harbour() {
     stage_begin harbour
 echo "== harbour scenarios (HX7 + HX7-fix): H1-H20 (+ H3n, H4r / H8r / H19r; 3 jobs: the 45 min stage limit) end to end, the common criteria C1-C6 + each scenario's own"
 ( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py all --jobs 3 > "$TEMP/harbour_scen.txt" 2>&1 ) || { echo "HARBOUR SCENARIOS FAILED (see $TEMP/harbour_scen.txt)"; fail=1; }
-grep -E "^\[FAIL\]|^       FAIL|harbour scenarios:" "$TEMP/harbour_scen.txt"
+grep -E "^\[FAIL\]|^\[KNOWN LIMIT\]|^       FAIL|^       XPASS|^KNOWN LIMIT|^classes|harbour scenarios:" "$TEMP/harbour_scen.txt"
 strays_check "harbour_scenarios"
 echo "== harbour end-to-end storm (HX7): 30 seeded random worlds against the real simulator"
 ( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py storm --episodes 30 --seed 1 --jobs 3 > "$TEMP/harbour_e2e_storm.txt" 2>&1 ) || { echo "HARBOUR E2E STORM FAILED (see $TEMP/harbour_e2e_storm.txt)"; fail=1; }
-grep -E "^\[FAIL\]|^       FAIL|^KNOWN LIMIT|harbour scenarios:" "$TEMP/harbour_e2e_storm.txt"
+grep -E "^\[FAIL\]|^\[KNOWN LIMIT\]|^       FAIL|^       XPASS|^KNOWN LIMIT|^classes|harbour scenarios:" "$TEMP/harbour_e2e_storm.txt"
 strays_check "harbour_e2e_storm"
     stage_end harbour
 }

@@ -195,7 +195,7 @@ def load(path, why):
         return {"name": os.path.basename(path), "ok": False, "checks": [("RIG", False, why)]}
 
 
-def report(done, order, known=None):
+def report(done, order, known=None, xpassed=None):
     fails = 0
     known = known if known is not None else []
     for n in order:
@@ -207,7 +207,11 @@ def report(done, order, known=None):
             bad = [c[0] for c in r.get("checks", []) if not c[1]]
             if ok:
                 tag, ok = "FAIL", False         # XPASS: the known limit no longer shows - re-judge it, never silent
-                xf = "XPASS - the KNOWN LIMIT no longer shows (passed by chance? or fixed): re-judge KNOWN_LIMITS"
+                xf = ("XPASS - the KNOWN LIMIT %s did not show this run (still a FAIL by the owner's rule 2026-11-13; "
+                      "passed by chance? or fixed): re-judge KNOWN_LIMITS | %s | evidence: %s" % (
+                          n, kl["reason"][:60], (r.get("kl_evidence") or [None, "none"])[1]))
+                if xpassed is not None:
+                    xpassed.append(n)
             elif (bad and all(any(b.startswith(k) for k in kl["checks"]) for b in bad)
                   and (r.get("kl_evidence") or [False])[0]):
                 tag, xf = "KNOWN LIMIT", kl["reason"] + " | evidence: " + str(r["kl_evidence"][1])
@@ -266,17 +270,21 @@ def main():
         names = [s["name"] for s in sc.build()] + ["S%d" % (a.seed + i) for i in range(a.episodes)]
     t = time.time()
     done = run_parallel(names, max(1, a.jobs))
-    known = []
-    fails = report(done, names, known)
+    known, xpassed = [], []
+    fails = report(done, names, known, xpassed)
     cls = {}
     for n in names:
         k = (done.get(n) or {}).get("class") or "-"
         cls[k] = cls.get(k, 0) + 1
-    print("classes (HX7-fix2): %s" % ", ".join("%s %d" % kv for kv in sorted(cls.items())), flush=True)
+    print("classes (HX7-fix2 / HX7-fix4): %s" % ", ".join("%s %d" % kv for kv in sorted(cls.items())), flush=True)
     for n in known:
         print("KNOWN LIMIT %s (not a pass): %s" % (n, KNOWN_LIMITS[n]["reason"]), flush=True)
-    print("harbour scenarios: %d run, %d failed, %d known limit(s) %s, %.0f s" % (len(names), fails, len(known), known,
-                                                                                 time.time() - t), flush=True)
+    for n in xpassed:                   # HX7-fix4 (6): a known limit that did not show is reported AS the known limit
+        print("KNOWN LIMIT %s NOT SHOWN this run = XPASS, counted FAILED (owner rule 2026-11-13): %s" % (
+            n, KNOWN_LIMITS[n]["reason"]), flush=True)
+    print("harbour scenarios: %d run, %d failed, %d known limit(s) shown %s, %d known limit(s) not shown (XPASS, "
+          "counted failed) %s, %.0f s" % (len(names), fails, len(known), known, len(xpassed), xpassed,
+                                         time.time() - t), flush=True)
     return 1 if fails else 0
 
 
