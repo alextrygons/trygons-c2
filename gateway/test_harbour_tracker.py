@@ -778,14 +778,62 @@ def ht18():
         sm.grid, sm.owner = dict(loaded.grid), {k: set(v) for k, v in loaded.owner.items()}
     s, sm = phantom(leave, 30.0, 75.0, pre=use_loaded)
     out.append(("a loaded map's cells are kept", sm.occupied(40.0, 1.4, 1.0, s.t), ""))
-    # StaticMap.release alone: a cell two owners laid keeps the other one
+    # StaticMap.release alone: a cell two owners laid keeps the other one; GEOMETRIC (r1 HIGH-1): the same owner key
+    # elsewhere is never touched; an anonymous observation is never released
     m = staticmap.StaticMap()
     m.observe(0.0, 0.0, 1.0, 1.0, T0, owner=1)
     m.observe(0.0, 0.0, 1.0, 1.0, T0, owner=2)
     m.observe(10.0, 0.0, 1.0, 1.0, T0, owner=1)
-    n1 = m.release(1)
-    out.append(("release: shared cells kept, own-only cells gone", (0, 0) in m.grid and m.ij(10.0, 0.0) not in m.grid
-                and n1 > 0, "released %d" % n1))
+    m.observe(50.0, 0.0, 1.0, 1.0, T0, owner=1)
+    m.observe(20.0, 0.0, 1.0, 1.0, T0)
+    n1 = m.release(1, [(10.0, 0.0, 0.5), (0.0, 0.0, 0.5), (20.0, 0.0, 0.5)])
+    out.append(("release: shared cells kept, own-only cells gone, the same owner elsewhere kept, anon kept",
+                (0, 0) in m.grid and m.ij(10.0, 0.0) not in m.grid and m.ij(50.0, 0.0) in m.grid and
+                m.ij(20.0, 0.0) in m.grid and n1 > 0, "released %d" % n1))
+    out.append(("two trackers over one map: different owner keys", tracker.Tracker().gen != tracker.Tracker().gen, ""))
+
+    # _release itself on hand-made tracks (r1 MED-2 / LOW-3): dwell, tentative / coasting neighbour, a track deleted
+    # there lately, the departing track still near / LiDAR stale = kept
+    def unit(case):
+        sm = staticmap.StaticMap()
+        tk = tracker.Tracker(static_map=sm)
+        T = T0 + 100.0
+        lv = tracker.Track(7, T, 60.0, 1.4, 0.7, 0.0)
+        lv.len_m, lv.beam_m = 6.0, 3.0
+        lv.confirmed = lv.steer_ok = True
+        lv.last["L"] = T
+        lv.laid = [(40.0, 1.4, 3.0)]
+        sm.observe(40.0, 1.4, 6.0, 3.0, T0, owner=(tk.gen, 7))
+        sm.grid = {k: [1000.0, T] for k, v in sm.grid.items()}
+        tk.tracks = [lv]
+        if case == "near":
+            lv.s[0] = 44.0
+        if case == "stale":
+            lv.last["L"] = T - 2.0
+        if case == "tentative":
+            nb = tracker.Track(8, T, 40.5, 1.4)
+            nb.last["L"] = T
+            nb.len_m, nb.beam_m = 2.0, 1.0
+            tk.tracks.append(nb)
+        if case == "edge":                              # r1 LOW-3: a neighbour's centroid just past r + its half size
+            nb = tracker.Track(9, T, 40.0, 1.4 + 3.0 + 1.0 + 0.6)
+            nb.last["L"] = T
+            nb.len_m, nb.beam_m = 2.0, 2.0
+            tk.tracks.append(nb)
+        if case == "gone":
+            tk.gone = [(T - 5.0, 40.0, 1.4, 3.0)]
+        first = []
+        for k in range(8):
+            lv.last["L"] = T + k - (2.0 if case == "stale" else 0.0)
+            tk._release(T + k)
+            if k == 0:
+                first.append(sm.occupied(40.0, 1.4, 1.0, T))
+        return first[0], sm.occupied(40.0, 1.4, 1.0, T)
+    res = {k: unit(k) for k in ("free", "near", "stale", "tentative", "edge", "gone")}
+    out.append(("dwell: not at the first cycle, released after static_release_dwell_s",
+                res["free"] == (True, False), "%s" % (res["free"],)))
+    for k in ("near", "stale", "tentative", "edge", "gone"):
+        out.append(("kept: %s" % k, res[k][1], "%s" % (res[k],)))
     bad = [(k, d) for k, ok, d in out if not ok]
     report("HT18 static map: a vessel that LEFT releases its own cells (HX7-fix4)", not bad,
            "; ".join("%s %s%s" % ("ok" if ok else "FAIL", k, (" (" + d + ")") if d else "") for k, ok, d in out))

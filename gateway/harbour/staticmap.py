@@ -105,20 +105,28 @@ class StaticMap:
                 self.owner.setdefault(cell, set()).add("anon" if owner is None else owner)
         self.t_last = t
 
-    def release(self, owner):
-        """HX7-fix4 (S14): the track `owner` laid these cells while it stood still and has now LEFT them (the tracker
-        decides, Tracker._release): delete the LiDAR cells laid by that track ALONE. A cell any other track, an
-        anonymous observation or a loaded file also laid is kept (only `owner` is taken off it); chart cells never
-        change. Returns the number of cells deleted."""
+    def release(self, owner, footprints):
+        """HX7-fix4 (S14; review r1 HIGH-1: GEOMETRIC): the track `owner` laid these footprints [(x, y, r)] while it
+        stood still and has now LEFT them (the tracker decides, Tracker._release): delete ONLY the LiDAR cells inside
+        those footprints (r + one cell) that this owner laid ALONE. A cell any other owner, an anonymous observation or
+        a loaded file also laid is kept (only `owner` is taken off it); cells outside the footprints are never touched;
+        chart cells never change. Returns the number of cells deleted."""
         n = 0
-        for cell in [c for c, o in self.owner.items() if owner in o]:
-            o = self.owner[cell]
-            o.discard(owner)
-            if not o:
-                del self.owner[cell]
-                if cell in self.grid:
-                    del self.grid[cell]
-                    n += 1
+        for x, y, r in footprints:
+            k = int(math.ceil(r / self.cell)) + 1
+            ci, cj = self.ij(x, y)
+            for a in range(-k, k + 1):
+                for b in range(-k, k + 1):
+                    cell = (ci + a, cj + b)
+                    o = self.owner.get(cell)
+                    if not o or owner not in o:
+                        continue
+                    o.discard(owner)
+                    if not o:
+                        del self.owner[cell]
+                        if cell in self.grid:
+                            del self.grid[cell]
+                            n += 1
         return n
 
     def prune(self, t, min_w=0.5):
