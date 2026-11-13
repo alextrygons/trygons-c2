@@ -30,9 +30,11 @@ from rig import ll  # noqa: F401  (kept for the rehearsal / demo users)
 # captain would start - the READY lease is then a STOP (review M2) and the START is refused (NACK 6): the boat never
 # moves under harbour autonomy (judged by evaluate()'s "start refused" path, as for the random worlds).
 UNAVOIDABLE = "unavoidable by design: no path keeps 15 m in the +-10 m corridor; the boat stops + alarms, the captain takes over"
-FINDING_3 = ("HX7-3 (open): WITH room the steer-clear path is found, but with the real simulated sensors the decision "
-             "flickers (track sigma / AIS twins): ONE U13 STOP cycle latches the AURIX HOLD (the captain RESUMEs) - "
-             "robust escape hysteresis = a later step")
+FINDING_3 = ("HX7-3 (HX7-fix2: persistence built, these still fail): in a +-10 m corridor (usable +-5.75 m) a vessel 24 m "
+             "off the line needs 15 m + both hull halves (6 m) + 2 sigma of its predicted position (radar sigma grows to "
+             "~3-4 m over 10 s) = 27-29 m of 29.75 m: the escape is feasible only in some cycles for SECONDS at a time "
+             "(rig events: U13 'no free path', blockers = the vessel) - a 0.8 s persistence cannot bridge it; H8r is "
+             "refused at the START (the overtaker is already a threat)")
 ALM_COLL = 0x800000 | 0x1000000                     # proto ALARMS: COLLISION RISK / COLLISION RISK - DRIVER DECISION
 ARRIVED = 15            # app/harbour.h HARB_WHY_ARRIVED (a planned stop: the route's last waypoint)
 ROUTE = [(0.0, 0.0, 5.0), (80.0, 0.0, 5.0), (150.0, 0.0, 5.0)]
@@ -99,9 +101,10 @@ def build():
     sc.append(S("H8", "being overtaken by a fast vessel from astern",
                 [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0,
                                                                      "start_may_be_refused": 1, "refused_for": "not_yielding"}))
-    sc.append(S("H8c", "being overtaken by a fast vessel that does NOT give way, the start CLEAR (it is far astern at "
-                "the start): START passes, then the not-yielding STOP well before it",
-                [vessel("fast", (95.0, 4.0), 60.0, 90.0, 3.5, ln=9.0)],
+    sc.append(S("H8c", "being overtaken by a fast vessel that does NOT give way, the start CLEAR (no threat at "
+                "the start: it runs NORTH 40 m to port, then turns onto the line astern at 5 m/s): START passes, then the not-yielding STOP",
+                [{"id": "fast", "kind": "vessel", "path": [[-40.0, -60.0], [-40.0, 4.0], [600.0, 4.0]], "speed": 5.0,
+                  "len": 9.0, "beam": 3.0, "h": 2.0, "rcs": 0.8, "refl": 0.4, "ais": None}],
                 expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 10.0}))
     sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
                 [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
