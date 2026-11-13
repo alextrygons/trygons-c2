@@ -256,7 +256,7 @@ def _early_stop_class(S_, ep, out):
     # at such a STOP must be a CHART cell (the real shore / a pier) or lie within EARLY_MATCH_M of a REAL object now
     # (the gateway's own StaticMap read by the rig, rig._static_evidence); none recorded = not evidenced.
     def static_ok(e):
-        if "static-map" not in [str(b.get("id")) for b in e.get("blockers", [])]:
+        if not e.get("static_blocker") and "static-map" not in [str(b.get("id")) for b in e.get("blockers", [])]:
             return True
         st = e.get("static") or {}
         cells = st.get("cells") or []
@@ -320,20 +320,26 @@ def _fault_stop_class(S_, ep, out, fired):
         why = FAULT_STOP_WHY.get(f)
         if not why:
             continue
-        at = [q for q in S_ if abs(q[0] - t_f) <= 0.3]
-        moving = any(q[5] in ("RUN", "SLOW") for q in at)
+        # (review r1 H1) under way for the WHOLE second before the fault, not one sample
+        pre = [q for q in S_ if t_f - 1.0 <= q[0] <= t_f]
+        moving = bool(pre) and all(q[5] in ("RUN", "SLOW") for q in pre)
         h = [q[0] for q in S_ if t_f <= q[0] <= t_f + FAULT_HOLD_S and q[5] == "HOLD" and q[13] in why]
-        pstop = [e for e in (getattr(ep, "stops", None) or []) if h and t_f <= e["t"] <= h[0]]
-        ev.append((f, t_f, moving, h[0] if h else None, [e["reason"][:40] for e in pstop]))
+        # (r1 H1 / H2) NO planner STOP logged anywhere in the run - before the fault (an unexplained STOP must not
+        # hide behind the fault) nor after it (nothing else may be what halted the boat)
+        pstop = [(e["t"], e["reason"][:40]) for e in (getattr(ep, "stops", None) or [])]
+        # (r1 H2) from that HOLD to the end the boat stays held: every sample HOLD / OFF or mode STANDBY
+        redrive = [(q[0], q[5]) for q in S_ if h and q[0] >= h[0] and not (q[5] in ("HOLD", "OFF") or
+                                                                           q[7] == "STANDBY")]
+        ev.append((f, t_f, moving, h[0] if h else None, pstop[:3], redrive[:2]))
     xmax = max(q[1] for q in S_)
     t_x = min(q[0] for q in S_ if q[1] >= xmax - 0.5)
-    ok_a = bool(ev) and all(m and h is not None and not ps for _f, _t, m, h, ps in ev) and \
-        all(t_x >= t_f for _f, t_f, _m, _h, _p in ev)
+    ok_a = bool(ev) and all(m and h is not None and not ps and not rd for _f, _t, m, h, ps, rd in ev) and \
+        all(t_x >= t_f for _f, t_f, _m, _h, _p, _r in ev)
     other = [f for f in fired if f not in FAULT_STOP_WHY]
-    r.append(("F-a the STOP that halted the boat is an INJECTED fault's designed reaction (%s), under way at the fault, "
-              "HOLD within %.0f s, no planner STOP in between" % (", ".join(
+    r.append(("F-a the STOP that halted the boat is an INJECTED fault's designed reaction (%s), under way the whole "
+              "second before the fault, HOLD within %.0f s and held to the end, NO planner STOP in the run" % (", ".join(
                   "%s -> why %s" % (k, v) for k, v in FAULT_STOP_WHY.items()), FAULT_HOLD_S),
-              ok_a, "faults (name, t, under way, HOLD at, planner STOPs between) %s; furthest point at %.1f s; other "
+              ok_a, "faults (name, t, under way 1 s before, HOLD at, planner STOPs, re-driven) %s; furthest point at %.1f s; other "
                     "faults %s" % (ev, t_x, other)))
     last = S_[-1]
     r.append(("F-b the boat ends in HOLD (standing) or STANDBY", (last[5] == "HOLD" and last[4] < 0.5)
@@ -374,11 +380,12 @@ def _start_stop_class(S_, ep, out, u13, dd, hold):
     for e in stops:
         for b in e.get("not_yielding", []) + e.get("blockers", []):
             if str(b.get("id")) in ids and b.get("track") and b.get("match") is not None and e.get("true_pos"):
-                seen.setdefault(str(b["id"]), []).append((e["t"], b["match"], b["match_d"]))
-    real = {i: [m for m in v if m[2] <= EARLY_MATCH_M] for i, v in seen.items()}
+                seen.setdefault(str(b["id"]), []).append((e["t"], b["match"], b["match_d"], b.get("obj_speed")))
+    # (review r1 M3) a REAL MOVING object: its scenario speed > 0.2 m/s (a moored boat / buoy never counts)
+    real = {i: [m for m in v if m[2] <= EARLY_MATCH_M and (m[3] or 0.0) > 0.2] for i, v in seen.items()}
     objs = {m[1] for v in seen.values() for m in v}
     ok_b = bool(ids) and all(real.get(i) for i in ids) and len(objs) == 1
-    r.append(("S-b the vessel the U13 names is REAL: its track id matched to ONE real object within %.0f m (true "
+    r.append(("S-b the vessel the U13 names is REAL + MOVING: its track id matched to ONE real moving object within %.0f m (true "
               "position) in a logged STOP" % EARLY_MATCH_M, ok_b,
               "named %s; matches (t, object, m) %s" % (sorted(ids), {i: v[:3] for i, v in seen.items()})))
     obj = next(iter(objs)) if len(objs) == 1 else None

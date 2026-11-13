@@ -469,6 +469,9 @@ strays_check "test_gateway"
 # autopilot_sim + the real gateway modules (tests/harbour/; ~23 + ~17 min, 2 / 3 parallel episodes: more starve the planner = U4 "cycle late" / tracker overload HOLDs; run on a QUIET PC, each in a kill-on-close job)
 stage_harbour() {
     stage_begin harbour
+echo "== harbour storm class self-test (HX7-fix4): every storm class passes its good case and fails each mutation of its evidence (synthetic, no simulator)"
+( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/selftest_classes.py > "$TEMP/harbour_classes.txt" 2>&1 ) || { echo "HARBOUR CLASS SELF-TEST FAILED"; fail=1; }
+grep -E "^\[FAIL\]|self-test:" "$TEMP/harbour_classes.txt"
 echo "== harbour scenarios (HX7 + HX7-fix): H1-H20 (+ H3n, H4r / H8r / H19r; 3 jobs: the 45 min stage limit) end to end, the common criteria C1-C6 + each scenario's own"
 ( PYTHONIOENCODING=utf-8 "$PY" tests/harbour/run_scenarios.py all --jobs 3 > "$TEMP/harbour_scen.txt" 2>&1 ) || { echo "HARBOUR SCENARIOS FAILED (see $TEMP/harbour_scen.txt)"; fail=1; }
 grep -E "^\[FAIL\]|^\[KNOWN LIMIT\]|^       FAIL|^       XPASS|^KNOWN LIMIT|^classes|harbour scenarios:" "$TEMP/harbour_scen.txt"
