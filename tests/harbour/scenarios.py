@@ -26,7 +26,9 @@ from rig import ll  # noqa: F401  (kept for the rehearsal / demo users)
 # (the planner's "VESSEL NOT GIVING WAY - STOP - TAKE OVER" + the AURIX's COLLISION RISK - DRIVER DECISION) and a
 # contact by THAT vessel with the STANDING boat is "UNAVOIDABLE BY DESIGN" (harbour autonomy cannot make a stopped boat
 # safe against a vessel that ignores it: the captain takes over) - judged by the scenario's own criteria U1-U4 below,
-# only for the listed vessel; every other check stays as it is.
+# only for the listed vessel; every other check stays as it is. H8 / H8r: the overtaker is already a threat when the
+# captain would start - the READY lease is then a STOP (review M2) and the START is refused (NACK 6): the boat never
+# moves under harbour autonomy (judged by evaluate()'s "start refused" path, as for the random worlds).
 UNAVOIDABLE = "unavoidable by design: no path keeps 15 m in the +-10 m corridor; the boat stops + alarms, the captain takes over"
 FINDING_3 = ("HX7-3 (open): WITH room the steer-clear path is found, but with the real simulated sensors the decision "
              "flickers (track sigma / AIS twins): ONE U13 STOP cycle latches the AURIX HOLD (the captain RESUMEs) - "
@@ -95,7 +97,8 @@ def build():
     sc.append(S("H7", "overtaking a slow boat on the line",
                 [vessel("slow", (70.0, 1.0), 38.0, 90.0, 0.5, ln=6.0, beam=2.5)], expect={"safe_pass_or_hold": 1}))
     sc.append(S("H8", "being overtaken by a fast vessel from astern",
-                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0}))
+                [vessel("fast", (55.0, 4.0), 32.0, 90.0, 3.5, ln=9.0)], expect={"safe_pass_or_hold": 1, "unavoidable": ("fast",), "min_x": 0.0,
+                                                                     "start_may_be_refused": 1}))
     sc.append(S("H8r", "overtaken by a fast vessel that does NOT give way, 24 m to port (room: keep 15 m)",
                 [vessel("fast", (55.0, 24.0), 32.0, 90.0, 3.5, ln=6.0, beam=2.5)],
                 xfail=FINDING_3, expect={"safe_pass_or_hold": 1, "passed_no_hold": 1}))
