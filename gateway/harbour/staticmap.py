@@ -29,6 +29,8 @@ class StaticMap:
         self.chart_known = False            # a chart covered the harbour (or segments were given)
         self.segments = []                  # [(x1, y1, x2, y2, w, src)]
         self.grid = {}                      # (i, j) -> [weight, t_last]
+        # HX7-fix4 (S14): who laid each LiDAR cell (RAM only): a track id, or "anon" / "file" (never released)
+        self.owner = {}
 
     def ij(self, x, y):
         return int(math.floor(x / self.cell)), int(math.floor(y / self.cell))
@@ -88,8 +90,9 @@ class StaticMap:
             return 0.0
         return g[0] * math.exp(-max(0.0, t - g[1]) / self.tau)
 
-    def observe(self, x, y, len_m, beam_m, t):
-        """One observation of a static object's footprint (a circle of the larger half size, capped 6 m)."""
+    def observe(self, x, y, len_m, beam_m, t, owner=None):
+        """One observation of a static object's footprint (a circle of the larger half size, capped 6 m). owner =
+        the track that saw it (HX7-fix4): only cells laid by that ONE track alone can ever be released."""
         r = min(6.0, max(0.25, 0.5 * max(len_m, beam_m)))
         k = int(math.ceil(r / self.cell))
         ci, cj = self.ij(x, y)
@@ -99,11 +102,29 @@ class StaticMap:
                     continue
                 cell = (ci + a, cj + b)
                 self.grid[cell] = [self._w(cell, t) + 1.0, t]
+                self.owner.setdefault(cell, set()).add("anon" if owner is None else owner)
         self.t_last = t
+
+    def release(self, owner):
+        """HX7-fix4 (S14): the track `owner` laid these cells while it stood still and has now LEFT them (the tracker
+        decides, Tracker._release): delete the LiDAR cells laid by that track ALONE. A cell any other track, an
+        anonymous observation or a loaded file also laid is kept (only `owner` is taken off it); chart cells never
+        change. Returns the number of cells deleted."""
+        n = 0
+        for cell in [c for c, o in self.owner.items() if owner in o]:
+            o = self.owner[cell]
+            o.discard(owner)
+            if not o:
+                del self.owner[cell]
+                if cell in self.grid:
+                    del self.grid[cell]
+                    n += 1
+        return n
 
     def prune(self, t, min_w=0.5):
         for cell in [c for c in self.grid if self._w(c, t) < min_w]:
             del self.grid[cell]
+            self.owner.pop(cell, None)
 
     # --- queries --------------------------------------------------------------------------------------------------
     def in_chart(self, x, y):
@@ -156,4 +177,5 @@ class StaticMap:
         m.chart_known = bool(d.get("chart_known"))
         m.segments = [tuple(s) for s in d.get("segments", [])]
         m.grid = {(g[0], g[1]): [g[2], g[3]] for g in d.get("grid", [])}
+        m.owner = {c: {"file"} for c in m.grid}     # HX7-fix4: a loaded cell is never released
         return m

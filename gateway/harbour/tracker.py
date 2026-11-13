@@ -57,6 +57,8 @@ DEFAULTS = {
     "conflict": {"near_m": 50.0, "disagree_m": 20.0, "camera_near_m": 30.0, "camera_ahead_deg": 30.0},
     "tentative_s": 3.0,         # a tentative track not confirmed within this (+ its sensor window) is deleted
     "static_v": 0.25, "static_s": 20.0, "static_tau_s": 5.0, "static_off_v": 0.5,
+    "static_release_m": 2.0,    # HX7-fix4: a track this far clear of every footprint it laid has LEFT them
+    "static_laid_max": 200,     # ... footprints remembered per track (more = never released: fail closed)
     "crowded_n": 20, "crowded_r": 100.0,
     "max_tracks": 300, "budget_ms": 30.0,
     "time_jump_s": 10.0,        # a batch / camera / AIS time this far from the tracker clock is refused (review H3)
@@ -203,7 +205,7 @@ def _interval(ob, d):
 class Track:
     __slots__ = ("id", "t", "s", "P", "len_m", "beam_m", "hgt_m", "hits", "last", "born", "confirmed", "mmsi",
                  "slow_since", "surface_n", "lidar_n", "ais_xy", "arpa", "ghost", "in_static", "cam_only_born",
-                 "coasting", "steer_ok", "static", "cls", "conf", "disagree", "v_ema", "v_t")
+                 "coasting", "steer_ok", "static", "cls", "conf", "disagree", "v_ema", "v_t", "laid")
 
     def __init__(self, tid, t, x, y, vx=0.0, vy=0.0, sd_p=2.0, sd_v=3.0):
         self.id, self.t = tid, t
@@ -223,6 +225,7 @@ class Track:
         self.cls, self.conf = "unknown", 0.0
         self.disagree = None
         self.v_ema, self.v_t = None, None      # the speed averaged over ~static_tau_s (the static judgement)
+        self.laid = []                          # HX7-fix4: the footprints (x, y, r) it laid into the static map
 
     # constant-velocity Kalman filter
     def predict(self, t, q):
@@ -754,10 +757,53 @@ class Tracker:
             tr.conf = confidence(tr, T)
             if self.static is not None and tr.static and tr.steer_ok and tr.last["L"] is not None and \
                     T - tr.last["L"] < 0.5:
-                self.static.observe(tr.s[0], tr.s[1], max(tr.len_m, 0.5), max(tr.beam_m, 0.5), T)
+                self.static.observe(tr.s[0], tr.s[1], max(tr.len_m, 0.5), max(tr.beam_m, 0.5), T, owner=tr.id)
+                fp = (tr.s[0], tr.s[1], min(6.0, max(0.25, 0.5 * max(tr.len_m, tr.beam_m, 0.5))))
+                if tr.laid is not None and (not tr.laid or math.hypot(fp[0] - tr.laid[-1][0], fp[1] - tr.laid[-1][1])
+                                            > 0.5 or fp[2] > tr.laid[-1][2]):
+                    tr.laid.append(fp)
+                    if len(tr.laid) > int(c["static_laid_max"]):
+                        tr.laid = None          # too many to judge: its cells stay (decay only)
+        self._release(T)
         self._ghosts()
         self._flags = self._make_flags(health or {}, ages or {}, skews or {}, no_pose, error)
         return self._flags
+
+    def _release(self, T):
+        """HX7-fix4 (finding S14): a track that stood still long enough to be laid into the static map and then LEFT
+        (a boat leaving its berth / a vessel waiting, then under way) left its footprint behind for tau_s (1 h): the
+        planner stopped for nothing there. Its own cells are released ONLY when ALL hold: the track is confirmed,
+        steer_ok, LiDAR-fresh (< 0.5 s), no longer static and moving >= static_off_v, its centroid is clear of EVERY
+        footprint it laid by that footprint's radius + its own half size + static_release_m, and NO other range track
+        lies within any footprint (+ its half size) - something still there keeps the cells. Cells another track /
+        an anonymous observation / a loaded map also laid are kept (StaticMap.release); the chart never changes."""
+        if self.static is None or not hasattr(self.static, "release"):
+            return
+        c = self.c
+        lc = c["lidar"]
+        for tr in self.tracks:
+            if not tr.laid:
+                continue
+            sp = math.hypot(tr.s[2], tr.s[3])
+            if not (tr.confirmed and tr.steer_ok and not tr.static and tr.last["L"] is not None
+                    and T - tr.last["L"] < float(lc["fresh_s"]) and sp >= float(c["static_off_v"])):
+                continue
+            hs = 0.5 * max(tr.len_m, tr.beam_m)
+            if any(math.hypot(tr.s[0] - x, tr.s[1] - y) < r + hs + float(c["static_release_m"]) for x, y, r in tr.laid):
+                continue
+            busy = False
+            for o in self.tracks:
+                if o is tr or not o.has_range():
+                    continue
+                ho = 0.5 * max(o.len_m, o.beam_m)
+                if any(math.hypot(o.s[0] - x, o.s[1] - y) <= r + ho for x, y, r in tr.laid):
+                    busy = True
+                    break
+            if busy:
+                continue
+            n = self.static.release(tr.id)
+            self.counts["static_released"] = self.counts.get("static_released", 0) + n
+            tr.laid = []
 
     def _src_cfg(self, k):
         return self.c[{"R": "radar", "L": "lidar", "C": "camera", "A": "ais"}[k]]

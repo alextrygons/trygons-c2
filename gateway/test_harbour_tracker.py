@@ -731,8 +731,68 @@ def ht17():
     report("HT17 review a154416 checks", not bad, "failed %s; rafted tracks %d" % (bad, len(near)))
 
 
+def ht18():
+    """HX7-fix4 (finding S14): a vessel that STOOD STILL >= static_s is laid into the static map; when it LEAVES, its
+    own cells are released (no phantom left on the line); kept: a vessel that stays, a footprint another range track
+    still occupies (a moored neighbour), a loaded map's cells, a cell another track also laid; the mutation without
+    the release keeps the phantom (the test catches it)."""
+    def phantom(objs, t_go, secs, mutate=False, pre=None):
+        sm = staticmap.StaticMap()
+        if pre:
+            pre(sm)
+        s = Sim(objs, own=lambda t: (0.0, 0.0, 0.0), static=sm)
+        s.w.t0 = T0 + t_go                              # the objects stand still until t_go (like the rig's world)
+        if mutate:
+            s.tr._release = lambda T: None
+        s.run(secs)
+        return s, sm
+    out = []
+    leave = [vessel("lv", (40.0, 1.4), (840.0, 1.4), 0.7, ln=6.0)]
+    s, sm = phantom(leave, 30.0, 75.0)
+    v = s.truth("lv")
+    left = sm.occupied(40.0, 1.4, 1.0, s.t)
+    here = sm.occupied(v["x"], v["y"], 0.0, s.t)
+    out.append(("left: the old footprint released", not left and s.tr.counts.get("static_released", 0) > 0,
+                "old footprint occupied %s, released %s, vessel now at %.1f (its own cells %s)" % (
+                    left, s.tr.counts.get("static_released"), v["x"], here)))
+    s, sm = phantom(leave, 30.0, 75.0, mutate=True)
+    out.append(("mutation: no release = the phantom stays (caught)", sm.occupied(40.0, 1.4, 1.0, s.t), ""))
+    stay = [vessel("st", (40.0, 1.4), (840.0, 1.4), 0.0, ln=6.0)]
+    s, sm = phantom(stay, 30.0, 60.0)
+    out.append(("a vessel that stays keeps its cells", sm.occupied(40.0, 1.4, 1.0, s.t), ""))
+    # a moored neighbour 4 m off inside the leaving vessel's footprint radius + its half size: busy = kept
+    nb = leave + [vessel("nb", (40.0, 6.4), (40.0, 6.4), 0.0, ln=6.0)]
+    s, sm = phantom(nb, 30.0, 75.0)
+    out.append(("another range track in the footprint keeps it", sm.occupied(40.0, 1.4, 1.0, s.t) and
+                sm.occupied(40.0, 6.4, 1.0, s.t), ""))
+    # cells a loaded map already held are never released (owner "file")
+    pre_sm = staticmap.StaticMap()
+    pre_sm.observe(40.0, 1.4, 6.0, 3.0, T0)
+    pre_sm.grid = {k: [1000.0, v[1]] for k, v in pre_sm.grid.items()}
+    p = os.path.join(tempfile.gettempdir(), "ht18_static_%d.json" % os.getpid())
+    pre_sm.save(p)
+    loaded = staticmap.StaticMap.load(p)
+    os.remove(p)
+
+    def use_loaded(sm):
+        sm.grid, sm.owner = dict(loaded.grid), {k: set(v) for k, v in loaded.owner.items()}
+    s, sm = phantom(leave, 30.0, 75.0, pre=use_loaded)
+    out.append(("a loaded map's cells are kept", sm.occupied(40.0, 1.4, 1.0, s.t), ""))
+    # StaticMap.release alone: a cell two owners laid keeps the other one
+    m = staticmap.StaticMap()
+    m.observe(0.0, 0.0, 1.0, 1.0, T0, owner=1)
+    m.observe(0.0, 0.0, 1.0, 1.0, T0, owner=2)
+    m.observe(10.0, 0.0, 1.0, 1.0, T0, owner=1)
+    n1 = m.release(1)
+    out.append(("release: shared cells kept, own-only cells gone", (0, 0) in m.grid and m.ij(10.0, 0.0) not in m.grid
+                and n1 > 0, "released %d" % n1))
+    bad = [(k, d) for k, ok, d in out if not ok]
+    report("HT18 static map: a vessel that LEFT releases its own cells (HX7-fix4)", not bad,
+           "; ".join("%s %s%s" % ("ok" if ok else "FAIL", k, (" (" + d + ")") if d else "") for k, ok, d in out))
+
+
 def main():
-    for fn in (ht1, ht2, ht3, ht4, ht5, ht6, ht7, ht8, ht9, ht10, ht11, ht12, ht13, ht14, ht15, ht16, ht17):
+    for fn in (ht1, ht2, ht3, ht4, ht5, ht6, ht7, ht8, ht9, ht10, ht11, ht12, ht13, ht14, ht15, ht16, ht17, ht18):
         try:
             fn()
         except Exception as e:
