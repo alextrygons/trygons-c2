@@ -9762,7 +9762,7 @@
 4726
 ],
 "term": "",
-"text": "STOP OR TAKE OVER? STOP (or the boat's STANDBY button) when you want everything to stand still NOW: you do not ask, you do not wait. TAKE OVER when you want to drive the boat yourself: the onboard joystick (a CREWED boat) or the REMOTE request (UNCREWED, with the licence). A HOLD (the boat stopped itself, \"I am not sure\") is not a fault: look at the reason, then decide - RESUME when it is clear, or TAKE OVER. A boat that is not sure never guesses: it stops. An object the boat cannot see is YOURS to watch: a small craft, a swimmer very close (inside the LiDAR's blind zone), anything in the water that gives no return."
+"text": "STOP OR DRIVE YOURSELF? Press STOP when you want everything to stand still NOW: you do not ask, you do not wait. Drive yourself when you want the controls: the onboard joystick (a CREWED boat) or the REMOTE request (UNCREWED, with the licence). A HOLD (the boat stopped itself, \"I am not sure\") is not a fault: look at the reason, then decide - RESUME when it is clear, or TAKE OVER. A boat that is not sure never guesses: it stops. An object the boat cannot see is YOURS to watch: a small craft, a swimmer very close (inside the LiDAR's blind zone), anything in the water that gives no return."
 },
 {
 "ch": "27",
@@ -9775,7 +9775,7 @@
 4731
 ],
 "term": "",
-"text": "WHAT TO DO WHEN ... A sensor is lost (radar or LiDAR): the boat slows to 2 kn and turns only for what the other sensor confirms; both lost: it stops at once. Look at the panel, then take over or wait."
+"text": "WHAT TO DO WHEN ... A sensor is lost (radar or LiDAR): the boat slows to 2 kn and turns only for what the other sensor confirms; both lost: it stops at once. Look at the panel, then drive yourself or wait."
 },
 {
 "ch": "27",
@@ -9827,7 +9827,7 @@
 4749
 ],
 "term": "",
-"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - take over and drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (STANDBY, TAKE OVER); the simulator has no gateway and no sensors, so the real planner is not part of them."
+"text": "A harbour mode that keeps stopping with \"UNSURE\": do not press RESUME again and again - drive by hand. TRAINING AND DEMO (step HX7). The Academy has a lesson «Harbour autonomy: STOP or TAKE OVER» and a scenario «Traffic in the harbour»: they run on the simulator only and practise YOUR two actions (stop, take the controls); the simulator has no gateway and no sensors, so the real planner is not part of them."
 },
 {
 "ch": "27",
@@ -11898,7 +11898,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "2c3490d8189a439f34348a1250cc53026797d0afe0896b28c5ba0cd919afaad4",
+"MANUAL.txt": "71f870cfa069f3bbfcda4b334143debc902823c79c2b2b21c22b6c95abc03bb8",
 "academy/content/tour.json": "c341719ba331582ce4ab3b885592d293245ac02fd694d412e0f636b3ad8f8149",
 "groundstation/assistant/index.py": "deb7e0bda607418bbad33b297fd37fc27bc03d7dca9a41bedc4622585cf1dfd8"
 },

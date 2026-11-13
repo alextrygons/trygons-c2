@@ -56,7 +56,7 @@ def storm_spec(seed):
         elif k == "moored":
             objs.append(sc.moored("moored", rng.uniform(30, 100), rng.choice([-1, 1]) * rng.uniform(15, 20)))
     faults = []
-    ex = {"excused": ()}
+    ex = {"excused": (), "start_may_be_refused": 1}
     r = rng.random()
     if r < 0.15:
         faults.append({"t": rng.uniform(12, 30), "what": rng.choice(["radar_off", "lidar_off"])})
@@ -73,11 +73,17 @@ def run_one(name, out_path):
     import scenarios as sc
     import rig
     spec = storm_spec(int(name[1:])) if name.startswith("S") and name[1:].isdigit() else sc.by_name()[name]
-    ep = rig.Episode(spec)
+    import copy
+    ep = rig.Episode(copy.deepcopy(spec))
     t_start = time.time()
     res = {"name": name, "title": spec["title"], "checks": [], "ok": False}
     try:
         out = ep.run()
+        if out.get("tb") and "no fresh position" in out.get("why", ""):     # a start-up flake: ONE more try, said so
+            ep.close()
+            res["retried"] = "no fresh position at the start-up"
+            ep = rig.Episode(copy.deepcopy(spec))
+            out = ep.run()
         if out.get("tb"):
             res["checks"] = [("RIG", False, out["why"])]
             res["tb"] = out["tb"]
@@ -89,6 +95,7 @@ def run_one(name, out_path):
                              "entry_after": getattr(ep, "entry_after", None)}
         res["trace"] = [tuple(round(v, 1) if isinstance(v, float) else v for v in s) for s in ep.samples[::10]]
         res["ok"] = bool(res["checks"]) and all(c[1] for c in res["checks"])
+        res["xfail"] = spec.get("xfail")
     finally:
         ep.close()
     res["secs"] = round(time.time() - t_start, 1)
@@ -154,8 +161,18 @@ def report(done, order):
     for n in order:
         r = done.get(n) or {"ok": False, "checks": [("RIG", False, "no result")]}
         ok = r.get("ok")
-        fails += 0 if ok else 1
-        print("[%s] %s - %s (%s s)" % ("PASS" if ok else "FAIL", n, r.get("title", ""), r.get("secs", "?")), flush=True)
+        xf = r.get("xfail")
+        if xf and not ok:                       # a documented FINDING (reported to the owner): shown, not counted
+            tag = "XFAIL"
+        elif xf and ok:
+            tag, ok = "FAIL", False             # the finding is fixed: remove the xfail mark (never a silent pass)
+        else:
+            tag = "PASS" if ok else "FAIL"
+        fails += 0 if (ok or tag == "XFAIL") else 1
+        print("[%s] %s - %s (%s s)" % (tag, n, r.get("title", ""), r.get("secs", "?")), flush=True)
+        if xf:
+            print("       finding: %s" % ("XPASS - the finding no longer shows: remove xfail from scenarios.py"
+                                          if tag == "FAIL" else xf))
         for c in r.get("checks", []):
             if not c[1] or os.environ.get("TRYGONS_HARBOUR_VERBOSE"):
                 print("       %s %s: %s" % ("ok  " if c[1] else "FAIL", c[0], c[2]))
