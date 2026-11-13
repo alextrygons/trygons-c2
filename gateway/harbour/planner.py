@@ -57,6 +57,7 @@ DEFAULTS = {
     "start_window_s": 30.0,                              # review MED-2: the pre-start kind-4 only this long after a
                                                          # station's START / RESUME (ACCEPT + the CONFIRM window)
     "tentative_ahead_m": 30.0,                           # review MED-1: a tentative range track this close ahead
+    "tentative_hits": 2,                                 # ... with at least this many range hits (its window)
     "vessel_moving_mps": 0.2,                            # a vessel-class track faster than this = MOVING (15 m)                                # U12: the own position / heading older than this = STOP                              # nothing feasible over 40 s: the slowest STRAIGHT candidate
 }                                                        # judged over this shorter time = slow on; else STOP
 
@@ -126,6 +127,14 @@ class Planner:
             stop.append("U3 GPS not trusted / uncertainty > %.0f m" % float(c["unc_m"]))
         if inp.get("leg") is None:
             stop.append("no checked harbour route leg")
+        # round 2 MED-2: the planner judges the sensor health ITSELF too (defence in depth beside the tracker's U1 /
+        # U2): neither radar nor LiDAR OK = STOP, one not OK = slow to degraded_kn
+        h = inp.get("health") if isinstance(inp.get("health"), dict) else {}
+        bad = [k for k in ("radar", "lidar") if h.get(k) != "OK"]
+        if len(bad) == 2:
+            stop.append("U1 radar and LiDAR not OK (%s / %s)" % (h.get("radar"), h.get("lidar")))
+        elif bad:
+            slow.append("U2 %s %s" % (bad[0], h.get(bad[0])))
         f = inp.get("flags")
         if not isinstance(f, dict):
             stop.append("tracker flags missing")
@@ -174,7 +183,7 @@ class Planner:
         dec["tentative"] = len(tent)
         tracks = [t for t in tracks if not _tentative(t)]
         # review MED-1: a tentative range return is never ignored entirely - one within tentative_ahead_m ahead in the
-        # corridor band, or within min_static_m of the hull anywhere, SLOWS the boat to degraded_kn (never a turn,
+        # corridor band (from the bow on; a repeated return: tentative_hits) SLOWS the boat to degraded_kn (never a turn,
         # never a STOP by itself: a spray / clutter return would latch a HOLD); confirmed, it is planned around
         own0 = inp.get("own") or {}
         leg0 = inp.get("leg")
@@ -182,12 +191,13 @@ class Planner:
             (lax, lay), (lbx, lby) = leg0
             ll = math.hypot(lbx - lax, lby - lay) or 1.0
             ux0, uy0 = (lbx - lax) / ll, (lby - lay) / ll
-            cw = float(inp.get("corr_m") or c["corr_m"]) + float(c["min_static_m"])
+            cw = float(inp.get("corr_m") or c["corr_m"])
             for t in tent:
+                if int(t.get("hits_R") or 0) + int(t.get("hits_L") or 0) < int(c["tentative_hits"]):
+                    continue                        # a single return (spray / sea clutter) until it repeats
                 dx, dy = t["x"] - float(own0["x"]), t["y"] - float(own0["y"])
                 along, lat = dx * ux0 + dy * uy0, abs(dx * uy0 - dy * ux0)
-                hull = math.hypot(dx, dy) - 3.0 - 0.5 * max(t.get("len_m") or 0.0, t.get("beam_m") or 0.0)
-                if (0.0 <= along <= float(c["tentative_ahead_m"]) and lat <= cw) or hull < float(c["min_static_m"]):
+                if 0.5 * float(c["own_len_m"]) <= along <= float(c["tentative_ahead_m"]) and lat <= cw:
                     slow.append("tentative range return %.0f m ahead - slowing" % max(0.0, along))
                     break
         degraded = [k for k in ("radar", "lidar") if (inp.get("health") or {}).get(k) != "OK"]
@@ -268,7 +278,11 @@ class Planner:
             dec["hflags"] |= 0x04
         # the static points near the corridor ahead (static map cells + static tracks), in leg coordinates (s, e)
         reach = float(c["horizon_s"]) * max(cap * KN, v0) + 20.0
-        s_end = min(s0 + reach, L + corr)
+        # round 2 MED-1: the FULL horizon, also past the leg's end (the line extended); past the end + corr while the
+        # AURIX has not switched to the next leg = STOP (never "clear" on a horizon cut to nothing)
+        if s0 > L + corr:
+            raise _Stop("past the leg's end (%.0f m) - the next leg not active" % (s0 - L))
+        s_end = s0 + reach
         stat = self._static_points(inp.get("static"), ax, ay, ux, uy, nx, ny, s0 - 10.0, s_end,
                                    corr + float(c["min_static_m"]) + 2.0, now)
         movers = []
@@ -324,6 +338,8 @@ class Planner:
         trk = {t.get("id"): t for t in tracks}
         bad_turn = []
         for i in straight_block:
+            if i == "static-map":
+                continue        # chart cells + LiDAR cells laid only by steer_ok LiDAR tracks = range / chart confirmed
             t = trk.get(i)
             if t is None or not t.get("steer_ok"):
                 bad_turn.append(i)
@@ -468,8 +484,6 @@ class Planner:
             if abs(e) > usable + 0.5 and abs(e) > abs(e_prev) - 1e-6:
                 return False, -1.0, blk                 # leaves the usable corridor
             e_prev = e
-            if s > s_end:
-                break
             for tr in movers:
                 tu = min(t, float(c["unc_t_s"]))
                 sig = math.sqrt(float(tr.get("sd_m") or 0.0) ** 2 + (_vsd(tr) * tu) ** 2)
@@ -561,8 +575,8 @@ class HarbourPlanner:
         # waiting for the captain's START: only in the modes whose navreq does not matter (STANDBY, MANUAL, CREWED
         # HDG LOCK) - never in UNCREWED HDG LOCK / REMOTE / MANEUVER / AUTO / DP, where the kind 1 / 2 lease is
         # needed (a kind-4 request is inert there on the AURIX = their lease would lapse)
-        pre = o.get("mode") in (MODE_STANDBY, MODE_MANUAL) or (
-            o.get("mode") == MODE_HDG_LOCK and o.get("profile") == PROFILE_CREWED)
+        # round 2 MED-3 / LOW-5: only in STANDBY (no kind 1 / 2 cap acts there) and only with FRESH telemetry
+        pre = bool(o.get("fresh")) and o.get("mode") == MODE_STANDBY
         win = self.start_mono is not None and time.monotonic() - self.start_mono <= float(
             self.planner.c["start_window_s"])
         return bool(self.stat.get("harb_route")) and st == 0 and pre and win

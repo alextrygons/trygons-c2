@@ -225,6 +225,9 @@ def hp8(planner_mod=P):
     i["own"]["fresh"] = False
     out["U12 stale"] = planner_mod.Planner().plan(1.0, i)["stop"]
     out["no leg"] = planner_mod.Planner().plan(1.0, dict(inp([]), leg=None))["stop"]
+    out["U1 health both LOST"] = planner_mod.Planner().plan(1.0, dict(inp([]), health={"radar": "LOST",
+                                                                                        "lidar": "OFF"}))["stop"]
+    out["past the leg end"] = planner_mod.Planner().plan(1.0, dict(inp([]), leg=((0.0, -50.0), (0.0, -20.0))))["stop"]
     out["block (sim gate)"] = planner_mod.Planner().plan(1.0, dict(inp([]), block=["sim gate"]))["stop"]
     out["U7"] = plan_mod_one(planner_mod, [trk(1, 3, 4, static=True, ln=1, beam=1, cls="buoy")])["stop"]
     out["U5"] = plan_mod_one(planner_mod, [trk(1, 0, 25, static=True, ln=40, beam=30)])["stop"]
@@ -236,7 +239,8 @@ def hp8(planner_mod=P):
     d2 = plan_mod_one(planner_mod, [], flags={"unsure": ["U2 lidar LOST"], "cycle_age_s": 0.1})
     d9 = plan_mod_one(planner_mod, [], flags={"unsure": ["U9 clutter (20 new tracks / s within 25 m)"],
                                              "cycle_age_s": 0.1})
-    slow_ok = not d2["stop"] and d2["cap_kn"] <= 2.0 and not d9["stop"] and d9["cap_kn"] <= 2.0
+    dh = planner_mod.Planner().plan(1.0, dict(inp([]), health={"radar": "DEGRADED", "lidar": "OK"}))
+    slow_ok = not d2["stop"] and d2["cap_kn"] <= 2.0 and not d9["stop"] and d9["cap_kn"] <= 2.0 and         not dh["stop"] and dh["cap_kn"] <= 2.0
     # U6 / U8: slow, then STOP after their time
     pl = planner_mod.Planner()
     f6 = {"unsure": ["U6 conflicting tracks (1)"], "cycle_age_s": 0.1}
@@ -514,11 +518,11 @@ def hp11():
     a_pre = hp.active() and not no_window
     pre_modes = []
     for m, prof in ((proto.MODE_REMOTE, proto.PROFILE_UNCREWED), (proto.MODE_HDG_LOCK, proto.PROFILE_UNCREWED),
-                    (proto.MODE_MANEUVER, proto.PROFILE_UNCREWED), (proto.MODE_DP, proto.PROFILE_CREWED)):
+                    (proto.MODE_MANEUVER, proto.PROFILE_UNCREWED), (proto.MODE_DP, proto.PROFILE_CREWED),
+                    (proto.MODE_HDG_LOCK, proto.PROFILE_CREWED), (proto.MODE_MANUAL, proto.PROFILE_CREWED)):
         gw.mode, gw.profile = m, prof
         pre_modes.append(hp.active())
-    gw.mode, gw.profile = proto.MODE_HDG_LOCK, proto.PROFILE_CREWED
-    a_pre = a_pre and hp.active() and not any(pre_modes)
+    a_pre = a_pre and not any(pre_modes)               # round 2 MED-3: the pre-start window only in STANDBY
     gw.mode = proto.MODE_STANDBY
     hp.start_mono -= 31.0
     a_pre = a_pre and not hp.active()                  # the window lapsed (30 s)

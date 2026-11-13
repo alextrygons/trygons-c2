@@ -105,20 +105,56 @@ def stop_class(flags):
     return out
 
 
+def ghost_ais(x, y):
+    """An AIS report with NO physical object (an AIS ghost / a stale position): an AIS-only track, never steer_ok."""
+    lat, lon = TT.simworld.xy_to_ll(TT.LAT0, TT.LON0, x, y)
+    return {"mmsi": 237999999, "lat": lat, "lon": lon, "sog": 0.0, "cog": 0.0, "length": 8.0, "beam": 3.0,
+            "stale": False}
+
+
 def episode(seed, secs, planner_mod=P, camera_p=0.3):
     rng = random.Random(seed)
-    objs = world(rng)
-    corr = rng.choice([8.0, 10.0, 10.0, 14.0, 20.0])
-    route = rng.choice([2.5, 3.5, 4.0, 5.0, 6.0])        # 6 kn: the planner caps at 5
-    camera = rng.random() < camera_p
-    boat = TP.Boat(0.0, 0.0, 0.0, min(route, 5.0) * rng.uniform(0.3, 1.0), corr, route)
+    # three scenario families: "mixed" (random traffic, small craft, moored boats + faults: mostly slow / STOP),
+    # "pass" (a passable harbour: an off-line buoy / kayak in a wide corridor, moored boats clear of it, no fault:
+    # the boat must MAKE WAY past them - the reach counter), "ghost" (an AIS-only report / a camera-only object ON
+    # the line in a wide corridor: a turn would be possible - only the steer_ok gate forbids it; the mutation check)
+    fam = rng.choices(["mixed", "pass", "ghost"], [0.6, 0.2, 0.2])[0]
+    STATS["fam_" + fam] = STATS.get("fam_" + fam, 0) + 1
+    extra = []
+    if fam == "mixed":
+        objs = world(rng)
+        corr = rng.choice([8.0, 10.0, 10.0, 14.0, 20.0])
+        route = rng.choice([2.5, 3.5, 4.0, 5.0, 6.0])    # 6 kn: the planner caps at 5
+        camera = rng.random() < camera_p
+    elif fam == "pass":
+        sx = rng.choice((-1.0, 1.0))
+        if rng.random() < 0.5:
+            first = {"id": "buoy", "kind": "buoy", "x": sx * rng.uniform(0.0, 4.0), "y": rng.uniform(60.0, 90.0),
+                     "len": 1.0, "beam": 1.0, "hdg": 0.0, "h": 1.2, "rcs": 0.5, "refl": 0.6}
+        else:                                           # a slow boat ahead in the corridor: overtaken at >= 15 m
+            x = sx * rng.uniform(9.0, 12.0)
+            first = TT.vessel("slowboat", (x, rng.uniform(35.0, 55.0)), (x, 900.0), rng.uniform(0.6, 0.9), ln=6.0,
+                              beam=2.5, h=1.5, rcs=0.7, refl=0.5)
+        objs = [first,
+                {"id": "moored", "kind": "moored", "x": -sx * rng.uniform(32.0, 40.0), "y": rng.uniform(40.0, 120.0),
+                 "len": 10.0, "beam": 3.5, "hdg": 0.0, "h": 2.0, "rcs": 0.7, "refl": 0.5}]
+        corr, route, camera = 20.0, rng.choice([4.0, 5.0]), False
+    else:
+        y = rng.uniform(60.0, 110.0)
+        objs = [{"id": "moored", "kind": "moored", "x": rng.choice((-1.0, 1.0)) * rng.uniform(32.0, 40.0),
+                 "y": rng.uniform(40.0, 120.0), "len": 10.0, "beam": 3.5, "hdg": 0.0, "h": 2.0, "rcs": 0.7,
+                 "refl": 0.5}]
+        extra = [ghost_ais(rng.uniform(-2.0, 2.0), y)]
+        corr, route, camera = 20.0, rng.choice([4.0, 5.0]), rng.random() < 0.5
+    boat = TP.Boat(0.0, 0.0, 0.0, min(route, 5.0) * (1.0 if fam != "mixed" else rng.uniform(0.3, 1.0)), corr,
+                   route)
     sm = staticmap.StaticMap(origin=(TT.LAT0, TT.LON0))
     sm.add_segment(-300.0, 600.0, -290.0, 600.0, 2.0)
     sim = TT.Sim(objs, own=lambda t: (boat.x, boat.y, boat.hdg), seed=seed, camera="all" if camera else False,
-                 static=sm)
+                 static=sm, ais_extra=extra)
     pl = planner_mod.Planner()
     # faults: a sensor lost / both lost / degraded / clutter / time skew at a random time
-    fault = rng.choice([None, None, "radar", "lidar", "both", "degraded", "clutter", "skew"])
+    fault = rng.choice([None, None, "radar", "lidar", "both", "degraded", "clutter", "skew"]) if fam == "mixed"         else None
     f_at = rng.uniform(5.0, secs * 0.8)
     STATS["episodes"] += 1
     if camera:
@@ -128,7 +164,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
     seen = {}
     lost_at = {}
     leg_psi = 0.0
-    steps = int(secs / 0.2)
+    steps = int((max(secs, 90.0) if fam == "pass" else secs) / 0.2)    # a passable harbour: 90 s to make way
     for k in range(steps):
         t_rel = (k + 1) * 0.2
         for kk, ta in lost_at.items():
@@ -181,7 +217,7 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
         else:
             # I86h
             lim = min(route, 5.0)
-            if f.get("degraded") or any(str(u).startswith(("U2 ", "U9 ")) for u in f.get("unsure") or []):
+            if f.get("degraded") or any(str(u).startswith(("U2 ", "U9 ")) for u in f.get("unsure") or []) or                     any(v != "OK" for v in sim.health.values()):      # round 2 S-MED-4: the injected health too
                 lim = min(lim, 2.0)
             res("I86h", dec["cap_kn"] <= lim + 1e-9, seed, "t %.1f cap %.2f > %.2f" % (t, dec["cap_kn"], lim))
             # I87: away from the line = the proposal's heading moves |xte| up by more than the turn tolerance
@@ -190,22 +226,23 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
             away = (off > 3.0 and e >= -0.5) or (off < -3.0 and e <= 0.5)
             if away:
                 STATS["turns"] += 1
-                ok = False
-                for tr in tracks:
-                    if not tr.get("steer_ok") or not set(tr.get("src") or "") & {"R", "L"}:
-                        continue
-                    if math.hypot(tr["x"] - boat.x, tr["y"] - boat.y) <= 200.0:
-                        ok = True
-                        break
-                # review S-MED-1: the CAUSE - every track the planner turned for is steer_ok in the tracker's
-                # output with a FRESH range hit (radar <= 2 s, LiDAR <= 0.5 s on the tracker clock)
+                # round 2 S-MED-2: the CAUSE only (no "any track nearby" shortcut): a turn away from the line names
+                # what it turned for (turn_for non-empty), and every listed track is steer_ok in the tracker's output
+                # with a FRESH range hit (radar <= 2 s, LiDAR <= 0.5 s on the tracker clock) within 200 m; the
+                # static map only while it holds LiDAR / chart cells
+                ok = bool(dec.get("turn_for"))
                 trk = {str(x["id"]): x for x in tracks}
                 for i in dec.get("turn_for") or []:
+                    if i == "static-map":
+                        nc = sm.n_cells()
+                        ok = ok and (nc["chart"] > 0 or nc["lidar"] > 0)
+                        continue
                     x = trk.get(str(i))
                     last = (x or {}).get("last") or {}
                     fresh = x is not None and ((last.get("R") is not None and sim.tr.T - last["R"] <= 2.0) or
                                                (last.get("L") is not None and sim.tr.T - last["L"] <= 0.5))
-                    if i != "static-map" and not (x is not None and x.get("steer_ok") and fresh):
+                    near = x is not None and math.hypot(x["x"] - boat.x, x["y"] - boat.y) <= 200.0
+                    if not (x is not None and x.get("steer_ok") and fresh and near):
                         ok = False
                 if ok:
                     STATS["turns_steer"] += 1
@@ -234,20 +271,20 @@ def episode(seed, secs, planner_mod=P, camera_p=0.3):
             moving = o["speed"] > 0.5 or (o["kind"] == "vessel" and o["speed"] > 0.2)
             need = 15.0 if moving else 8.0
             g = TP.hull_gap(boat, o)
-            if boat.hold and was_hold:
-                if not moving and boat.v > 0.05:
-                    # review S-MED-2: during the HOLD's coast-down WE close on a static object: the HOLD came too late
-                    res("I88", g >= need - 0.5, seed, "t %.1f coasting in HOLD %.1f m from %s (need %.0f)"
-                        % (t, g, o["id"], need))
-                continue                                    # a HOLD in force: the closing comes from the object
-            if boat.hold and not was_hold:
-                if o["speed"] <= 0.5:
-                    res("I88", g >= need - 0.5, seed, "t %.1f HOLD began %.1f m from %s (need %.0f)"
-                        % (t, g, o["id"], need))
+            if boat.hold:
+                # a HOLD in force: only the closing that comes from US counts (round 2 S-MED-3: any object, by our
+                # own velocity towards it - a late HOLD coasting into a slow vessel ahead fails too)
+                dx, dy = o["x"] - boat.x, o["y"] - boat.y
+                dd = math.hypot(dx, dy) or 1.0
+                ours = boat.v * (math.sin(math.radians(boat.hdg)) * dx + math.cos(math.radians(boat.hdg)) * dy) / dd
+                if ours > 0.1:
+                    res("I88", g >= need - 0.5, seed, "t %.1f %s HOLD %.1f m from %s (need %.0f), closing %.1f m/s"
+                        % (t, "began" if not was_hold else "coasting in", g, o["id"], need, ours))
                 continue
             res("I88", g >= need - 0.5, seed, "t %.1f %.1f m from %s (need %.0f)" % (t, g, o["id"], need))
-    if not boat.hold and boat.y > 40.0:                 # reach: the boat made way (not stopped / held at once)
+    if not boat.hold and boat.y > 80.0:                 # reach: the boat made way past its obstacles
         STATS["passed_obstacle"] += 1
+        STATS["passed_" + fam] = STATS.get("passed_" + fam, 0) + 1
 
 
 def mutant(old, new):
@@ -263,9 +300,12 @@ MUTANTS = {
     "steer_ok": ('if t is None or not t.get("steer_ok"):', 'if t is None:'),
     "unsure": ('                stop.append(u)                          # U1', '                pass  # U1'),
     "distance": ("m = math.hypot(px - x, py - y) - r - half - mm", "m = math.hypot(px - x, py - y) - r - half"),
+    "degraded": ('            cap = min(cap, float(c["degraded_kn"]))' + chr(10) + '            why = "harb.why_degraded"',
+                 '            why = "harb.why_degraded"'),
 }
-# (the cap / corridor mutants are caught by test_harbour_planner.py HP16 through HP9's 300 random plans; in the closed
-#  loop the AURIX-like boat clamps them again, so the storm cannot see them - review LOW-3)
+# each mutant must fail ITS invariant (round 2 S-MED-1), not just any
+TARGET = {"steer_ok": "I87", "unsure": "I90", "distance": "I88", "degraded": "I86h"}
+# (the cap / corridor mutants are caught by test_harbour_planner.py HP16 through HP9's 300 random plans)
 
 
 def run(episodes, seed, secs, planner_mod=P, quiet=False, camera_p=0.3):
@@ -296,6 +336,12 @@ def run(episodes, seed, secs, planner_mod=P, quiet=False, camera_p=0.3):
             if STATS[key] == 0:
                 bad += 1
                 print("FAIL reach: %s never happened in %d episodes" % (key, episodes))
+    # the "pass" family must MAKE WAY (y > 80 m, not held) in at least half its episodes - a planner that only ever
+    # stops / crawls fails this (the reach counter is never loosened: it is met by the scenario family)
+    if episodes >= 100 and STATS.get("passed_pass", 0) * 2 < STATS.get("fam_pass", 0):
+        bad += 1
+        print("FAIL reach: the passable harbour made way in only %d of %d episodes" % (
+            STATS.get("passed_pass", 0), STATS.get("fam_pass", 0)))
     for inv in NAMES:
         if episodes >= 100 and RES.get(inv, {}).get("checks", 0) == 0:
             bad += 1
@@ -316,8 +362,12 @@ def main():
         for name, (old, new) in MUTANTS.items():
             # the camera on in most episodes: the steer_ok gate matters only with camera-only / AIS-only tracks
             n = run(min(a.episodes, 40), a.seed, a.secs, mutant(old, new), quiet=True, camera_p=0.9)
-            print("mutation %-9s -> storm %s (%d failures)" % (name, "FAILS (good)" if n else "PASSES (BAD)", n))
-            ok = ok and n > 0
+            inv = TARGET[name]
+            k = RES.get(inv, {}).get("fails", 0)
+            failed = {i: r["fails"] for i, r in RES.items() if r["fails"]}
+            print("mutation %-9s -> %s fails %d time(s) %s (all failing: %s)" % (
+                name, inv, k, "(good)" if k else "(BAD: its invariant did not fail)", failed))
+            ok = ok and k > 0
         print("MUTATION CHECK: %s" % ("OK" if ok else "FAILED"))
         return 0 if ok else 1
     mod = mutant(*MUTANTS[a.mutate]) if a.mutate else P
