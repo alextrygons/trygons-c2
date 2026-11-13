@@ -62,8 +62,14 @@ def s21(mut=None):
             st = "HOLD"
         if mut == "redrive" and t > 30:
             st = "RUN"
+        if mut == "late" and 21 <= t < 26:
+            st, why = "SLOW", 0
+        if mut == "off_auto" and t > 30:
+            st = "OFF"
         S_.append(samp(t, x, 0.0 if st == "HOLD" else 3.0, st, why, gaps=[("buoy", 50.0)], mode=mode))
     ep.samples = S_
+    if mut == "resume":
+        ep.events.append((22.0, "RESUME after a host-load HOLD (why 2)"))
     ep.stops = []
     if mut == "pstop":
         ep.stops = [{"t": 20.5, "reason": "U5 x", "blockers": []}]
@@ -81,6 +87,8 @@ def s14(mut=None):
                3 if i * 0.2 > 22 else 0, gaps=[("slow", 30.0)]) for i in range(300)]
     ep.samples = S_
     cells = [{"x": 40.0, "y": 1.0, "layer": "lidar", "match": "slow", "match_d": 29.0 if mut == "phantom" else 1.0}]
+    if mut == "nocells":
+        cells = []
     ep.stops = [{"t": 21.0, "reason": "U5 no free path inside the corridor", "true_pos": True, "static_blocker": True,
                  "blockers": [{"id": "1", "track": True, "match": "slow", "match_d": 0.1, "gap": 30.0},
                               {"id": "static-map", "track": False}],
@@ -95,7 +103,8 @@ CASES = [(s13, None, "start_stop", True), (s13, "moved", "start_stop", False), (
          (s21, None, "fault_stop", True), (s21, "why", "fault_stop", False), (s21, "pstop", "fault_stop", False),
          (s21, "pstop_before", "fault_stop", False), (s21, "slowpre", "fault_stop", False),
          (s21, "redrive", "fault_stop", False), (s21, "early", "normal", False), (s21, "other", "normal", False),
-         (s14, None, "early_stop", True), (s14, "phantom", "early_stop", False)]
+         (s21, "late", "fault_stop", False), (s21, "off_auto", "fault_stop", False), (s21, "resume", "fault_stop", False),
+         (s14, None, "early_stop", True), (s14, "phantom", "early_stop", False), (s14, "nocells", "early_stop", False)]
 
 
 def main():

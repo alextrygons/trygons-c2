@@ -327,10 +327,14 @@ def _fault_stop_class(S_, ep, out, fired):
         # (r1 H1 / H2) NO planner STOP logged anywhere in the run - before the fault (an unexplained STOP must not
         # hide behind the fault) nor after it (nothing else may be what halted the boat)
         pstop = [(e["t"], e["reason"][:40]) for e in (getattr(ep, "stops", None) or [])]
-        # (r1 H2) from that HOLD to the end the boat stays held: every sample HOLD / OFF or mode STANDBY
-        redrive = [(q[0], q[5]) for q in S_ if h and q[0] >= h[0] and not (q[5] in ("HOLD", "OFF") or
-                                                                           q[7] == "STANDBY")]
-        ev.append((f, t_f, moving, h[0] if h else None, pstop[:3], redrive[:2]))
+        # (r1 H2, r2 MED-1) from that HOLD to the end the boat stays held: every sample HOLD, or mode STANDBY (OFF
+        # only in STANDBY), and it is never driven on: no sample after h + 1 s faster than at the HOLD + 0.3 kn
+        v_h = max((q[4] for q in S_ if h and abs(q[0] - h[0]) <= 0.3), default=0.0)
+        redrive = [(q[0], q[5], q[7], round(q[4], 2)) for q in S_ if h and q[0] >= h[0] and (
+            not (q[5] == "HOLD" or q[7] == "STANDBY") or (q[0] >= h[0] + 1.0 and q[4] > v_h + 0.3))]
+        # (r2 MED-2) the rig never RESUMEd after the fault
+        res = [e[0] for e in ep.events if e[0] >= t_f and str(e[1]).startswith("RESUME")]
+        ev.append((f, t_f, moving, h[0] if h else None, pstop[:3], redrive[:2] + [("RESUME", t) for t in res[:2]]))
     xmax = max(q[1] for q in S_)
     t_x = min(q[0] for q in S_ if q[1] >= xmax - 0.5)
     ok_a = bool(ev) and all(m and h is not None and not ps and not rd for _f, _t, m, h, ps, rd in ev) and \
@@ -443,7 +447,10 @@ def evaluate(spec, ep, out):
         u13 = [q[0] for q in S_ if len(q) > 19 and q[19] and "NOT GIVING WAY - STOP" in (q[14] or "")]
         dd = [q[0] for q in S_ if len(q) > 18 and q[18] & 0x1000000]
         hold = [q[0] for q in S_ if q[5] == "HOLD" and q[4] < 0.5]
-        fired0 = {e[1][len("fault "):]: e[0] for e in ep.events if str(e[1]).startswith("fault ")}
+        fired0 = {}
+        for e in ep.events:                             # (r2 LOW-3) the FIRST firing of each fault
+            if str(e[1]).startswith("fault ") and e[1][len("fault "):] not in fired0:
+                fired0[e[1][len("fault "):]] = e[0]
         if u13 and xmax < 25.0 and not ran:
             # HX7-fix4 (S13): the U13 not-yielding STOP came BEFORE the boat ever got under way (START accepted, the
             # vessel judged a threat at once): the start_refused rule (never moved) + P1u's evidence + the vessel

@@ -477,7 +477,7 @@ class Episode:
                             # HX7-fix4 (H2 evidence): what the planner sizes the track by
                             "len": q.get("len_m"), "beam": q.get("beam_m"), "sd": q.get("sd_m"),
                             "static": q.get("static"), "cls": q.get("cls"), "speed": q.get("speed"),
-                            "obj_speed": near[1]["speed"] if near[1] else None}     # (r1 M3: the object's own)
+                            "obj_speed": near[1].get("speed") if near[1] else None}     # (r1 M3: the object's own)
                 ev["blockers"] = [_match(b) for b in dd.get("blockers") or []]
                 ev["not_yielding"] = [_match(b) for b in dd.get("not_yielding") or []]     # (U13 names them here)
                 if "static-map" in [str(b) for b in dd.get("blockers") or []]:
@@ -490,8 +490,9 @@ class Episode:
                 self.ny_stop_seen = True                 # HX7-fix: a real stop for a vessel not giving way: never resumed
             if (st.get("harb_state_name") == "HOLD" and x < 25.0 and self.resumes < 6 and t < 40.0
                     and not getattr(self, "ny_stop_seen", False)
-                    and getattr(self.g.hplan, "planner", True) is not None   # HX7-fix4 (r1 M1): never RESUME
-                    # while the injected planner crash is in force (its HOLD IS the fault's reaction, not host load)
+                    and getattr(self.g.hplan, "planner", None) is not None   # HX7-fix4 (r1 M1 / r2 MED-2): never
+                    and not any(e[1] == "fault planner_crash" for e in self.events)   # RESUME once the injected
+                    # planner crash fired (its HOLD IS the fault's reaction, not host load)
                     and st.get("harb_why") in (2, 3) and not (self.g.hplan.dec or {}).get("stop")
                     and "overload" not in (((self.g.hplan.dec or {}).get("text_en")) or "")
                     and time.time() - self.last_resume > 4.0 and self.alice is not None):
