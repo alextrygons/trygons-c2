@@ -56,6 +56,7 @@ def seg_dist(px, py, x1, y1, x2, y2):
 
 
 OWN_R = 3.5           # the own hull as a circle (length 7 m): gaps are centre distance - radii
+STATIC_AHEAD_M = 130.0 # HX7-fix4: the band ahead searched for the static-map cells of a STOP (>= the planner horizon)
 
 
 def hull_gap(ox, oy, o):
@@ -475,6 +476,8 @@ class Episode:
                             "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None}
                 ev["blockers"] = [_match(b) for b in dd.get("blockers") or []]
                 ev["not_yielding"] = [_match(b) for b in dd.get("not_yielding") or []]     # (U13 names them here)
+                if "static-map" in [str(b) for b in dd.get("blockers") or []]:
+                    ev["static"] = self._static_evidence(x, y, truth, tr0)
                 self.stops.append(ev)
             self._last_stop = rs
             if (self.g.hplan.dec or {}).get("not_yielding") and "NOT GIVING WAY - STOP" in (
@@ -482,6 +485,8 @@ class Episode:
                 self.ny_stop_seen = True                 # HX7-fix: a real stop for a vessel not giving way: never resumed
             if (st.get("harb_state_name") == "HOLD" and x < 25.0 and self.resumes < 6 and t < 40.0
                     and not getattr(self, "ny_stop_seen", False)
+                    and not any(e[1] == "fault planner_crash" for e in self.events)   # HX7-fix4: never RESUME
+                    # the HOLD an injected planner crash causes (it IS the fault's designed reaction, not host load)
                     and st.get("harb_why") in (2, 3) and not (self.g.hplan.dec or {}).get("stop")
                     and "overload" not in (((self.g.hplan.dec or {}).get("text_en")) or "")
                     and time.time() - self.last_resume > 4.0 and self.alice is not None):
@@ -501,6 +506,38 @@ class Episode:
                 break
         out["min_gap"] = min_gap
         out["secs_run"] = round(time.time() - self.t0, 1)
+
+    def _static_evidence(self, x, y, truth, tr0):
+        """HX7-fix4 (S14): a STOP whose blocker is 'static-map' names no track - record WHAT occupied static-map cells
+        lie in the band the planner judges (ahead of the boat, inside the corridor + 2 m, up to STATIC_AHEAD_M) and the
+        nearest REAL world object to each cluster (centre to centre, its hull gap from the TRUE position). Read only:
+        the gateway's own StaticMap (chart cells + accumulated LiDAR cells at or above occ_w)."""
+        sm = getattr(self.g.harbour, "static", None)
+        out = {"chart": 0, "lidar": 0, "cells": []}
+        if sm is None or not sm.origin:
+            out["why"] = "no static map"
+            return out
+        corr = float(self.spec.get("corr_m", 10.0))
+        tt = getattr(sm, "t_last", 0.0)
+        lat0, lon0 = sm.origin
+        pts = []
+        for layer, keys in (("chart", list(sm.chart)), ("lidar", [k for k in list(sm.grid) if sm._w(k, tt) >= sm.occ_w])):
+            for (i, j) in keys:
+                la, lo = simworld.xy_to_ll(lat0, lon0, (i + 0.5) * sm.cell, (j + 0.5) * sm.cell)
+                cx, cy = xy(la, lo)
+                if x - 2.0 <= cx <= x + STATIC_AHEAD_M and abs(cy) <= corr + 2.0:
+                    out[layer] += 1
+                    pts.append((cx, cy, layer))
+        objs = [o for o in truth if o["kind"] != "pier"]
+        bx, by = (tr0[0], tr0[1]) if tr0 else (x, y)
+        for cx, cy, layer in pts:
+            near = min(((math.hypot(cx - o["x"], cy - o["y"]), o) for o in objs), default=(999.0, None),
+                       key=lambda a: a[0])
+            out["cells"].append({"x": round(cx, 1), "y": round(cy, 1), "layer": layer,
+                                 "match": near[1]["id"] if near[1] else None, "match_d": round(near[0], 1),
+                                 "gap": round(hull_gap(bx, by, near[1]), 1) if near[1] else None,
+                                 "obj_len": near[1]["len"] if near[1] else None})
+        return out
 
     # ------------------------------------------------------------- finish
     def standby_check(self):

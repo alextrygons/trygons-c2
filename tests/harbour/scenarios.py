@@ -251,6 +251,29 @@ def _early_stop_class(S_, ep, out):
               EARLY_MATCH_M, EARLY_RANGE_M), bool(hs) and all(real_ok(e) for e in hs),
               "tracks %s" % ([(e["t"], e.get("true_pos"), [(b["id"], b.get("match"), b.get("match_d"), b.get("gap"))
                                                              for b in named(e)]) for e in hs][:4],)))
+    # HX7-fix4 (S14, stricter): a 'static-map' blocker beside the named track(s) was never checked - the planner may
+    # have stopped for the static map, not for the track. Every occupied static-map cell the rig found in the band ahead
+    # at such a STOP must be a CHART cell (the real shore / a pier) or lie within EARLY_MATCH_M of a REAL object now
+    # (the gateway's own StaticMap read by the rig, rig._static_evidence); none recorded = not evidenced.
+    def static_ok(e):
+        if "static-map" not in [str(b.get("id")) for b in e.get("blockers", [])]:
+            return True
+        st = e.get("static") or {}
+        cells = st.get("cells") or []
+        return bool(cells) and all(c["layer"] == "chart" or (c.get("match") is not None and c["match_d"] <= EARLY_MATCH_M)
+                                   for c in cells)
+
+    def static_d(e):
+        st = e.get("static")
+        if not st:
+            return None
+        far = [c for c in st.get("cells") or [] if c["layer"] != "chart" and not (c.get("match") is not None and
+                                                                                 c["match_d"] <= EARLY_MATCH_M)]
+        return {"chart": st.get("chart"), "lidar": st.get("lidar"), "not on a real object": len(far),
+                "e.g.": [(c["x"], c["y"], c.get("match"), c["match_d"]) for c in far[:2]]}
+    r.append(("P1e-e ... and a 'static-map' blocker of those STOPs = cells on the chart or on a REAL object now (<= %.0f m)"
+              % EARLY_MATCH_M, bool(hs) and all(static_ok(e) for e in hs),
+              "static-map blockers %s" % ([(e["t"], static_d(e)) for e in hs if static_d(e) is not None][:3],)))
     last = S_[-1]
     r.append(("P1e-c the boat ends in HOLD (standing) or STANDBY", (last[5] == "HOLD" and last[4] < 0.5)
               or last[7] == "STANDBY", "end state %s, mode %s, SOG %.2f" % (last[5], last[7], last[4])))
@@ -266,6 +289,103 @@ def _early_stop_class(S_, ep, out):
 
 EARLY_MATCH_M = 6.0     # a STOP's track -> the real object it stands for (centre to centre)
 EARLY_RANGE_M = 40.0    # ... within the encounter distance of P3 (hull to hull)
+START_STOP_X_M = 3.0    # HX7-fix4: "never got under way" = the TRUE position never 3 m from where it started
+FAULT_HOLD_S = 5.0      # HX7-fix4: the injected fault's HOLD within this time (= H20's own window, not a new value)
+# HX7-fix4 (owner decision 2026-11-13): the AURIX HOLD cause each INJECTED fault must produce to count as the STOP's
+# cause. Only faults whose designed reaction IS a stop are listed: planner_crash -> the kind-4 lease lapses ->
+# HARB_WHY_LEASE (app/harbour.h 2). radar_off / lidar_off alone = M0-4 U2 'one sensor lost' = SLOW, never a STOP:
+# a STOP after one of them is NOT this class (it must be evidenced by a track, else FAIL + investigate).
+FAULT_STOP_WHY = {"planner_crash": (2,)}
+
+
+def _fault_halted(S_, fired):
+    """A listed injected fault fired while the boat was still making progress (its furthest point reached at / after
+    the fault): the candidate for the fault-STOP class (the class then asserts every condition)."""
+    xmax = max(q[1] for q in S_)
+    t_x = min(q[0] for q in S_ if q[1] >= xmax - 0.5)
+    return any(f in FAULT_STOP_WHY and t_f <= t_x + 0.5 for f, t_f in fired.items())
+
+
+def _fault_stop_class(S_, ep, out, fired):
+    """HX7-fix4 (owner decision 2026-11-13, S21): an EVIDENCED FAULT STOP in a random world (the boat stopped before
+    25 m). PASS only if ALL hold, each its own check: (F-a) the logged STOP cause is a fault the scenario INJECTED -
+    it fired (rig event), the boat was RUN / SLOW at the fault, the AURIX's HOLD reason is the one that fault produces
+    (FAULT_STOP_WHY) within FAULT_HOLD_S of it, no planner STOP was logged between the fault and that HOLD, and the
+    boat's furthest point is reached AFTER the fault (it was still making progress when the fault hit, never stopped
+    before it); (F-b) the boat ends in HOLD (standing) or STANDBY;
+    (F-c) no contact (every object >= 0.5 m, estimated AND true position, true in >= 90 % of the samples)."""
+    r = []
+    ev = []
+    for f, t_f in sorted(fired.items(), key=lambda a: a[1]):
+        why = FAULT_STOP_WHY.get(f)
+        if not why:
+            continue
+        at = [q for q in S_ if abs(q[0] - t_f) <= 0.3]
+        moving = any(q[5] in ("RUN", "SLOW") for q in at)
+        h = [q[0] for q in S_ if t_f <= q[0] <= t_f + FAULT_HOLD_S and q[5] == "HOLD" and q[13] in why]
+        pstop = [e for e in (getattr(ep, "stops", None) or []) if h and t_f <= e["t"] <= h[0]]
+        ev.append((f, t_f, moving, h[0] if h else None, [e["reason"][:40] for e in pstop]))
+    xmax = max(q[1] for q in S_)
+    t_x = min(q[0] for q in S_ if q[1] >= xmax - 0.5)
+    ok_a = bool(ev) and all(m and h is not None and not ps for _f, _t, m, h, ps in ev) and \
+        all(t_x >= t_f for _f, t_f, _m, _h, _p in ev)
+    other = [f for f in fired if f not in FAULT_STOP_WHY]
+    r.append(("F-a the STOP that halted the boat is an INJECTED fault's designed reaction (%s), under way at the fault, "
+              "HOLD within %.0f s, no planner STOP in between" % (", ".join(
+                  "%s -> why %s" % (k, v) for k, v in FAULT_STOP_WHY.items()), FAULT_HOLD_S),
+              ok_a, "faults (name, t, under way, HOLD at, planner STOPs between) %s; furthest point at %.1f s; other "
+                    "faults %s" % (ev, t_x, other)))
+    last = S_[-1]
+    r.append(("F-b the boat ends in HOLD (standing) or STANDBY", (last[5] == "HOLD" and last[4] < 0.5)
+              or last[7] == "STANDBY", "end state %s, mode %s, SOG %.2f" % (last[5], last[7], last[4])))
+    r.append(_no_contact(S_, out, "F-c"))
+    return r
+
+
+def _no_contact(S_, out, tag):
+    mg = out.get("min_gap", {})
+    worst = min(((v[0], k) for k, v in mg.items()), default=(999.0, None))
+    tsm = [s for s in S_ if len(s) > 22 and s[22]]
+    tru = min((g for s in tsm for _o, g in s[22]), default=999.0)
+    return ("%s no contact (every object >= 0.5 m, estimated AND true position, true in >= 90 %% of samples)" % tag,
+            worst[0] >= 0.5 and tru >= 0.5 and len(tsm) >= 0.9 * len(S_),
+            "least gap %.1f m to %s (true %.1f m, %d / %d samples)" % (worst[0], worst[1], tru, len(tsm), len(S_)))
+
+
+def _start_stop_class(S_, ep, out, u13, dd, hold):
+    """HX7-fix4 (S13): the U13 not-yielding STOP before the boat got under way. PASS only if ALL hold, each its own
+    check: P1u's three (U13 STOP, DRIVER DECISION, standstill in HOLD) - unchanged; (S-a) the U13 is the FIRST logged
+    STOP and the boat was never RUN / SLOW before it; (S-b) the vessel the U13 names is a REAL object: the SAME track id
+    is matched to a real moving object within EARLY_MATCH_M in a logged STOP (centre to centre, the true position), and
+    every match of that id names that one object; (S-c) that object really came within 40 m (P3, estimated or true).
+    (The never-moved rule = P1s in evaluate; C1 / U4 standing contacts are judged as for every storm world.)"""
+    r = [("P1u class UNAVOIDABLE (start): U13 STOP + DRIVER DECISION + standstill", bool(u13) and bool(dd) and bool(hold),
+          "U13 at %s s, DRIVER DECISION at %s s, standing at %s s" % (u13[0] if u13 else None, dd[0] if dd else None,
+                                                                     hold[0] if hold else None))]
+    stops = getattr(ep, "stops", None) or []
+    first = stops[0] if stops else None
+    ran_before = [q[0] for q in S_ if u13 and q[0] <= u13[0] and q[5] in ("RUN", "SLOW")]
+    r.append(("S-a the U13 is the FIRST logged STOP, the boat never RUN / SLOW before it",
+              bool(first) and "U13" in first["reason"] and not ran_before,
+              "first STOP %s; RUN / SLOW before it %s" % ((first["t"], first["reason"][:40]) if first else None,
+                                                         ran_before[:2])))
+    ids = {str(b["id"]) for b in (first or {}).get("not_yielding", [])}
+    seen = {}
+    for e in stops:
+        for b in e.get("not_yielding", []) + e.get("blockers", []):
+            if str(b.get("id")) in ids and b.get("track") and b.get("match") is not None and e.get("true_pos"):
+                seen.setdefault(str(b["id"]), []).append((e["t"], b["match"], b["match_d"]))
+    real = {i: [m for m in v if m[2] <= EARLY_MATCH_M] for i, v in seen.items()}
+    objs = {m[1] for v in seen.values() for m in v}
+    ok_b = bool(ids) and all(real.get(i) for i in ids) and len(objs) == 1
+    r.append(("S-b the vessel the U13 names is REAL: its track id matched to ONE real object within %.0f m (true "
+              "position) in a logged STOP" % EARLY_MATCH_M, ok_b,
+              "named %s; matches (t, object, m) %s" % (sorted(ids), {i: v[:3] for i, v in seen.items()})))
+    obj = next(iter(objs)) if len(objs) == 1 else None
+    est, tru, _n_t, _n = _min_gaps(S_, obj) if obj else (999.0, 999.0, 0, 0)
+    r.append(("S-c ... and that object came within 40 m (estimated or true)", obj is not None and min(est, tru) < 40.0,
+              "%s closest %.1f m estimated, %.1f m true" % (obj, est, tru)))
+    return r
 
 
 def evaluate(spec, ep, out):
@@ -316,12 +436,25 @@ def evaluate(spec, ep, out):
         u13 = [q[0] for q in S_ if len(q) > 19 and q[19] and "NOT GIVING WAY - STOP" in (q[14] or "")]
         dd = [q[0] for q in S_ if len(q) > 18 and q[18] & 0x1000000]
         hold = [q[0] for q in S_ if q[5] == "HOLD" and q[4] < 0.5]
-        if u13 and xmax < 25.0:
+        fired0 = {e[1][len("fault "):]: e[0] for e in ep.events if str(e[1]).startswith("fault ")}
+        if u13 and xmax < 25.0 and not ran:
+            # HX7-fix4 (S13): the U13 not-yielding STOP came BEFORE the boat ever got under way (START accepted, the
+            # vessel judged a threat at once): the start_refused rule (never moved) + P1u's evidence + the vessel
+            # named by the U13 is a REAL object (its track id matched within EARLY_MATCH_M) that came within 40 m
+            out["class"] = "start_stop"
+            r.extend(_start_stop_class(S_, ep, out, u13, dd, hold))
+        elif u13 and xmax < 25.0:
             out["class"] = "unavoidable"
             r.append(("P1u class UNAVOIDABLE: U13 STOP + DRIVER DECISION + standstill (the boat stopped for a vessel "
                       "not giving way before 25 m)", ran and bool(dd) and bool(hold),
                       "U13 at %s s, DRIVER DECISION at %s s, standing at %s s" % (u13[0], dd[0] if dd else None,
                                                                                  hold[0] if hold else None)))
+        elif xmax < 25.0 and fired0 and _fault_halted(S_, fired0):
+            # HX7-fix4 (owner decision 2026-11-13, S21): the EVIDENCED FAULT-STOP class - the boat was stopped by a
+            # fault the scenario INJECTED (all conditions asserted in _fault_stop_class; the 25 m precondition stays
+            # for every other world)
+            out["class"] = "fault_stop"
+            r.extend(_fault_stop_class(S_, ep, out, fired0))
         elif xmax < 25.0 and getattr(ep, "stops", None):
             # HX7-fix3 (owner answer 3): the EVIDENCED early STOP class (all four conditions asserted; the 25 m
             # precondition stays for every other world)
@@ -329,9 +462,21 @@ def evaluate(spec, ep, out):
             r.extend(_early_stop_class(S_, ep, out))
         else:
             out["class"] = "normal"
-    need_x = 0.0 if (storm0 and out.get("class") in ("unavoidable", "early_stop")) else float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
-    r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
-              "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
+    need_x = 0.0 if (storm0 and out.get("class") in ("unavoidable", "early_stop", "fault_stop")) else float(ex.get("min_x", 25.0))                 # (H8: min_x 0 - the overtaker is a threat from the start)
+    if storm0 and out.get("class") == "start_stop":
+        # HX7-fix4 (S13): a boat that was stopped BEFORE it got under way cannot "drive": P1 here = the start_refused
+        # rule (the boat never moved: SOG < 0.5 kn and |x| < START_STOP_X_M all the time) - asserted, never skipped
+        smax0 = max(q[4] for q in S_)
+        tp = [q[21] for q in S_ if len(q) > 21 and q[21]]
+        disp = max((math.hypot(p[0] - tp[0][0], p[1] - tp[0][1]) for p in tp), default=999.0)
+        r.append(("P1s the boat never got under way (no RUN / SLOW, SOG < 0.5 kn, TRUE position within %.0f m of the "
+                  "start, true in >= 90 %% of samples)" % START_STOP_X_M,
+                  not ran and smax0 < 0.5 and disp < START_STOP_X_M and len(tp) >= 0.9 * len(S_),
+                  "RUN / SLOW %s, max SOG %.2f kn, true displacement %.1f m (%d / %d samples)" % (
+                      ran, smax0, disp, len(tp), len(S_))))
+    else:
+        r.append(("P1 the boat drove: RUN / SLOW seen and >= %.0f m covered" % need_x, ran and xmax >= need_x,
+                  "RUN / SLOW %s, max x %.0f m" % (ran, xmax)))
     fired = {e[1] for e in ep.events}
     miss = [f["what"] for f in spec.get("faults", []) if "fault " + f["what"] not in fired]
     if spec.get("faults"):
