@@ -75,10 +75,13 @@ DEFAULTS = {
     # the full 8 m and never predicts a moving track closer than min_moving - keep_margin_m (= 3 m hull to hull: no
     # predicted contact even with the noisy sigma); any unsure of the list (U1-U12, U8 ambiguous, a stale input ...)
     # still STOPs in the same cycle (it never reaches this point); a failure that lasts STOPs after keep_max_s
-    "keep_max_s": 0.8, "keep_margin_m": 12.0,
+    "keep_max_s": 0.8, "keep_margin_m": 12.0, "keep_prev_age_s": 0.5,
     # ... and a turn chosen for a vessel that does not give way keeps its side: the other side / straight costs more
     # for turn_persist_s
-    "turn_persist_s": 3.0,                                   # review M3: the not-yielding state LATCHED this long after
+    "turn_persist_s": 3.0,
+    # HX7-fix2 (H2): the last-leg arrival model: the coast-down starts end_lag_s of travel AFTER the final waypoint and
+    # only within end_r_m of the line (below the route's 8 m arrival radius) - conservative both ways
+    "end_lag_s": 1.5, "end_r_m": 5.0,                                   # review M3: the not-yielding state LATCHED this long after
                                                          # its last detection (a re-ID / U7 never clears it)
     # HX7-fix (finding HX7-1): the READY lease before the captain's START (STANDBY only): heading = the leg track,
     # cap = the most restrictive of the planner's cap, the route leg and ready_kn
@@ -470,7 +473,7 @@ class Planner:
             if self.prev is not None:
                 cost += 0.5 * abs(o - self.prev[0]) / step + (0.5 if abs(v_kn - self.prev[1]) > 1e-6 else 0.0)
             cost -= 0.05 * min(clear, 10.0)
-            if held and self.prev is not None and self.turn_t is not None and                     now - self.turn_t <= float(c["turn_persist_s"]) and (o - e0) * (self.prev[0] - e0) <= 0.0:
+            if held and self.turn_t is not None and now - self.turn_t <= float(c["turn_persist_s"]) and                     (o - e0) * getattr(self, "turn_side", 0.0) <= 0.0:
                 cost += 6.0                             # HX7-fix2: keep the side of a turn for a vessel not giving way
             if best is None or cost < best[0]:
                 best = (cost, o, v_kn, blk)
@@ -500,10 +503,12 @@ class Planner:
                 dec["slow"].append("nothing free over %.0f s: creeping straight" % float(c["horizon_s"]))
         kept = False
         if best is None and not amb:
+            # (review r1 M-1: only a failure of the candidate search itself reaches this point - every unsure of the
+            # list, U7, U8, the corridor / leg-end / idle-speed STOPs have returned or raised before)
             kept = self._keep_prev(now, held, v_lim, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny,
-                                   s_end)
+                                   s_end, (ax, ay, bx, by), cap, is_turn, turns_ok)
             if kept:
-                best = (0.0, self.prev[0], self.prev[1], set())
+                best = (0.0, self.prev[0], min(self.prev[1], cap), set())
                 dec["slow"].append("one cycle without a free path: the previous path kept (<= %.1f s)" %
                                    float(c["keep_max_s"]))
         if best is None and held:
@@ -554,24 +559,34 @@ class Planner:
             self.kept += 1
         if held and dec["turn"]:
             self.turn_t = now
+            self.turn_side = 1.0 if o > e0 else -1.0     # (review r1 L-3: the side kept explicitly)
         self.prev = (o, v_kn)
+        self.prev_t = now                               # (review r1 H-1: the previous MOVING decision's time + leg)
+        self.prev_leg = (ax, ay, bx, by)
         return dec
 
-    def _keep_prev(self, now, held, v_lim, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny, s_end):
+    def _keep_prev(self, now, held, v_lim, s0, e0, psi, usable, hdg, v0, movers, sidx, ax, ay, ux, uy, nx, ny, s_end,
+                   leg, cap, is_turn, turns_ok):
         """HX7-fix2: may the previous moving command be kept for this ONE search failure? Only within keep_max_s of
         the first failure of the run, never faster (held: v_lim), and only if that path judged NOW stays inside the
         corridor, clears every static object at the full 8 m and comes no closer than min_moving - keep_margin_m (3 m
         hull to hull) to any moving track. Else None -> the STOP of the caller."""
         c = self.c
-        if self.prev is None:
+        # review r1 H-1: only RIGHT AFTER a moving decision (every STOP clears prev; the moving decision at most
+        # keep_prev_age_s old - never a command of unknown age after a pause / a RESUME), on the SAME leg (M-3)
+        pt = getattr(self, "prev_t", None)
+        if self.prev is None or pt is None or not (0.0 <= now - pt <= float(c["keep_prev_age_s"])) or                 getattr(self, "prev_leg", None) != leg:
             return False
         if self.keep_t0 is None:
             self.keep_t0 = now
         if now - self.keep_t0 > float(c["keep_max_s"]):
             return False
         o, v_kn = self.prev
+        v_kn = min(v_kn, cap)                           # (r1 M-3: this cycle's cap applies)
         if held and v_kn > v_lim + 1e-6:
             return False
+        if is_turn(o) and not turns_ok:
+            return False                                # (r1 M-2: M0-3 - no kept turn past a camera / AIS-only blocker)
         ok_s, _c1, _b1 = self._sim(o, v_kn, s0, e0, psi, usable, hdg, v0, [], sidx, ax, ay, ux, uy, nx, ny, s_end)
         if not ok_s:
             return False
@@ -692,8 +707,10 @@ class Planner:
         end_s = getattr(self, "_end_s", None)
         while t < H - 1e-9:
             t += dt
-            if end_s is not None and (x - ax) * ux + (y - ay) * uy >= end_s:
+            if end_s is not None and vt > 0.0 and (x - ax) * ux + (y - ay) * uy >= end_s + v * float(c["end_lag_s"])                     and abs((x - ax) * nx + (y - ay) * ny) <= float(c["end_r_m"]):
                 vt = 0.0                                # (HX7-fix2) the last waypoint reached: the AURIX stops there
+                # (review r1 M-4: only within the arrival band end_r_m of the line, and end_lag_s of travel after the
+                # waypoint for the planned stop's throttle ramp + gear: never earlier than the AURIX)
             v = vt + (v - vt) * math.exp(-dt / tau)
             s = (x - ax) * ux + (y - ay) * uy
             e = (x - ax) * nx + (y - ay) * ny

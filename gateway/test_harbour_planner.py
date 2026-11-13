@@ -969,6 +969,10 @@ def hp19(planner_mod=P):
     real = hp19_run(planner_mod, unsure_at=k0 + 1)
     if not real[k0 + 1]["stop"]:
         bad.append("a real unsure right after a steer-clear did not STOP at once")
+    # review r1 H-1: a genuine STOP, then a noisy cycle = still STOP (never the command from before the STOP)
+    after = hp19_run(planner_mod, noisy=(k0 + 2,), unsure_at=k0 + 1)
+    if not after[k0 + 2]["stop"]:
+        bad.append("a noisy cycle right after a genuine STOP kept the old command")
     det.append("steer-clear from cycle %d; one noisy kept %s; lasting stop after %s cycles; real unsure stop %s" % (
         k0, one[k0 + 1].get("kept"), None if first_stop is None else first_stop - k0 - 1, real[k0 + 1]["stop"]))
     return bad, det
